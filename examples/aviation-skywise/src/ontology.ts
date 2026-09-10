@@ -144,14 +144,18 @@ export const ScheduleMaintenanceAction = defineActionType({
       evaluate: (params) => {
         const urgency = (params as any).urgency;
         const isRoutine = urgency === "routine";
+        if (isRoutine) {
+          return Effect.succeed({
+            passed: true,
+            verdict: "allow",
+          } as const);
+        }
         return Effect.succeed({
           failureReason:
-            urgency === "aog" || urgency === "urgent"
-              ? "Critical fleet intervention requires Chief Fleet Engineer review"
-              : undefined,
-          passed: isRoutine,
-          verdict: isRoutine ? "allow" : "review",
-        });
+            "Critical fleet intervention requires Chief Fleet Engineer review",
+          passed: false,
+          verdict: "review",
+        } as const);
       },
       id: "fleet_engineer_safety_guard",
     },

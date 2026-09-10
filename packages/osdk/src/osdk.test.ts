@@ -51,6 +51,16 @@ describe("@operon/osdk", () => {
     const client = createOperonClient({
       actionTypes: [UpdatePatientAction],
       auditStore: audit,
+      defaultSecurity: {
+        correlationId: "osdk-corr-default",
+        subject: {
+          id: "osdk-operator",
+          name: "OSDK Operator",
+          roles: ["operator"],
+          type: "user",
+        },
+        timestamp: Date.now(),
+      },
       objectStore: store,
       objectTypes: [PatientType],
     });
@@ -79,12 +89,12 @@ describe("@operon/osdk", () => {
     const allPatients = await Effect.runPromise(set.all());
     expect(allPatients.length).toBe(1);
 
-    // 4. Action execution with default fallback security
+    // 4. Action execution with configured defaultSecurity
     const defaultActionResult = await Effect.runPromise(
       client.actions["update_patient"].execute({ patientId: "P1" })
     );
     expect(defaultActionResult.status).toBe("executed");
-    expect(defaultActionResult.decisionRecord.subject.id).toBe("osdk-client");
+    expect(defaultActionResult.decisionRecord.subject.id).toBe("osdk-operator");
 
     // 5. Action execution with custom SecurityContext
     const customSecurity = {
@@ -105,6 +115,21 @@ describe("@operon/osdk", () => {
     );
     expect(actionResult.status).toBe("executed");
     expect(actionResult.decisionRecord.subject.id).toBe("dr-zhang");
+
+    // 6. Action execution fails when no SecurityContext is configured or passed
+    const unauthenticatedClient = createOperonClient({
+      actionTypes: [UpdatePatientAction],
+      auditStore: audit,
+      objectStore: store,
+      objectTypes: [PatientType],
+    });
+    await expect(
+      Effect.runPromise(
+        unauthenticatedClient.actions["update_patient"].execute({
+          patientId: "P1",
+        })
+      )
+    ).rejects.toThrow();
   });
 
   it("generates TypeScript client source code from ontology schema including links", () => {

@@ -207,7 +207,7 @@ describe("Independent validation — safety invariants", () => {
     await Effect.runPromise(store.putObject(item()));
     const audit = new InMemoryAuditStore();
     audit.appendDecision = () =>
-      Promise.reject(new StorageError({ message: "injected audit outage" }));
+      Effect.fail(new StorageError({ message: "injected audit outage" }));
     const action = defineActionType({
       id: "audit_atomicity",
       name: "Audit",
@@ -318,19 +318,21 @@ describe("Independent validation — safety invariants", () => {
 
   it("P20 audit hashing is stable across its persistence encoding", async () => {
     const audit = new InMemoryAuditStore();
-    const r = await audit.appendDecision({
-      id: "record",
-      timestamp: 1,
-      correlationId: "test",
-      actionTypeId: "local",
-      subject: reviewer,
-      parameters: {},
-      stateSnapshot: { agentTier: undefined },
-      ruleVersion: "1",
-      verdict: "allow",
-      outcome: "executed",
-      reason: undefined,
-    });
+    const r = await Effect.runPromise(
+      audit.appendDecision({
+        actionTypeId: "local",
+        correlationId: "test",
+        id: "record",
+        outcome: "executed",
+        parameters: {},
+        reason: undefined,
+        ruleVersion: "1",
+        stateSnapshot: { agentTier: undefined },
+        subject: reviewer,
+        timestamp: 1,
+        verdict: "allow",
+      })
+    );
     const serialized = JSON.stringify(r);
     // oxlint-disable-next-line unicorn/prefer-structured-clone
     const { recordHash, ...body } = JSON.parse(serialized);

@@ -8,12 +8,16 @@ import { Effect } from "effect";
 
 import { ConcurrentModificationError } from "./errors.js";
 
-export interface ObjectMutation {
-  readonly type: "put" | "delete";
-  readonly instance?: ObjectInstance;
-  readonly typeId?: ObjectTypeId;
-  readonly id?: string;
-}
+export type ObjectMutation =
+  | {
+      readonly type: "put";
+      readonly instance: ObjectInstance;
+    }
+  | {
+      readonly type: "delete";
+      readonly typeId: ObjectTypeId;
+      readonly id: string;
+    };
 
 export interface AtomicTransactionBatch {
   readonly mutations: readonly ObjectMutation[];
@@ -63,7 +67,7 @@ export class InMemoryObjectStore implements ObjectStore {
   private readonly objects = new Map<string, ObjectInstance>();
   private readonly links: LinkInstance[] = [];
 
-  private static toKey(typeId: string, id: string): string {
+  private static toKey(typeId: ObjectTypeId, id: string): string {
     return `${typeId}:${id}`;
   }
 
@@ -72,8 +76,8 @@ export class InMemoryObjectStore implements ObjectStore {
     id: string
   ): Effect.Effect<ObjectInstance | undefined> {
     return Effect.sync(() => {
-      const obj = this.objects.get(InMemoryObjectStore.toKey(typeId, id));
-      return obj ? structuredClone(obj) : undefined;
+      const instance = this.objects.get(InMemoryObjectStore.toKey(typeId, id));
+      return instance ? structuredClone(instance) : undefined;
     });
   }
 
@@ -94,12 +98,12 @@ export class InMemoryObjectStore implements ObjectStore {
         );
       }
 
-      const updated: ObjectInstance = {
+      const copy: ObjectInstance = {
         ...structuredClone(instance),
         lastModifiedAt: Date.now(),
       };
-      this.objects.set(k, updated);
-      return Effect.succeed(structuredClone(updated));
+      this.objects.set(k, copy);
+      return Effect.succeed(copy);
     });
   }
 
@@ -130,9 +134,9 @@ export class InMemoryObjectStore implements ObjectStore {
   ): Effect.Effect<readonly ObjectInstance[]> {
     return Effect.sync(() => {
       const results: ObjectInstance[] = [];
-      for (const obj of this.objects.values()) {
-        if (obj.typeId === typeId && (!predicate || predicate(obj))) {
-          results.push(structuredClone(obj));
+      for (const [k, v] of this.objects) {
+        if (k.startsWith(`${typeId}:`) && (!predicate || predicate(v))) {
+          results.push(structuredClone(v));
         }
       }
       return results;
@@ -181,7 +185,7 @@ export class InMemoryObjectStore implements ObjectStore {
     return Effect.suspend(() => {
       // 1. Validation phase (validate ALL optimistic concurrency preconditions before applying any mutation)
       for (const mutation of batch.mutations) {
-        if (mutation.type === "put" && mutation.instance) {
+        if (mutation.type === "put") {
           const k = InMemoryObjectStore.toKey(
             mutation.instance.typeId,
             mutation.instance.id
@@ -202,7 +206,7 @@ export class InMemoryObjectStore implements ObjectStore {
       // 2. Execution phase (all-or-nothing: apply all staged mutations and links)
       const now = Date.now();
       for (const mutation of batch.mutations) {
-        if (mutation.type === "put" && mutation.instance) {
+        if (mutation.type === "put") {
           const k = InMemoryObjectStore.toKey(
             mutation.instance.typeId,
             mutation.instance.id
@@ -211,11 +215,7 @@ export class InMemoryObjectStore implements ObjectStore {
             ...structuredClone(mutation.instance),
             lastModifiedAt: now,
           });
-        } else if (
-          mutation.type === "delete" &&
-          mutation.typeId &&
-          mutation.id
-        ) {
+        } else {
           this.objects.delete(
             InMemoryObjectStore.toKey(mutation.typeId, mutation.id)
           );

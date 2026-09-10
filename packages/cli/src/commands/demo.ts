@@ -25,16 +25,10 @@ export function runDemo(args: string[]): Effect.Effect<number, unknown, never> {
             root,
             "examples/healthcare-cdss/dist/simulation.js"
           );
-          const mod = (yield* Effect.tryPromise({
-            catch: (e) => e,
-            try: () => import(modPath),
-          })) as {
+          const mod = (yield* Effect.promise(() => import(modPath))) as {
             runClinicalSimulation: () => Promise<void>;
           };
-          yield* Effect.tryPromise({
-            catch: (e) => e,
-            try: () => mod.runClinicalSimulation(),
-          });
+          yield* Effect.promise(() => mod.runClinicalSimulation());
           return 0;
         }
         case "aviation":
@@ -43,16 +37,10 @@ export function runDemo(args: string[]): Effect.Effect<number, unknown, never> {
             root,
             "examples/aviation-skywise/dist/simulation.js"
           );
-          const mod = (yield* Effect.tryPromise({
-            catch: (e) => e,
-            try: () => import(modPath),
-          })) as {
+          const mod = (yield* Effect.promise(() => import(modPath))) as {
             runAviationSimulation: () => Promise<void>;
           };
-          yield* Effect.tryPromise({
-            catch: (e) => e,
-            try: () => mod.runAviationSimulation(),
-          });
+          yield* Effect.promise(() => mod.runAviationSimulation());
           return 0;
         }
         case "wastewater":
@@ -61,16 +49,10 @@ export function runDemo(args: string[]): Effect.Effect<number, unknown, never> {
             root,
             "examples/wastewater-compliance/dist/simulation.js"
           );
-          const mod = (yield* Effect.tryPromise({
-            catch: (e) => e,
-            try: () => import(modPath),
-          })) as {
+          const mod = (yield* Effect.promise(() => import(modPath))) as {
             runWastewaterSimulation: () => Promise<void>;
           };
-          yield* Effect.tryPromise({
-            catch: (e) => e,
-            try: () => mod.runWastewaterSimulation(),
-          });
+          yield* Effect.promise(() => mod.runWastewaterSimulation());
           return 0;
         }
         case "sompo":
@@ -79,16 +61,10 @@ export function runDemo(args: string[]): Effect.Effect<number, unknown, never> {
             root,
             "examples/sompo-rdp/dist/simulation.js"
           );
-          const mod = (yield* Effect.tryPromise({
-            catch: (e) => e,
-            try: () => import(modPath),
-          })) as {
+          const mod = (yield* Effect.promise(() => import(modPath))) as {
             runSompoRdpSimulation: () => Promise<void>;
           };
-          yield* Effect.tryPromise({
-            catch: (e) => e,
-            try: () => mod.runSompoRdpSimulation(),
-          });
+          yield* Effect.promise(() => mod.runSompoRdpSimulation());
           return 0;
         }
         case "education":
@@ -97,16 +73,10 @@ export function runDemo(args: string[]): Effect.Effect<number, unknown, never> {
             root,
             "examples/higher-education/dist/simulation.js"
           );
-          const mod = (yield* Effect.tryPromise({
-            catch: (e) => e,
-            try: () => import(modPath),
-          })) as {
+          const mod = (yield* Effect.promise(() => import(modPath))) as {
             runHigherEducationSimulation: () => Promise<void>;
           };
-          yield* Effect.tryPromise({
-            catch: (e) => e,
-            try: () => mod.runHigherEducationSimulation(),
-          });
+          yield* Effect.promise(() => mod.runHigherEducationSimulation());
           return 0;
         }
         default: {

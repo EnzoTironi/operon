@@ -20,3 +20,4 @@ export * from "./auth.js";
 export * from "./sandbox.js";
 export * from "./cluster.js";
 export * from "./native-sqlite.js";
+export * from "./services.js";

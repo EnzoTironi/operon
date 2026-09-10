@@ -282,7 +282,7 @@ export async function runHigherEducationSimulation() {
     );
   }
 
-  const decisions = await audit.listDecisions({ limit: 10 });
+  const decisions = await Effect.runPromise(audit.listDecisions({ limit: 10 }));
   console.log(`\n8. Traceability & Version Justice Summary:`);
   console.log(`   - Total Immutable Decision Records: ${decisions.length}`);
   console.log(`   - Evaluated under Curriculum: CURR-2024`);

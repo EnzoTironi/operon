@@ -33,10 +33,7 @@ export function runReadiness(
       return 1;
     }
 
-    const ctx = yield* Effect.tryPromise({
-      catch: (e) => e,
-      try: () => createRuntimeContext(dbPath),
-    });
+    const ctx = yield* Effect.promise(() => createRuntimeContext(dbPath));
 
     try {
       const oType = ctx.objectTypes.find((t) => t.id === typeId);

@@ -263,7 +263,7 @@ describe("@operon/runtime", () => {
       expect(successResult.decisionRecord.outcome).toBe("executed");
     }
 
-    const auditList = await auditStore.listDecisions();
+    const auditList = await Effect.runPromise(auditStore.listDecisions());
     expect(auditList.length).toBeGreaterThan(0);
   });
 
@@ -350,7 +350,7 @@ describe("@operon/runtime", () => {
       expect(overrideRecord.humanSubject.name).toBe("Dr Zhang");
       expect(inbox.getPendingProposals().length).toBe(0);
 
-      const overrides = await auditStore.listOverrides();
+      const overrides = await Effect.runPromise(auditStore.listOverrides());
       expect(overrides.length).toBe(1);
       expect(overrides[0].structuredReason).toContain("abnormal food intake");
     }

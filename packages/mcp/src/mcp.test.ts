@@ -1,6 +1,10 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { InMemoryAuditStore, InMemoryObjectStore } from "@operon/runtime";
+import {
+  InMemoryAuditStore,
+  InMemoryObjectStore,
+  OntologyMetadataService,
+} from "@operon/runtime";
 import {
   defineActionType,
   defineLinkType,
@@ -208,6 +212,7 @@ describe("@operon/mcp", () => {
       },
       objectStore,
       objectTypes: [PatientType],
+      oms: new OntologyMetadataService(),
     });
 
     const [clientTransport, serverTransport] =
@@ -296,7 +301,6 @@ describe("@operon/mcp", () => {
   });
 
   it("enforces Builder Key on AI FDE and creates branch proposals with full changesets", async () => {
-    const { OntologyMetadataService } = await import("@operon/runtime");
     const { AIFdeAgent } = await import("./ai-fde.js");
     const oms = new OntologyMetadataService();
     const fde = new AIFdeAgent(oms);
@@ -391,6 +395,7 @@ describe("@operon/mcp", () => {
       auditStore,
       objectStore,
       objectTypes: [],
+      oms: new OntologyMetadataService(),
     });
     const [cTransport, sTransport] = InMemoryTransport.createLinkedPair();
     await server.connect(sTransport);
@@ -414,6 +419,7 @@ describe("@operon/mcp", () => {
       auditStore,
       objectStore,
       objectTypes: [],
+      oms: new OntologyMetadataService(),
     });
     const [cTransport, sTransport] = InMemoryTransport.createLinkedPair();
     await server.connect(sTransport);

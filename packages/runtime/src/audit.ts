@@ -1,6 +1,12 @@
 import { createHash } from "node:crypto";
 
+import { canonicalJson } from "@operon/schema";
 import type { Subject } from "@operon/schema";
+import { Effect, Option } from "effect";
+
+import type { StorageError } from "./errors.js";
+
+export { canonicalJson } from "@operon/schema";
 
 export interface DecisionRecord {
   readonly id: string;
@@ -41,31 +47,6 @@ export interface OverrideRecord {
 }
 
 /**
- * Deterministically serialize a JavaScript value to canonical JSON.
- * Keys in objects are recursively sorted alphabetically.
- */
-export function canonicalJson(value: unknown): string {
-  if (value === null || typeof value !== "object") {
-    return JSON.stringify(value);
-  }
-  if (Array.isArray(value)) {
-    return `[${value
-      .map((element) =>
-        element === undefined ? "null" : canonicalJson(element)
-      )
-      .join(",")}]`;
-  }
-  const obj = value as Record<string, unknown>;
-  const sortedKeys = Object.keys(obj)
-    .filter((key) => obj[key] !== undefined)
-    .sort();
-  const pairs = sortedKeys.map(
-    (key) => `${JSON.stringify(key)}:${canonicalJson(obj[key])}`
-  );
-  return `{${pairs.join(",")}}`;
-}
-
-/**
  * Computes the SHA-256 digest of a decision record with canonical JSON representation.
  */
 export function computeRecordHash(
@@ -85,15 +66,22 @@ export function computeRecordHash(
 export interface AuditStore {
   readonly appendDecision: (
     record: Omit<DecisionRecord, "recordHash">
-  ) => Promise<DecisionRecord>;
-  readonly appendOverride: (record: OverrideRecord) => Promise<void>;
-  readonly getDecision: (id: string) => Promise<DecisionRecord | undefined>;
+  ) => Effect.Effect<DecisionRecord, StorageError>;
+  readonly appendOverride: (
+    record: OverrideRecord
+  ) => Effect.Effect<void, StorageError>;
+  readonly getDecision: (
+    id: string
+  ) => Effect.Effect<Option.Option<DecisionRecord>, StorageError>;
   readonly listDecisions: (filter?: {
     actionTypeId?: string;
     limit?: number;
-  }) => Promise<readonly DecisionRecord[]>;
-  readonly listOverrides: () => Promise<readonly OverrideRecord[]>;
-  readonly verifyAuditChain: () => Promise<boolean>;
+  }) => Effect.Effect<readonly DecisionRecord[], StorageError>;
+  readonly listOverrides: () => Effect.Effect<
+    readonly OverrideRecord[],
+    StorageError
+  >;
+  readonly verifyAuditChain: () => Effect.Effect<boolean, StorageError>;
 }
 
 /**
@@ -107,63 +95,74 @@ export class InMemoryAuditStore implements AuditStore {
 
   appendDecision(
     record: Omit<DecisionRecord, "recordHash">
-  ): Promise<DecisionRecord> {
-    const cloned = structuredClone(record);
-    const recordHash = computeRecordHash(cloned, this.lastHash);
+  ): Effect.Effect<DecisionRecord, StorageError> {
+    return Effect.sync(() => {
+      const cloned = structuredClone(record);
+      const recordHash = computeRecordHash(cloned, this.lastHash);
 
-    const completeRecord: DecisionRecord = Object.freeze({
-      ...cloned,
-      previousRecordHash: this.lastHash,
-      recordHash,
+      const completeRecord: DecisionRecord = Object.freeze({
+        ...cloned,
+        previousRecordHash: this.lastHash,
+        recordHash,
+      });
+
+      this.decisions.push(completeRecord);
+      this.lastHash = recordHash;
+      return structuredClone(completeRecord);
     });
-
-    this.decisions.push(completeRecord);
-    this.lastHash = recordHash;
-    return Promise.resolve(structuredClone(completeRecord));
   }
 
-  appendOverride(record: OverrideRecord): Promise<void> {
-    const cloned: OverrideRecord = Object.freeze(structuredClone(record));
-    this.overrides.push(cloned);
-    return Promise.resolve();
+  appendOverride(record: OverrideRecord): Effect.Effect<void, StorageError> {
+    return Effect.sync(() => {
+      const cloned: OverrideRecord = Object.freeze(structuredClone(record));
+      this.overrides.push(cloned);
+    });
   }
 
-  getDecision(id: string): Promise<DecisionRecord | undefined> {
-    const found = this.decisions.find((d) => d.id === id);
-    return Promise.resolve(found ? structuredClone(found) : undefined);
+  getDecision(
+    id: string
+  ): Effect.Effect<Option.Option<DecisionRecord>, StorageError> {
+    return Effect.sync(() => {
+      const found = this.decisions.find((d) => d.id === id);
+      return found ? Option.some(structuredClone(found)) : Option.none();
+    });
   }
 
   listDecisions(filter?: {
     actionTypeId?: string;
     limit?: number;
-  }): Promise<readonly DecisionRecord[]> {
-    let result = [...this.decisions];
-    if (filter?.actionTypeId) {
-      result = result.filter((d) => d.actionTypeId === filter.actionTypeId);
-    }
-    if (filter?.limit) {
-      result = result.slice(-filter.limit);
-    }
-    return Promise.resolve(result.map((d) => structuredClone(d)));
+  }): Effect.Effect<readonly DecisionRecord[], StorageError> {
+    return Effect.sync(() => {
+      let result = [...this.decisions];
+      if (filter?.actionTypeId) {
+        result = result.filter((d) => d.actionTypeId === filter.actionTypeId);
+      }
+      if (filter?.limit) {
+        result = result.slice(-filter.limit);
+      }
+      return result.map((d) => structuredClone(d));
+    });
   }
 
-  listOverrides(): Promise<readonly OverrideRecord[]> {
-    return Promise.resolve(this.overrides.map((o) => structuredClone(o)));
+  listOverrides(): Effect.Effect<readonly OverrideRecord[], StorageError> {
+    return Effect.sync(() => this.overrides.map((o) => structuredClone(o)));
   }
 
-  verifyAuditChain(): Promise<boolean> {
-    let expectedPrevious = "GENESIS_HASH";
-    for (const record of this.decisions) {
-      if (record.previousRecordHash !== expectedPrevious) {
-        return Promise.resolve(false);
+  verifyAuditChain(): Effect.Effect<boolean, StorageError> {
+    return Effect.sync(() => {
+      let expectedPrevious = "GENESIS_HASH";
+      for (const record of this.decisions) {
+        if (record.previousRecordHash !== expectedPrevious) {
+          return false;
+        }
+        const { recordHash, ...withoutHash } = record;
+        const expectedHash = computeRecordHash(withoutHash, expectedPrevious);
+        if (recordHash !== expectedHash) {
+          return false;
+        }
+        expectedPrevious = recordHash;
       }
-      const { recordHash, ...withoutHash } = record;
-      const expectedHash = computeRecordHash(withoutHash, expectedPrevious);
-      if (recordHash !== expectedHash) {
-        return Promise.resolve(false);
-      }
-      expectedPrevious = recordHash;
-    }
-    return Promise.resolve(true);
+      return true;
+    });
   }
 }

@@ -25,10 +25,7 @@ export function runMcp(args: string[]): Effect.Effect<number, unknown, never> {
     const dbIndex = args.indexOf("--db");
     const dbPath = dbIndex === -1 ? undefined : args[dbIndex + 1];
 
-    const ctx = yield* Effect.tryPromise({
-      catch: (e) => e,
-      try: () => createRuntimeContext(dbPath),
-    });
+    const ctx = yield* Effect.promise(() => createRuntimeContext(dbPath));
 
     const server = createOperonMcpServer({
       actionTypes: ctx.actionTypes,
@@ -43,14 +40,12 @@ export function runMcp(args: string[]): Effect.Effect<number, unknown, never> {
       inbox: ctx.inbox,
       objectStore: ctx.objectStore,
       objectTypes: ctx.objectTypes,
+      oms: ctx.oms,
       securityEngine: ctx.securityEngine,
     });
 
     const transport = new StdioServerTransport();
-    yield* Effect.tryPromise({
-      catch: (e) => e,
-      try: () => server.connect(transport),
-    });
+    yield* Effect.promise(() => server.connect(transport));
 
     yield* Effect.logInfo("Operon MCP Server connected via stdio transport");
 

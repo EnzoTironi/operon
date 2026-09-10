@@ -23,20 +23,24 @@ export class DynamicSecurityEngine {
   }
 
   /**
+   * Check if a subject has read access to an object instance based on Restricted Views
+   */
+  canRead(instance: ObjectInstance, subject: Subject): boolean {
+    const rvs = this.restrictedViews.get(instance.typeId);
+    if (!rvs || rvs.length === 0) {
+      return true;
+    }
+    return rvs.every((rv) => rv.predicate(instance, subject));
+  }
+
+  /**
    * Filter objects using Restricted Views (Row-level security)
    */
   filterInstances(
     instances: readonly ObjectInstance[],
     subject: Subject
   ): readonly ObjectInstance[] {
-    return instances.filter((inst) => {
-      const rvs = this.restrictedViews.get(inst.typeId);
-      if (!rvs || rvs.length === 0) {
-        return true;
-      }
-      // Subject must satisfy all active RVs for this object type
-      return rvs.every((rv) => rv.predicate(inst, subject));
-    });
+    return instances.filter((inst) => this.canRead(inst, subject));
   }
 
   /**

@@ -1,4 +1,4 @@
-import { Data, Effect } from "effect";
+import { Data, Effect, Ref } from "effect";
 
 export class CircuitBreakerOpenError extends Data.TaggedError(
   "CircuitBreakerOpenError"
@@ -22,15 +22,19 @@ export interface CircuitBreakerConfig {
   readonly successThreshold: number;
 }
 
+interface InternalBreakerState {
+  readonly state: CircuitBreakerState;
+  readonly failureCount: number;
+  readonly successCount: number;
+  readonly lastFailureTime: number;
+}
+
 /**
  * Enterprise Circuit Breaker (Chapter 17: Incident Response & Failure Modes)
  * Protects downstream systems (ERP, SCADA, EHR) and gracefully degrades.
  */
 export class CircuitBreaker {
-  private state: CircuitBreakerState = "closed";
-  private failureCount = 0;
-  private successCount = 0;
-  private lastFailureTime = 0;
+  private readonly stateRef: Ref.Ref<InternalBreakerState>;
 
   constructor(
     readonly name: string,
@@ -39,54 +43,81 @@ export class CircuitBreaker {
       recoveryTimeoutMs: 10000,
       successThreshold: 2,
     }
-  ) {}
+  ) {
+    this.stateRef = Ref.makeUnsafe<InternalBreakerState>({
+      failureCount: 0,
+      lastFailureTime: 0,
+      state: "closed",
+      successCount: 0,
+    });
+  }
 
   getState(): CircuitBreakerState {
+    const current = Ref.getUnsafe(this.stateRef);
     if (
-      this.state === "open" &&
-      Date.now() - this.lastFailureTime > this.config.recoveryTimeoutMs
+      current.state === "open" &&
+      Date.now() - current.lastFailureTime > this.config.recoveryTimeoutMs
     ) {
-      this.state = "half_open";
+      return "half_open";
     }
-    return this.state;
+    return current.state;
   }
 
   execute<A, E>(
     effect: Effect.Effect<A, E>
   ): Effect.Effect<A, E | CircuitBreakerOpenError> {
     return Effect.gen({ self: this }, function* () {
-      const currentState = this.getState();
+      const currentState = yield* Ref.modify(this.stateRef, (current) => {
+        if (
+          current.state === "open" &&
+          Date.now() - current.lastFailureTime > this.config.recoveryTimeoutMs
+        ) {
+          const next: InternalBreakerState = {
+            ...current,
+            state: "half_open",
+          };
+          return [next.state, next];
+        }
+        return [current.state, current];
+      });
+
       if (currentState === "open") {
         return yield* Effect.fail(
           new CircuitBreakerOpenError({
-            name: this.name,
             message: `Circuit breaker '${this.name}' is OPEN. Requests shed.`,
+            name: this.name,
           })
         );
       }
 
       const result = yield* effect.pipe(
         Effect.tap(() =>
-          Effect.sync(() => {
-            if (this.state === "half_open") {
-              this.successCount += 1;
-              if (this.successCount >= this.config.successThreshold) {
-                this.state = "closed";
-                this.failureCount = 0;
-                this.successCount = 0;
+          Ref.update(this.stateRef, (current): InternalBreakerState => {
+            if (current.state === "half_open") {
+              const newSuccessCount = current.successCount + 1;
+              if (newSuccessCount >= this.config.successThreshold) {
+                return {
+                  ...current,
+                  failureCount: 0,
+                  state: "closed",
+                  successCount: 0,
+                };
               }
-            } else {
-              this.failureCount = 0;
+              return { ...current, successCount: newSuccessCount };
             }
+            return { ...current, failureCount: 0 };
           })
         ),
         Effect.tapError(() =>
-          Effect.sync(() => {
-            this.failureCount += 1;
-            this.lastFailureTime = Date.now();
-            if (this.failureCount >= this.config.failureThreshold) {
-              this.state = "open";
-            }
+          Ref.update(this.stateRef, (current): InternalBreakerState => {
+            const newFailureCount = current.failureCount + 1;
+            const shouldOpen = newFailureCount >= this.config.failureThreshold;
+            return {
+              ...current,
+              failureCount: newFailureCount,
+              lastFailureTime: Date.now(),
+              state: shouldOpen ? "open" : current.state,
+            };
           })
         )
       );

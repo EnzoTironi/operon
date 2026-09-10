@@ -2,10 +2,14 @@ import type {
   ActionExecutionResult,
   AuditStore,
   DynamicSecurityEngine,
-  ObjectStore,
   ObjectSet,
+  ObjectStore,
 } from "@operon/runtime";
-import { ObjectSetService, executeWritePipeline } from "@operon/runtime";
+import {
+  AuthorizationError,
+  executeWritePipeline,
+  ObjectSetService,
+} from "@operon/runtime";
 import type {
   ActionType,
   ObjectInstance,
@@ -53,29 +57,34 @@ export function createOperonClient(config: OperonClientConfig): OperonClient {
     objects[ot.id] = {
       get: (id: string) =>
         config.objectStore.getObject(ot.id, id).pipe(
-          Effect.map((obj) => {
-            if (!obj) return undefined;
+          Effect.map((inst) => {
+            if (!inst) return undefined;
             if (config.securityEngine && config.defaultSecurity) {
-              const filtered = config.securityEngine.filterInstances(
-                [obj],
-                config.defaultSecurity.subject
-              );
-              if (filtered.length === 0) return undefined;
+              if (
+                !config.securityEngine.canRead(
+                  inst,
+                  config.defaultSecurity.subject
+                )
+              ) {
+                return undefined;
+              }
               return config.securityEngine.projectInstance(
-                obj,
+                inst,
                 config.defaultSecurity.subject
               );
             }
-            return obj;
+            return inst;
           })
         ) as Effect.Effect<ObjectInstance<any> | undefined>,
-      list: (predicate) =>
-        config.objectStore.findObjects(ot.id, predicate as any).pipe(
+      list: (predicate?: (instance: ObjectInstance<any>) => boolean) =>
+        config.objectStore.findObjects(ot.id, predicate).pipe(
           Effect.map((instances) => {
             if (config.securityEngine && config.defaultSecurity) {
-              const filtered = config.securityEngine.filterInstances(
-                instances,
-                config.defaultSecurity.subject
+              const filtered = instances.filter((inst) =>
+                config.securityEngine!.canRead(
+                  inst,
+                  config.defaultSecurity!.subject
+                )
               );
               return filtered.map((inst) =>
                 config.securityEngine!.projectInstance(
@@ -94,17 +103,15 @@ export function createOperonClient(config: OperonClientConfig): OperonClient {
   for (const act of config.actionTypes) {
     actions[act.id] = {
       execute: (params: unknown, security?: SecurityContext) => {
-        const effectiveSecurity = security ??
-          config.defaultSecurity ?? {
-            correlationId: `osdk_${Date.now()}`,
-            subject: {
-              id: "osdk-client",
-              name: "OSDK Client",
-              roles: ["client"],
-              type: "agent",
-            },
-            timestamp: Date.now(),
-          };
+        const effectiveSecurity = security ?? config.defaultSecurity;
+        if (!effectiveSecurity) {
+          return Effect.fail(
+            new AuthorizationError({
+              reason:
+                "SecurityContext required for action execution: neither explicit security nor defaultSecurity was configured",
+            })
+          );
+        }
 
         return executeWritePipeline(
           {

@@ -31,19 +31,39 @@ export interface ApprovalToken {
   readonly approvedAt: number;
 }
 
-export interface ActionSubmission<Params = unknown> {
+export interface StandardActionSubmission<Params = unknown> {
+  readonly kind?: "standard";
   readonly actionType: ActionType<Params>;
   readonly rawParameters: unknown;
   readonly security: SecurityContext;
   readonly ruleVersion?: string;
-  readonly isApprovedProposal?: boolean;
-  readonly approvalToken?: ApprovalToken;
+  readonly isApprovedProposal?: false;
+  readonly approvalToken?: never;
   readonly idempotencyKey?: string;
   readonly stagedLogic?: (
     params: Params,
     context: ActionEvaluationContext
   ) => Effect.Effect<readonly ObjectInstance[], unknown>;
 }
+
+export interface ApprovedProposalSubmission<Params = unknown> {
+  readonly kind?: "approved_proposal";
+  readonly actionType: ActionType<Params>;
+  readonly rawParameters: unknown;
+  readonly security: SecurityContext;
+  readonly ruleVersion?: string;
+  readonly isApprovedProposal: true;
+  readonly approvalToken: ApprovalToken;
+  readonly idempotencyKey?: string;
+  readonly stagedLogic?: (
+    params: Params,
+    context: ActionEvaluationContext
+  ) => Effect.Effect<readonly ObjectInstance[], unknown>;
+}
+
+export type ActionSubmission<Params = unknown> =
+  | StandardActionSubmission<Params>
+  | ApprovedProposalSubmission<Params>;
 
 export type ActionExecutionResult =
   | {
@@ -191,13 +211,7 @@ export function executeWritePipeline<Params = any>(
       if (actionType.requiredFreshnessProperties) {
         for (const req of actionType.requiredFreshnessProperties) {
           const pRecord = params as Record<string, unknown>;
-          const typeKey = `${req.objectTypeId.toLowerCase()}Id`;
-          const targetId =
-            (pRecord.targetId as string | undefined) ??
-            (pRecord[typeKey] as string | undefined) ??
-            (pRecord.patientId as string | undefined) ??
-            (pRecord.id as string | undefined) ??
-            (pRecord.targetObjectId as string | undefined);
+          const targetId = pRecord.targetId as string | undefined;
 
           if (!targetId) {
             return yield* Effect.fail(
@@ -340,21 +354,19 @@ export function executeWritePipeline<Params = any>(
 
       if (isProposal) {
         // Record as proposal in audit
-        const proposalRecord = yield* Effect.promise(() =>
-          auditStore.appendDecision({
-            actionTypeId: actionType.id,
-            correlationId: security.correlationId,
-            id: `proposal_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
-            outcome: "proposed",
-            parameters: params as Record<string, unknown>,
-            reason: reviewReason,
-            ruleVersion,
-            stateSnapshot: snapshot,
-            subject: security.subject,
-            timestamp: now,
-            verdict: needsHumanReview ? "review" : "allow",
-          })
-        );
+        const proposalRecord = yield* auditStore.appendDecision({
+          actionTypeId: actionType.id,
+          correlationId: security.correlationId,
+          id: `proposal_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+          outcome: "proposed",
+          parameters: params as Record<string, unknown>,
+          reason: reviewReason,
+          ruleVersion,
+          stateSnapshot: snapshot,
+          subject: security.subject,
+          timestamp: now,
+          verdict: needsHumanReview ? "review" : "allow",
+        });
 
         telemetry.trackEvent({
           event: "operon_action_submitted",
@@ -507,36 +519,33 @@ export function executeWritePipeline<Params = any>(
         });
 
       // STEP 6: Persist DecisionRecord (Atomic with Rollback on Audit Failure)
-      const maybeDecision = yield* Effect.promise(async () => {
-        try {
-          const record = await auditStore.appendDecision({
-            actionTypeId: actionType.id,
-            correlationId: security.correlationId,
-            id: `decision_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
-            outcome: "executed",
-            parameters: params as Record<string, unknown>,
-            ruleVersion,
-            stateSnapshot: snapshot,
-            subject: security.subject,
-            timestamp: now,
-            verdict: "allow",
-          });
-          return { ok: true as const, record };
-        } catch (error) {
-          return { error, ok: false as const };
-        }
-      });
-
-      if (!maybeDecision.ok) {
-        yield* rollbackEdits();
-        return yield* Effect.fail(
-          new StorageError({
-            message: `Audit append failed: ${String((maybeDecision.error as any)?.message ?? maybeDecision.error)}`,
-            cause: maybeDecision.error,
-          })
+      const decisionRecord = yield* auditStore
+        .appendDecision({
+          actionTypeId: actionType.id,
+          correlationId: security.correlationId,
+          id: `decision_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+          outcome: "executed",
+          parameters: params as Record<string, unknown>,
+          ruleVersion,
+          stateSnapshot: snapshot,
+          subject: security.subject,
+          timestamp: now,
+          verdict: "allow",
+        })
+        .pipe(
+          Effect.catch((error) =>
+            rollbackEdits().pipe(
+              Effect.andThen(
+                Effect.fail(
+                  new StorageError({
+                    cause: error,
+                    message: `Audit append failed: ${error.message}`,
+                  })
+                )
+              )
+            )
+          )
         );
-      }
-      const decisionRecord = maybeDecision.record;
 
       // Materialize standard 1-to-1 ActionLog object
       const targetObj = updatedObjects[0];
@@ -600,27 +609,25 @@ export function executeWritePipeline<Params = any>(
             );
 
             // Record compensation in audit
-            yield* Effect.promise(() =>
-              auditStore.appendDecision({
-                actionTypeId: actionType.id,
-                compensation: compensationSucceeded
-                  ? {
-                      compensatedAt: Date.now(),
-                      error: failureReason,
-                    }
-                  : undefined,
-                correlationId: security.correlationId,
-                id: `compensation_${Date.now()}`,
-                outcome: compensationSucceeded ? "compensated" : "rejected",
-                parameters: params as Record<string, unknown>,
-                reason: `Side effect '${se.id}' failed: ${failureReason}${compensationSucceeded ? "" : " (compensation failed)"}`,
-                ruleVersion,
-                stateSnapshot: snapshot,
-                subject: security.subject,
-                timestamp: Date.now(),
-                verdict: "deny",
-              })
-            );
+            yield* auditStore.appendDecision({
+              actionTypeId: actionType.id,
+              compensation: compensationSucceeded
+                ? {
+                    compensatedAt: Date.now(),
+                    error: failureReason,
+                  }
+                : undefined,
+              correlationId: security.correlationId,
+              id: `compensation_${Date.now()}`,
+              outcome: compensationSucceeded ? "compensated" : "rejected",
+              parameters: params as Record<string, unknown>,
+              reason: `Side effect '${se.id}' failed: ${failureReason}${compensationSucceeded ? "" : " (compensation failed)"}`,
+              ruleVersion,
+              stateSnapshot: snapshot,
+              subject: security.subject,
+              timestamp: Date.now(),
+              verdict: "deny",
+            });
 
             return yield* Effect.fail(
               new SideEffectExecutionError({

@@ -16,11 +16,34 @@ import {
   ProposalExecutionStateError,
   ProposalNotFoundError,
 } from "./errors.js";
+import type { StorageError } from "./errors.js";
 import type { ObjectStore } from "./object-store.js";
 import type { ActionSubmission } from "./write-pipeline.js";
 import { executeWritePipeline } from "./write-pipeline.js";
 
-export interface ActionProposalItem<Params = unknown> {
+export type ProposalStatus =
+  | {
+      readonly status: "pending";
+      readonly claimedBy?: undefined;
+      readonly claimedAt?: undefined;
+    }
+  | {
+      readonly status: "claimed";
+      readonly claimedBy: string;
+      readonly claimedAt: number;
+    }
+  | {
+      readonly status: "approved";
+      readonly claimedBy?: string;
+      readonly claimedAt?: number;
+    }
+  | {
+      readonly status: "rejected";
+      readonly claimedBy?: string;
+      readonly claimedAt?: number;
+    };
+
+export type ActionProposalItem<Params = unknown> = {
   readonly id: string;
   readonly decisionRecord: DecisionRecord;
   readonly submission: ActionSubmission<Params>;
@@ -28,10 +51,7 @@ export interface ActionProposalItem<Params = unknown> {
   readonly expiresAt: number;
   readonly proposerId: string;
   readonly evidenceHash: string;
-  readonly status: "pending" | "claimed" | "approved" | "rejected";
-  readonly claimedBy?: string;
-  readonly claimedAt?: number;
-}
+} & ProposalStatus;
 
 export class ActionInbox {
   private static readonly sharedProposals = new WeakMap<
@@ -212,6 +232,7 @@ export class ActionInbox {
         proposalId,
       },
       isApprovedProposal: true,
+      kind: "approved_proposal",
       security: {
         ...proposal.submission.security,
         subject: approverSubject,
@@ -265,7 +286,10 @@ export class ActionInbox {
     humanSubject: Subject,
     category: OverrideCategory,
     structuredReason: string
-  ): Effect.Effect<OverrideRecord, ProposalNotFoundError | AuthorizationError> {
+  ): Effect.Effect<
+    OverrideRecord,
+    ProposalNotFoundError | AuthorizationError | StorageError
+  > {
     const proposal = this.proposals.get(proposalId);
     if (!proposal || proposal.status !== "pending") {
       return Effect.fail(
@@ -295,9 +319,7 @@ export class ActionInbox {
       timestamp: Date.now(),
     };
 
-    return Effect.promise(() =>
-      this.auditStore.appendOverride(overrideRecord)
-    ).pipe(
+    return this.auditStore.appendOverride(overrideRecord).pipe(
       Effect.as(overrideRecord),
       Effect.tap(() =>
         Effect.sync(() => {

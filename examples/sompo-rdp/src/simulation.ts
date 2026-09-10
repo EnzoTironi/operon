@@ -333,7 +333,9 @@ export async function runSompoRdpSimulation() {
     `   - Analytics Persona PII Masked: name = '${maskedClaimant.properties.name ?? "[MASKED]"}', phone = '${maskedClaimant.properties.phone ?? "[MASKED]"}'`
   );
 
-  const totalDecisionRecords = await audit.listDecisions({ limit: 100 });
+  const totalDecisionRecords = await Effect.runPromise(
+    audit.listDecisions({ limit: 100 })
+  );
   console.log(
     `   - Cryptographic Audit Ledger Size: ${totalDecisionRecords.length} immutable records`
   );

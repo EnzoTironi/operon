@@ -14,7 +14,7 @@ import {
   defineObjectType,
   defineProperty,
 } from "@operon/schema";
-import { Duration, Effect, Schema } from "effect";
+import { Duration, Effect, Option, Schema } from "effect";
 import { describe, expect, it } from "vitest";
 
 import { ApprovalsEngine } from "./approvals.js";
@@ -515,7 +515,7 @@ describe("Kernel-Level Comprehensive & Non-Tautological Coverage", () => {
       ]);
 
       // Invariant: Audit log must contain the compensation record
-      const decisions = await audit.listDecisions();
+      const decisions = await Effect.runPromise(audit.listDecisions());
       const compRecord = decisions.find((d) => d.outcome === "compensated");
       expect(compRecord).toBeDefined();
       expect(compRecord?.reason).toContain("Downstream service unreachable");
@@ -1853,60 +1853,72 @@ describe("Kernel-Level Comprehensive & Non-Tautological Coverage", () => {
     it("filters decision records by actionTypeId and limit, and manages overrides", async () => {
       const audit = new InMemoryAuditStore();
 
-      await audit.appendDecision({
-        actionTypeId: "action_alpha",
-        correlationId: "c1",
-        id: "dec-1",
-        outcome: "executed",
-        parameters: {},
-        ruleVersion: "1.0",
-        stateSnapshot: { postState: [], preState: [] },
-        subject: { id: "u1", name: "User", roles: [], type: "user" },
-        timestamp: 1000,
-      });
+      await Effect.runPromise(
+        audit.appendDecision({
+          actionTypeId: "action_alpha",
+          correlationId: "c1",
+          id: "dec-1",
+          outcome: "executed",
+          parameters: {},
+          ruleVersion: "1.0",
+          stateSnapshot: { postState: [], preState: [] },
+          subject: { id: "u1", name: "User", roles: [], type: "user" },
+          timestamp: 1000,
+        })
+      );
 
-      await audit.appendDecision({
-        actionTypeId: "action_beta",
-        correlationId: "c2",
-        id: "dec-2",
-        outcome: "executed",
-        parameters: {},
-        ruleVersion: "1.0",
-        stateSnapshot: { postState: [], preState: [] },
-        subject: { id: "u1", name: "User", roles: [], type: "user" },
-        timestamp: 2000,
-      });
+      await Effect.runPromise(
+        audit.appendDecision({
+          actionTypeId: "action_beta",
+          correlationId: "c2",
+          id: "dec-2",
+          outcome: "executed",
+          parameters: {},
+          ruleVersion: "1.0",
+          stateSnapshot: { postState: [], preState: [] },
+          subject: { id: "u1", name: "User", roles: [], type: "user" },
+          timestamp: 2000,
+        })
+      );
 
-      const alphaDecisions = await audit.listDecisions({
-        actionTypeId: "action_alpha",
-      });
+      const alphaDecisions = await Effect.runPromise(
+        audit.listDecisions({
+          actionTypeId: "action_alpha",
+        })
+      );
       expect(alphaDecisions.length).toBe(1);
       expect(alphaDecisions[0].id).toBe("dec-1");
 
-      const limited = await audit.listDecisions({ limit: 1 });
+      const limited = await Effect.runPromise(
+        audit.listDecisions({ limit: 1 })
+      );
       expect(limited.length).toBe(1);
       expect(limited[0].id).toBe("dec-2");
 
-      const missing = await audit.getDecision("non-existent-id");
-      expect(missing).toBeUndefined();
+      const missing = await Effect.runPromise(
+        audit.getDecision("non-existent-id")
+      );
+      expect(Option.isNone(missing)).toBe(true);
 
-      await audit.appendOverride({
-        decisionRecordId: "dec-1",
-        finalDecision: { action: "override", status: "rejected" },
-        humanSubject: {
-          id: "doc-1",
-          name: "Doc",
-          roles: ["physician"],
-          type: "user",
-        },
-        id: "ovr-1",
-        originalProposal: {},
-        reasonCategory: "clinical_discretion",
-        structuredReason: "Patient vitals shifted",
-        timestamp: 3000,
-      });
+      await Effect.runPromise(
+        audit.appendOverride({
+          decisionRecordId: "dec-1",
+          finalDecision: { action: "override", status: "rejected" },
+          humanSubject: {
+            id: "doc-1",
+            name: "Doc",
+            roles: ["physician"],
+            type: "user",
+          },
+          id: "ovr-1",
+          originalProposal: {},
+          reasonCategory: "clinical_discretion",
+          structuredReason: "Patient vitals shifted",
+          timestamp: 3000,
+        })
+      );
 
-      const overrides = await audit.listOverrides();
+      const overrides = await Effect.runPromise(audit.listOverrides());
       expect(overrides.length).toBe(1);
       expect(overrides[0].id).toBe("ovr-1");
       expect(overrides[0].reasonCategory).toBe("clinical_discretion");

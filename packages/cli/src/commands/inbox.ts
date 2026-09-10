@@ -12,10 +12,7 @@ export function runInbox(
     const dbIndex = args.indexOf("--db");
     const dbPath = dbIndex === -1 ? undefined : args[dbIndex + 1];
 
-    const ctx = yield* Effect.tryPromise({
-      catch: (e) => e,
-      try: () => createRuntimeContext(dbPath),
-    });
+    const ctx = yield* Effect.promise(() => createRuntimeContext(dbPath));
 
     try {
       if (sub === "list") {

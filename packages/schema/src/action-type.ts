@@ -24,6 +24,18 @@ export interface ActionEvaluationContext {
   readonly now: number;
 }
 
+export type CriterionEvaluationResult =
+  | {
+      readonly passed: true;
+      readonly verdict?: "allow";
+      readonly failureReason?: undefined;
+    }
+  | {
+      readonly passed: false;
+      readonly verdict: DecisionVerdict;
+      readonly failureReason: string;
+    };
+
 /**
  * Declarative submission criterion / guard (Line 1 verification)
  */
@@ -33,11 +45,7 @@ export interface SubmissionCriterion<Params> {
   readonly evaluate: (
     params: Params,
     context: ActionEvaluationContext
-  ) => Effect.Effect<{
-    readonly passed: boolean;
-    readonly verdict?: DecisionVerdict;
-    readonly failureReason?: string;
-  }>;
+  ) => Effect.Effect<CriterionEvaluationResult>;
 }
 
 /**

@@ -6,15 +6,7 @@ export class ParameterValidationError extends Data.TaggedError(
   readonly actionTypeId: string;
   readonly message: string;
   readonly details?: unknown;
-}> {
-  constructor(args: {
-    readonly actionTypeId: string;
-    readonly message: string;
-    readonly details?: unknown;
-  }) {
-    super(args as any);
-  }
-}
+}> {}
 
 export class PermissionDeniedError extends Data.TaggedError(
   "PermissionDeniedError"
@@ -22,15 +14,7 @@ export class PermissionDeniedError extends Data.TaggedError(
   readonly subjectId: string;
   readonly actionTypeId: string;
   readonly reason: string;
-}> {
-  constructor(args: {
-    readonly subjectId: string;
-    readonly actionTypeId: string;
-    readonly reason: string;
-  }) {
-    super(args as any);
-  }
-}
+}> {}
 
 export class SubmissionCriteriaFailedError extends Data.TaggedError(
   "SubmissionCriteriaFailedError"
@@ -39,16 +23,7 @@ export class SubmissionCriteriaFailedError extends Data.TaggedError(
   readonly criterionId: string;
   readonly reason: string;
   readonly verdict: "deny" | "review";
-}> {
-  constructor(args: {
-    readonly actionTypeId: string;
-    readonly criterionId: string;
-    readonly reason: string;
-    readonly verdict: "deny" | "review";
-  }) {
-    super(args as any);
-  }
-}
+}> {}
 
 export class FreshnessBudgetExceededError extends Data.TaggedError(
   "FreshnessBudgetExceededError"
@@ -57,30 +32,14 @@ export class FreshnessBudgetExceededError extends Data.TaggedError(
   readonly propertyName: string;
   readonly currentAgeMs: number;
   readonly maxAllowedStalenessMs: number;
-}> {
-  constructor(args: {
-    readonly objectId: string;
-    readonly propertyName: string;
-    readonly currentAgeMs: number;
-    readonly maxAllowedStalenessMs: number;
-  }) {
-    super(args as any);
-  }
-}
+}> {}
 
 export class ObjectNotFoundError extends Data.TaggedError(
   "ObjectNotFoundError"
 )<{
   readonly objectTypeId: string;
   readonly objectId: string;
-}> {
-  constructor(args: {
-    readonly objectTypeId: string;
-    readonly objectId: string;
-  }) {
-    super(args as any);
-  }
-}
+}> {}
 
 export class ConcurrentModificationError extends Data.TaggedError(
   "ConcurrentModificationError"
@@ -88,143 +47,75 @@ export class ConcurrentModificationError extends Data.TaggedError(
   readonly objectId: string;
   readonly expectedVersion: number;
   readonly actualVersion: number;
-}> {
-  constructor(args: {
-    readonly objectId: string;
-    readonly expectedVersion: number;
-    readonly actualVersion: number;
-  }) {
-    super(args as any);
-  }
-}
+}> {}
 
 export class SideEffectExecutionError extends Data.TaggedError(
   "SideEffectExecutionError"
 )<{
   readonly sideEffectId: string;
   readonly cause: unknown;
-}> {
-  constructor(args: {
-    readonly sideEffectId: string;
-    readonly cause: unknown;
-  }) {
-    super(args as any);
-  }
-}
+}> {}
 
 export class CompensationFailedError extends Data.TaggedError(
   "CompensationFailedError"
 )<{
   readonly sideEffectId: string;
   readonly cause: unknown;
-}> {
-  constructor(args: {
-    readonly sideEffectId: string;
-    readonly cause: unknown;
-  }) {
-    super(args as any);
-  }
-}
+}> {}
 
 export class ProposalNotFoundError extends Data.TaggedError(
   "ProposalNotFoundError"
 )<{
   readonly proposalId: string;
   readonly message: string;
-}> {
-  constructor(args: { readonly proposalId: string; readonly message: string }) {
-    super(args as any);
-  }
-}
+}> {}
 
 export class ProposalExecutionStateError extends Data.TaggedError(
   "ProposalExecutionStateError"
 )<{
   readonly proposalId: string;
   readonly message: string;
-}> {
-  constructor(args: { readonly proposalId: string; readonly message: string }) {
-    super(args as any);
-  }
-}
+}> {}
 
 export class AuthenticationError extends Data.TaggedError(
   "AuthenticationError"
 )<{
   readonly reason: string;
-}> {
-  constructor(args: { readonly reason: string }) {
-    super(args as any);
-  }
-}
+}> {}
 
 export class AuthorizationError extends Data.TaggedError("AuthorizationError")<{
   readonly reason: string;
-}> {
-  constructor(args: { readonly reason: string }) {
-    super(args as any);
-  }
-}
+}> {}
 
 export class IdempotencyConflictError extends Data.TaggedError(
   "IdempotencyConflictError"
 )<{
   readonly idempotencyKey: string;
   readonly message: string;
-}> {
-  constructor(args: {
-    readonly idempotencyKey: string;
-    readonly message: string;
-  }) {
-    super(args as any);
-  }
-}
+}> {}
 
 export class StorageError extends Data.TaggedError("StorageError")<{
   readonly message: string;
   readonly cause?: unknown;
-}> {
-  constructor(args: { readonly message: string; readonly cause?: unknown }) {
-    super(args as any);
-  }
-}
+}> {}
 
 export class NotFoundError extends Data.TaggedError("NotFoundError")<{
   readonly entityId: string;
   readonly message: string;
-}> {
-  constructor(args: { readonly entityId: string; readonly message: string }) {
-    super(args as any);
-  }
-}
+}> {}
 
 export class ValidationError extends Data.TaggedError("ValidationError")<{
   readonly entityId: string;
   readonly rule: string;
   readonly details?: unknown;
-}> {
-  constructor(args: {
-    readonly entityId: string;
-    readonly rule: string;
-    readonly details?: unknown;
-  }) {
-    super(args as any);
-  }
-}
+}> {}
 
 export class LockAcquisitionError extends Data.TaggedError(
   "LockAcquisitionError"
 )<{
   readonly resource: string;
   readonly currentOwner: string;
-}> {
-  constructor(args: {
-    readonly resource: string;
-    readonly currentOwner: string;
-  }) {
-    super(args as any);
-  }
-}
+}> {}
 
 export class StaleFencingTokenError extends Data.TaggedError(
   "StaleFencingTokenError"
@@ -232,15 +123,7 @@ export class StaleFencingTokenError extends Data.TaggedError(
   readonly resource: string;
   readonly presentedToken: number;
   readonly expectedToken: number;
-}> {
-  constructor(args: {
-    readonly resource: string;
-    readonly presentedToken: number;
-    readonly expectedToken: number;
-  }) {
-    super(args as any);
-  }
-}
+}> {}
 
 export class SandboxExecutionError extends Data.TaggedError(
   "SandboxExecutionError"
@@ -248,41 +131,19 @@ export class SandboxExecutionError extends Data.TaggedError(
   readonly modelId: string;
   readonly reason: string;
   readonly details?: unknown;
-}> {
-  constructor(args: {
-    readonly modelId: string;
-    readonly reason: string;
-    readonly details?: unknown;
-  }) {
-    super(args as any);
-  }
-}
+}> {}
 
 export class ArtifactSizeExceededError extends Data.TaggedError(
   "ArtifactSizeExceededError"
 )<{
   readonly actualBytes: number;
   readonly maxAllowedBytes: number;
-}> {
-  constructor(args: {
-    readonly actualBytes: number;
-    readonly maxAllowedBytes: number;
-  }) {
-    super(args as any);
-  }
-}
+}> {}
 
 export class CompilationError extends Data.TaggedError("CompilationError")<{
   readonly errors: readonly string[];
   readonly message: string;
-}> {
-  constructor(args: {
-    readonly errors: readonly string[];
-    readonly message: string;
-  }) {
-    super(args as any);
-  }
-}
+}> {}
 
 export class ReleaseConflictError extends Data.TaggedError(
   "ReleaseConflictError"
@@ -290,15 +151,7 @@ export class ReleaseConflictError extends Data.TaggedError(
   readonly expectedDigest?: string;
   readonly actualDigest?: string;
   readonly message: string;
-}> {
-  constructor(args: {
-    readonly expectedDigest?: string;
-    readonly actualDigest?: string;
-    readonly message: string;
-  }) {
-    super(args as any);
-  }
-}
+}> {}
 
 export class SelfReviewDeniedError extends Data.TaggedError(
   "SelfReviewDeniedError"
@@ -306,53 +159,25 @@ export class SelfReviewDeniedError extends Data.TaggedError(
   readonly authorId: string;
   readonly reviewerId: string;
   readonly message: string;
-}> {
-  constructor(args: {
-    readonly authorId: string;
-    readonly reviewerId: string;
-    readonly message: string;
-  }) {
-    super(args as any);
-  }
-}
+}> {}
 
 export class StaleReviewError extends Data.TaggedError("StaleReviewError")<{
   readonly proposalId: string;
   readonly candidateDigest: string;
   readonly reviewDigest: string;
   readonly message: string;
-}> {
-  constructor(args: {
-    readonly proposalId: string;
-    readonly candidateDigest: string;
-    readonly reviewDigest: string;
-    readonly message: string;
-  }) {
-    super(args as any);
-  }
-}
+}> {}
 
 export class CandidateNotFoundError extends Data.TaggedError(
   "CandidateNotFoundError"
 )<{
   readonly candidateDigest: string;
   readonly message: string;
-}> {
-  constructor(args: {
-    readonly candidateDigest: string;
-    readonly message: string;
-  }) {
-    super(args as any);
-  }
-}
+}> {}
 
 export class PublicationNotFoundError extends Data.TaggedError(
   "PublicationNotFoundError"
 )<{
   readonly identifier: string;
   readonly message: string;
-}> {
-  constructor(args: { readonly identifier: string; readonly message: string }) {
-    super(args as any);
-  }
-}
+}> {}

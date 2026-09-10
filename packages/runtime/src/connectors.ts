@@ -18,13 +18,28 @@ export interface DebeziumSourceMeta {
   readonly txId?: string;
 }
 
-export interface DebeziumCdcPayload {
-  readonly before: Record<string, unknown> | null;
-  readonly after: Record<string, unknown> | null;
-  readonly source: DebeziumSourceMeta;
-  readonly op: "c" | "u" | "d" | "r"; // create, update, delete, read (snapshot)
-  readonly ts_ms: number;
-}
+export type DebeziumCdcPayload =
+  | {
+      readonly op: "c" | "r"; // create, read (snapshot)
+      readonly before?: Record<string, unknown> | null;
+      readonly after: Record<string, unknown>;
+      readonly source: DebeziumSourceMeta;
+      readonly ts_ms: number;
+    }
+  | {
+      readonly op: "u"; // update
+      readonly before?: Record<string, unknown> | null;
+      readonly after: Record<string, unknown>;
+      readonly source: DebeziumSourceMeta;
+      readonly ts_ms: number;
+    }
+  | {
+      readonly op: "d"; // delete
+      readonly before: Record<string, unknown>;
+      readonly after?: Record<string, unknown> | null;
+      readonly source: DebeziumSourceMeta;
+      readonly ts_ms: number;
+    };
 
 export interface DebeziumCdcMessage {
   readonly schema?: unknown;

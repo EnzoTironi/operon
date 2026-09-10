@@ -174,8 +174,8 @@ export async function runClinicalSimulation() {
   }
 
   // Step 6: Verify Immutable Audit Dossier
-  const auditLogs = await auditStore.listDecisions();
-  const overrides = await auditStore.listOverrides();
+  const auditLogs = await Effect.runPromise(auditStore.listDecisions());
+  const overrides = await Effect.runPromise(auditStore.listOverrides());
 
   console.log("\n6. Governance Audit Trail Summary:");
   console.log("   - Total DecisionRecords logged:", auditLogs.length);

@@ -35,10 +35,9 @@ export function runDoctor(options: {
 
     // 3. Storage Context & Bitemporal Engine
     try {
-      const ctx = yield* Effect.tryPromise({
-        catch: (e) => e,
-        try: () => createRuntimeContext(options.dbPath),
-      });
+      const ctx = yield* Effect.promise(() =>
+        createRuntimeContext(options.dbPath)
+      );
 
       if (ctx && (ctx as any).auditStore !== undefined) {
         checks.push({
@@ -48,10 +47,9 @@ export function runDoctor(options: {
         });
 
         // 4. Audit Chain Verification
-        const auditChainValid = yield* Effect.tryPromise({
-          catch: () => false,
-          try: () => ctx.auditStore.verifyAuditChain(),
-        });
+        const auditChainValid = yield* ctx.auditStore
+          .verifyAuditChain()
+          .pipe(Effect.catchTag("StorageError", () => Effect.succeed(false)));
 
         checks.push({
           details: `Audit store cryptographic hash chain verified (holds=${auditChainValid})`,

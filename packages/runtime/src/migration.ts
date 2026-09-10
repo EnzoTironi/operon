@@ -1,4 +1,4 @@
-import type { ObjectInstance } from "@operon/schema";
+import type { ObjectInstance, ObjectTypeId } from "@operon/schema";
 import { Effect } from "effect";
 
 import type { BitemporalObjectStore } from "./bitemporal-store.js";
@@ -20,7 +20,7 @@ export interface CdcEvent {
 }
 
 export interface ShadowDiff {
-  readonly objectTypeId: string;
+  readonly objectTypeId: ObjectTypeId;
   readonly objectId: string;
   readonly match: boolean;
   readonly legacyProperties: Record<string, unknown>;
@@ -48,14 +48,17 @@ export class MigrationEngine {
   private totalComparisons = 0;
   private matches = 0;
   private divergences = 0;
+  private readonly store: BitemporalObjectStore;
 
-  constructor(private readonly store: BitemporalObjectStore) {}
+  constructor(store: BitemporalObjectStore) {
+    this.store = store;
+  }
 
-  getStage(): MigrationStage {
+  public getStage(): MigrationStage {
     return this.currentStage;
   }
 
-  setStage(stage: MigrationStage): Effect.Effect<void> {
+  public setStage(stage: MigrationStage): Effect.Effect<void> {
     return Effect.sync(() => {
       this.currentStage = stage;
     });
@@ -66,7 +69,7 @@ export class MigrationEngine {
    */
   ingestCdcEvent(
     event: CdcEvent,
-    objectTypeId: string,
+    objectTypeId: ObjectTypeId,
     mapper: (raw: Record<string, unknown>) => {
       readonly id: string;
       readonly properties: Record<string, unknown>;
@@ -79,37 +82,37 @@ export class MigrationEngine {
 
       if (event.operation === "delete") {
         // Soft delete / tombstone representation
-        const existing = yield* this.store.getObject(objectTypeId as any, id);
+        const existing = yield* this.store.getObject(objectTypeId, id);
         yield* this.store.putObject({
           id,
-          typeId: objectTypeId as any,
-          properties: { ...properties, _deleted: true },
-          version: existing ? existing.version + 1 : 1,
           lastModifiedAt: event.capturedAt,
+          properties: { ...properties, _deleted: true },
           provenance: {
-            sourceSystem: `cdc:${event.sourceSystem}`,
             ingestedAt: Date.now(),
             recordedAt: event.capturedAt,
+            sourceSystem: `cdc:${event.sourceSystem}`,
           },
+          typeId: objectTypeId,
+          version: existing ? existing.version + 1 : 1,
         });
         return;
       }
 
       // Query existing object if any to increment version
-      const existing = yield* this.store.getObject(objectTypeId as any, id);
+      const existing = yield* this.store.getObject(objectTypeId, id);
       const nextVersion = existing ? existing.version + 1 : 1;
 
       const newInstance: ObjectInstance = {
         id,
-        typeId: objectTypeId as any,
-        properties,
-        version: nextVersion,
         lastModifiedAt: event.capturedAt,
+        properties,
         provenance: {
-          sourceSystem: `cdc:${event.sourceSystem}`,
           ingestedAt: Date.now(),
           recordedAt: event.capturedAt,
+          sourceSystem: `cdc:${event.sourceSystem}`,
         },
+        typeId: objectTypeId,
+        version: nextVersion,
       };
 
       yield* this.store.putObject(newInstance, event.capturedAt);
@@ -120,16 +123,13 @@ export class MigrationEngine {
    * Perform shadow diff comparison between legacy system record and Operon OSv2
    */
   compareShadowRecord(
-    objectTypeId: string,
+    objectTypeId: ObjectTypeId,
     objectId: string,
     legacyProperties: Record<string, unknown>
   ): Effect.Effect<ShadowDiff> {
     return Effect.gen({ self: this }, function* () {
       this.totalComparisons += 1;
-      const operonObj = yield* this.store.getObject(
-        objectTypeId as any,
-        objectId
-      );
+      const operonObj = yield* this.store.getObject(objectTypeId, objectId);
       const operonProps = operonObj ? operonObj.properties : {};
 
       const divergentKeys: string[] = [];
@@ -157,12 +157,12 @@ export class MigrationEngine {
       }
 
       return {
-        objectTypeId,
-        objectId,
-        match,
-        legacyProperties,
-        operonProperties: operonProps,
         divergentKeys,
+        legacyProperties,
+        match,
+        objectId,
+        objectTypeId,
+        operonProperties: operonProps,
       };
     });
   }

@@ -3,7 +3,11 @@
  */
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { InMemoryAuditStore, InMemoryObjectStore } from "@operon/runtime";
+import {
+  InMemoryAuditStore,
+  InMemoryObjectStore,
+  OntologyMetadataService,
+} from "@operon/runtime";
 import { defineActionType } from "@operon/schema";
 import { Effect, Schema } from "effect";
 import { describe, expect, it } from "vitest";
@@ -33,10 +37,11 @@ describe("Independent MCP approval trust-boundary validation", () => {
       ],
     });
     const server = createOperonMcpServer({
-      objectStore: new InMemoryObjectStore(),
-      auditStore: new InMemoryAuditStore(),
-      objectTypes: [],
       actionTypes: [action],
+      auditStore: new InMemoryAuditStore(),
+      objectStore: new InMemoryObjectStore(),
+      objectTypes: [],
+      oms: new OntologyMetadataService(),
     });
     const client = new Client(
       { name: "independent-validator", version: "1.0.0" },

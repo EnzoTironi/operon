@@ -119,12 +119,12 @@ describe("Kernel-Level Property-Based Testing (Fast-Check)", () => {
     await Effect.runPromise(
       Effect.forEach(
         decisionInputs,
-        (input) => Effect.promise(() => auditStore.appendDecision(input)),
+        (input) => auditStore.appendDecision(input),
         { concurrency: 1 }
       )
     );
 
-    const decisions = await auditStore.listDecisions();
+    const decisions = await Effect.runPromise(auditStore.listDecisions());
     expect(decisions.length).toBe(10);
 
     // Verify unbroken cryptographic chain: H_i.previousRecordHash === H_{i-1}.recordHash

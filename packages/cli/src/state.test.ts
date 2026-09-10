@@ -52,20 +52,18 @@ describe("V0-CH-01: State persistence & two-process SQLite round-trip", () => {
       });
 
       // Process A logs a decision
-      yield* Effect.promise(() =>
-        processA.auditStore.appendDecision({
-          actionTypeId: "update_vitals",
-          correlationId: "corr-proc-a",
-          id: "decision-proc-a",
-          outcome: "executed",
-          parameters: { currentDose: 28 },
-          ruleVersion: "1.0.0",
-          stateSnapshot: {},
-          subject: { id: "agent-a", roles: ["operator"], type: "agent" },
-          timestamp: Date.now(),
-          verdict: "allow",
-        })
-      );
+      yield* processA.auditStore.appendDecision({
+        actionTypeId: "update_vitals",
+        correlationId: "corr-proc-a",
+        id: "decision-proc-a",
+        outcome: "executed",
+        parameters: { currentDose: 28 },
+        ruleVersion: "1.0.0",
+        stateSnapshot: {},
+        subject: { id: "agent-a", roles: ["operator"], type: "agent" },
+        timestamp: Date.now(),
+        verdict: "allow",
+      });
 
       // Process A closes cleanly
       processA.close();
@@ -86,13 +84,9 @@ describe("V0-CH-01: State persistence & two-process SQLite round-trip", () => {
       expect(patientB?.properties.room).toBe("ICU-01");
 
       // Process B verifies the audit chain integrity
-      const ledger = yield* Effect.promise(() =>
-        processB.auditStore.listDecisions()
-      );
+      const ledger = yield* processB.auditStore.listDecisions();
       expect(ledger.length).toBeGreaterThan(0);
-      const isValid = yield* Effect.promise(() =>
-        processB.auditStore.verifyAuditChain()
-      );
+      const isValid = yield* processB.auditStore.verifyAuditChain();
       expect(isValid).toBe(true);
 
       processB.close();

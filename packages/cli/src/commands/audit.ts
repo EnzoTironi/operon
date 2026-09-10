@@ -11,10 +11,7 @@ export function runAudit(
     const dbIndex = args.indexOf("--db");
     const dbPath = dbIndex === -1 ? undefined : args[dbIndex + 1];
 
-    const ctx = yield* Effect.tryPromise({
-      catch: (e) => e,
-      try: () => createRuntimeContext(dbPath),
-    });
+    const ctx = yield* Effect.promise(() => createRuntimeContext(dbPath));
 
     try {
       if (sub === "list") {
@@ -22,10 +19,7 @@ export function runAudit(
         const limit =
           limitIndex === -1 ? 20 : Math.trunc(Number(args[limitIndex + 1]));
 
-        const decisions = yield* Effect.tryPromise({
-          catch: () => [],
-          try: () => ctx.auditStore.listDecisions(),
-        });
+        const decisions = yield* ctx.auditStore.listDecisions();
         const sliced = decisions.slice(-limit);
 
         if (isJson) {
@@ -55,14 +49,8 @@ export function runAudit(
       }
 
       if (sub === "verify") {
-        const isValid = yield* Effect.tryPromise({
-          catch: () => false,
-          try: () => ctx.auditStore.verifyAuditChain(),
-        });
-        const decisions = yield* Effect.tryPromise({
-          catch: () => [],
-          try: () => ctx.auditStore.listDecisions(),
-        });
+        const isValid = yield* ctx.auditStore.verifyAuditChain();
+        const decisions = yield* ctx.auditStore.listDecisions();
 
         if (isJson) {
           console.log(

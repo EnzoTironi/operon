@@ -25,10 +25,7 @@ export function runAction(
     const dbIndex = args.indexOf("--db");
     const dbPath = dbIndex === -1 ? undefined : args[dbIndex + 1];
 
-    const ctx = yield* Effect.tryPromise({
-      catch: (e) => e,
-      try: () => createRuntimeContext(dbPath),
-    });
+    const ctx = yield* Effect.promise(() => createRuntimeContext(dbPath));
 
     try {
       if (sub === "list") {
@@ -81,10 +78,7 @@ export function runAction(
         let rawParameters: unknown = {};
         if (useStdin) {
           try {
-            const stdinBuffer = yield* Effect.tryPromise({
-              catch: (e) => e,
-              try: () => readStdin(),
-            });
+            const stdinBuffer = yield* Effect.promise(() => readStdin());
             rawParameters = JSON.parse(String(stdinBuffer).trim() || "{}");
           } catch (error: unknown) {
             console.error("Error: Failed to parse JSON from stdin.", error);

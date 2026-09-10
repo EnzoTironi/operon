@@ -7,13 +7,13 @@ import type {
   AuditStore,
   DynamicSecurityEngine,
   ObjectStore,
+  OntologyMetadataService,
   OverrideCategory,
 } from "@operon/runtime";
 import {
   ActionInbox,
   evaluateDecisionReadiness,
   executeWritePipeline,
-  OntologyMetadataService,
 } from "@operon/runtime";
 import type {
   ActionType,
@@ -32,8 +32,8 @@ export interface OperonMcpServerOptions {
   readonly actionTypes: readonly ActionType[];
   readonly objectStore: ObjectStore;
   readonly auditStore: AuditStore;
+  readonly oms: OntologyMetadataService;
   readonly inbox?: ActionInbox;
-  readonly oms?: OntologyMetadataService;
   readonly securityEngine?: DynamicSecurityEngine;
   readonly defaultCallerKey?: McpKey;
 }
@@ -44,12 +44,12 @@ export function createOperonMcpServer(options: OperonMcpServerOptions) {
     actionTypes,
     objectStore,
     auditStore,
+    oms,
     securityEngine,
     defaultCallerKey,
   } = options;
 
   const inbox = options.inbox ?? new ActionInbox(auditStore, objectStore);
-  const oms = options.oms ?? new OntologyMetadataService();
 
   const server = new Server(
     {

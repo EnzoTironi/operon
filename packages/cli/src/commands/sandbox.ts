@@ -41,10 +41,7 @@ export function runSandbox(
     const iterations =
       iterIndex === -1 ? 3 : Math.trunc(Number(args[iterIndex + 1]));
 
-    const ctx = yield* Effect.tryPromise({
-      catch: (e) => e,
-      try: () => createRuntimeContext(),
-    });
+    const ctx = yield* Effect.promise(() => createRuntimeContext());
 
     try {
       const proofResult = yield* ctx.sandbox

@@ -1,3 +1,4 @@
+import { Effect, Option } from "effect";
 import { describe, expect, it } from "vitest";
 
 import type { DecisionRecord } from "./audit.js";
@@ -33,8 +34,12 @@ describe("Cryptographic SHA-256 AuditStore", () => {
     const storeLeft = new InMemoryAuditStore();
     const storeRight = new InMemoryAuditStore();
 
-    const left = await storeLeft.appendDecision(makeRecord("Aa"));
-    const right = await storeRight.appendDecision(makeRecord("BB"));
+    const left = await Effect.runPromise(
+      storeLeft.appendDecision(makeRecord("Aa"))
+    );
+    const right = await Effect.runPromise(
+      storeRight.appendDecision(makeRecord("BB"))
+    );
 
     expect(left.recordHash).not.toBe(right.recordHash);
     expect(left.recordHash).toHaveLength(64); // 256-bit hex
@@ -44,12 +49,13 @@ describe("Cryptographic SHA-256 AuditStore", () => {
   it("isolates stored record from caller input mutation (caller-alias defense)", async () => {
     const store = new InMemoryAuditStore();
     const input = makeRecord("original");
-    const output = await store.appendDecision(input);
+    const output = await Effect.runPromise(store.appendDecision(input));
     const originalHash = output.recordHash;
 
     (input.parameters as Record<string, unknown>).label =
       "changed-after-append";
-    const read = await store.getDecision(input.id);
+    const readOpt = await Effect.runPromise(store.getDecision(input.id));
+    const read = Option.getOrUndefined(readOpt);
 
     expect(read).toBeDefined();
     expect(read?.parameters.label).toBe("original");
@@ -58,8 +64,11 @@ describe("Cryptographic SHA-256 AuditStore", () => {
 
   it("isolates stored record from reader mutation (reader-alias defense)", async () => {
     const store = new InMemoryAuditStore();
-    const appended = await store.appendDecision(makeRecord("original"));
-    const read = await store.getDecision(appended.id);
+    const appended = await Effect.runPromise(
+      store.appendDecision(makeRecord("original"))
+    );
+    const readOpt = await Effect.runPromise(store.getDecision(appended.id));
+    const read = Option.getOrUndefined(readOpt);
     expect(read).toBeDefined();
 
     try {
@@ -69,37 +78,44 @@ describe("Cryptographic SHA-256 AuditStore", () => {
       // Object.freeze may throw in strict mode
     }
 
-    const reread = await store.getDecision(appended.id);
+    const rereadOpt = await Effect.runPromise(store.getDecision(appended.id));
+    const reread = Option.getOrUndefined(rereadOpt);
     expect(reread?.parameters.label).toBe("original");
     expect(reread?.recordHash).toBe(appended.recordHash);
   });
 
   it("cryptographically verifies an intact audit chain", async () => {
     const store = new InMemoryAuditStore();
-    await store.appendDecision(makeRecord("record-1"));
-    await store.appendDecision({
-      ...makeRecord("record-2"),
-      id: "decision-2",
-      timestamp: 2000,
-    });
-    await store.appendDecision({
-      ...makeRecord("record-3"),
-      id: "decision-3",
-      timestamp: 3000,
-    });
+    await Effect.runPromise(store.appendDecision(makeRecord("record-1")));
+    await Effect.runPromise(
+      store.appendDecision({
+        ...makeRecord("record-2"),
+        id: "decision-2",
+        timestamp: 2000,
+      })
+    );
+    await Effect.runPromise(
+      store.appendDecision({
+        ...makeRecord("record-3"),
+        id: "decision-3",
+        timestamp: 3000,
+      })
+    );
 
-    const isIntact = await store.verifyAuditChain();
+    const isIntact = await Effect.runPromise(store.verifyAuditChain());
     expect(isIntact).toBe(true);
   });
 
   it("detects tampering when audit chain is compromised", async () => {
     const store = new InMemoryAuditStore();
-    await store.appendDecision(makeRecord("record-1"));
-    await store.appendDecision({
-      ...makeRecord("record-2"),
-      id: "decision-2",
-      timestamp: 2000,
-    });
+    await Effect.runPromise(store.appendDecision(makeRecord("record-1")));
+    await Effect.runPromise(
+      store.appendDecision({
+        ...makeRecord("record-2"),
+        id: "decision-2",
+        timestamp: 2000,
+      })
+    );
 
     // Access internal decisions array through forced tampering
     const internalStore = store as any;
@@ -109,7 +125,7 @@ describe("Cryptographic SHA-256 AuditStore", () => {
     };
     internalStore.decisions[0] = tampered;
 
-    const isIntact = await store.verifyAuditChain();
+    const isIntact = await Effect.runPromise(store.verifyAuditChain());
     expect(isIntact).toBe(false);
   });
 });

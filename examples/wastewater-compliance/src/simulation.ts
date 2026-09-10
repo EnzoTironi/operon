@@ -213,8 +213,8 @@ export async function runWastewaterSimulation() {
     `   --> Tank-3 Operating State verified in OSv2: '${finalTank?.properties.operatingStatus}'`
   );
 
-  const decisions = await audit.listDecisions({ limit: 10 });
-  const overrides = await audit.listOverrides();
+  const decisions = await Effect.runPromise(audit.listDecisions({ limit: 10 }));
+  const overrides = await Effect.runPromise(audit.listOverrides());
   console.log(`\n7. Audit & Verification Trail:`);
   console.log(`   - Decision Records: ${decisions.length}`);
   console.log(`   - First-Class Override Records: ${overrides.length}`);
