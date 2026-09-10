@@ -1350,9 +1350,9 @@ describe("Kernel-Level Comprehensive & Non-Tautological Coverage", () => {
 
       const rejectedProp = await Effect.runPromise(
         oms.reviewProposal(proposal.id, {
-          notes: "Need security audit",
+          comments: "Need security audit",
           reviewedAt: Date.now(),
-          reviewer: dev,
+          reviewer: { ...dev, id: "reviewer-audit" },
           verdict: "reject",
         })
       );
@@ -1441,9 +1441,9 @@ describe("Kernel-Level Comprehensive & Non-Tautological Coverage", () => {
 
       await Effect.runPromise(
         oms.reviewProposal(deleteProposal.id, {
-          notes: "Approved deletion",
+          comments: "Approved deletion",
           reviewedAt: Date.now(),
-          reviewer: dev,
+          reviewer: { ...dev, id: "reviewer-audit" },
           verdict: "approve",
         })
       );

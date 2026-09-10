@@ -257,3 +257,102 @@ export class SandboxExecutionError extends Data.TaggedError(
     super(args as any);
   }
 }
+
+export class ArtifactSizeExceededError extends Data.TaggedError(
+  "ArtifactSizeExceededError"
+)<{
+  readonly actualBytes: number;
+  readonly maxAllowedBytes: number;
+}> {
+  constructor(args: {
+    readonly actualBytes: number;
+    readonly maxAllowedBytes: number;
+  }) {
+    super(args as any);
+  }
+}
+
+export class CompilationError extends Data.TaggedError("CompilationError")<{
+  readonly errors: readonly string[];
+  readonly message: string;
+}> {
+  constructor(args: {
+    readonly errors: readonly string[];
+    readonly message: string;
+  }) {
+    super(args as any);
+  }
+}
+
+export class ReleaseConflictError extends Data.TaggedError(
+  "ReleaseConflictError"
+)<{
+  readonly expectedDigest?: string;
+  readonly actualDigest?: string;
+  readonly message: string;
+}> {
+  constructor(args: {
+    readonly expectedDigest?: string;
+    readonly actualDigest?: string;
+    readonly message: string;
+  }) {
+    super(args as any);
+  }
+}
+
+export class SelfReviewDeniedError extends Data.TaggedError(
+  "SelfReviewDeniedError"
+)<{
+  readonly authorId: string;
+  readonly reviewerId: string;
+  readonly message: string;
+}> {
+  constructor(args: {
+    readonly authorId: string;
+    readonly reviewerId: string;
+    readonly message: string;
+  }) {
+    super(args as any);
+  }
+}
+
+export class StaleReviewError extends Data.TaggedError("StaleReviewError")<{
+  readonly proposalId: string;
+  readonly candidateDigest: string;
+  readonly reviewDigest: string;
+  readonly message: string;
+}> {
+  constructor(args: {
+    readonly proposalId: string;
+    readonly candidateDigest: string;
+    readonly reviewDigest: string;
+    readonly message: string;
+  }) {
+    super(args as any);
+  }
+}
+
+export class CandidateNotFoundError extends Data.TaggedError(
+  "CandidateNotFoundError"
+)<{
+  readonly candidateDigest: string;
+  readonly message: string;
+}> {
+  constructor(args: {
+    readonly candidateDigest: string;
+    readonly message: string;
+  }) {
+    super(args as any);
+  }
+}
+
+export class PublicationNotFoundError extends Data.TaggedError(
+  "PublicationNotFoundError"
+)<{
+  readonly identifier: string;
+  readonly message: string;
+}> {
+  constructor(args: { readonly identifier: string; readonly message: string }) {
+    super(args as any);
+  }
+}

@@ -10,3 +10,4 @@ export * from "./proposals.js";
 export * from "./security-views.js";
 export * from "./action-log.js";
 export * from "./funnel-types.js";
+export * from "./definition.js";

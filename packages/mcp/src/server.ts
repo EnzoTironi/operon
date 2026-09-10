@@ -13,6 +13,7 @@ import {
   ActionInbox,
   evaluateDecisionReadiness,
   executeWritePipeline,
+  OntologyMetadataService,
 } from "@operon/runtime";
 import type {
   ActionType,
@@ -32,6 +33,7 @@ export interface OperonMcpServerOptions {
   readonly objectStore: ObjectStore;
   readonly auditStore: AuditStore;
   readonly inbox?: ActionInbox;
+  readonly oms?: OntologyMetadataService;
   readonly securityEngine?: DynamicSecurityEngine;
   readonly defaultCallerKey?: McpKey;
 }
@@ -47,6 +49,7 @@ export function createOperonMcpServer(options: OperonMcpServerOptions) {
   } = options;
 
   const inbox = options.inbox ?? new ActionInbox(auditStore, objectStore);
+  const oms = options.oms ?? new OntologyMetadataService();
 
   const server = new Server(
     {
@@ -183,6 +186,123 @@ export function createOperonMcpServer(options: OperonMcpServerOptions) {
           type: "object",
         },
         name: "operon_reject_proposal",
+      },
+      {
+        description:
+          "Atomically compile and apply a DefinitionArtifact to an ontology branch (V0-CH-02)",
+        inputSchema: {
+          properties: {
+            artifact: {
+              description: "The full DefinitionArtifact JSON payload",
+              type: "object",
+            },
+            branch: { description: "Target branch name", type: "string" },
+            expectedRevision: {
+              description: "Expected branch revision (CAS)",
+              type: "number",
+            },
+            idempotencyKey: {
+              description: "Optional idempotency key",
+              type: "string",
+            },
+          },
+          required: ["branch", "artifact"],
+          type: "object",
+        },
+        name: "operon_apply_definition_artifact",
+      },
+      {
+        description: "Inspect a candidate ChangeSet by its canonical digest",
+        inputSchema: {
+          properties: {
+            candidateDigest: {
+              description: "SHA-256 digest of candidate",
+              type: "string",
+            },
+          },
+          required: ["candidateDigest"],
+          type: "object",
+        },
+        name: "operon_inspect_candidate",
+      },
+      {
+        description:
+          "Diff a candidate ChangeSet against the active main release",
+        inputSchema: {
+          properties: {
+            candidateDigest: {
+              description: "SHA-256 digest of candidate",
+              type: "string",
+            },
+          },
+          required: ["candidateDigest"],
+          type: "object",
+        },
+        name: "operon_diff_candidate",
+      },
+      {
+        description:
+          "Publish an approved candidate as an immutable DefinitionRelease (V0-CH-03)",
+        inputSchema: {
+          properties: {
+            candidateDigest: {
+              description: "Candidate digest to publish",
+              type: "string",
+            },
+            expectedCurrentRelease: {
+              description:
+                "Expected current release CAS check: { kind: 'none' | 'release', digest?: string }",
+              properties: {
+                digest: { type: "string" },
+                kind: { enum: ["none", "release"], type: "string" },
+              },
+              required: ["kind"],
+              type: "object",
+            },
+            idempotencyKey: {
+              description: "Optional idempotency key",
+              type: "string",
+            },
+            publisherId: {
+              description: "ID of publishing user or architect",
+              type: "string",
+            },
+            reviewRefs: {
+              description: "List of approved review reference IDs",
+              items: { type: "string" },
+              type: "array",
+            },
+          },
+          required: ["candidateDigest", "expectedCurrentRelease", "reviewRefs"],
+          type: "object",
+        },
+        name: "operon_publish_release",
+      },
+      {
+        description:
+          "Recover a publication receipt by publicationId or idempotencyKey",
+        inputSchema: {
+          properties: {
+            idempotencyKey: {
+              description: "Idempotency key used during publish",
+              type: "string",
+            },
+            publicationId: {
+              description: "The publication receipt ID",
+              type: "string",
+            },
+          },
+          type: "object",
+        },
+        name: "operon_get_publication",
+      },
+      {
+        description: "Get the currently active immutable DefinitionRelease",
+        inputSchema: {
+          properties: {},
+          type: "object",
+        },
+        name: "operon_get_active_release",
       },
     ];
 
@@ -427,6 +547,119 @@ export function createOperonMcpServer(options: OperonMcpServerOptions) {
               ),
               type: "text",
             },
+          ],
+        };
+      }
+
+      if (name === "operon_apply_definition_artifact") {
+        const branch = String(args.branch);
+        const artifact = args.artifact as any;
+        const expectedRevision =
+          typeof args.expectedRevision === "number"
+            ? args.expectedRevision
+            : undefined;
+        const idempotencyKey = args.idempotencyKey
+          ? String(args.idempotencyKey)
+          : undefined;
+
+        const receipt = await Effect.runPromise(
+          oms.applyArtifact({
+            artifact,
+            branch,
+            expectedRevision,
+            idempotencyKey,
+          })
+        );
+
+        return {
+          content: [{ text: JSON.stringify(receipt, null, 2), type: "text" }],
+        };
+      }
+
+      if (name === "operon_inspect_candidate") {
+        const candidateDigest = String(args.candidateDigest);
+        const candidate = await Effect.runPromise(
+          oms.inspectCandidate(candidateDigest)
+        );
+        return {
+          content: [{ text: JSON.stringify(candidate, null, 2), type: "text" }],
+        };
+      }
+
+      if (name === "operon_diff_candidate") {
+        const candidateDigest = String(args.candidateDigest);
+        const diff = await Effect.runPromise(
+          oms.diffCandidate(candidateDigest)
+        );
+        return {
+          content: [{ text: JSON.stringify(diff, null, 2), type: "text" }],
+        };
+      }
+
+      if (name === "operon_publish_release") {
+        const candidateDigest = String(args.candidateDigest);
+        const expectedCurrentRelease = args.expectedCurrentRelease as any;
+        const reviewRefs = Array.isArray(args.reviewRefs)
+          ? args.reviewRefs.map(String)
+          : [];
+        const idempotencyKey = args.idempotencyKey
+          ? String(args.idempotencyKey)
+          : undefined;
+        const publisherId = args.publisherId
+          ? String(args.publisherId)
+          : callerSubject.id;
+
+        const publisher: Subject = {
+          id: publisherId,
+          name: publisherId.toUpperCase(),
+          roles: ["lead_architect"],
+          type: "user",
+        };
+
+        const pubReceipt = await Effect.runPromise(
+          oms.publishRelease({
+            candidateDigest,
+            expectedCurrentRelease,
+            idempotencyKey,
+            publisher,
+            reviewRefs,
+          })
+        );
+
+        return {
+          content: [
+            { text: JSON.stringify(pubReceipt, null, 2), type: "text" },
+          ],
+        };
+      }
+
+      if (name === "operon_get_publication") {
+        const publicationId = args.publicationId
+          ? String(args.publicationId)
+          : undefined;
+        const idempotencyKey = args.idempotencyKey
+          ? String(args.idempotencyKey)
+          : undefined;
+
+        const pubReceipt = await Effect.runPromise(
+          oms.getPublication({
+            idempotencyKey,
+            publicationId,
+          })
+        );
+
+        return {
+          content: [
+            { text: JSON.stringify(pubReceipt, null, 2), type: "text" },
+          ],
+        };
+      }
+
+      if (name === "operon_get_active_release") {
+        const activeRelease = await Effect.runPromise(oms.getActiveRelease());
+        return {
+          content: [
+            { text: JSON.stringify(activeRelease, null, 2), type: "text" },
           ],
         };
       }

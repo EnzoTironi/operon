@@ -257,27 +257,27 @@ describe("Independent validation — safety invariants", () => {
     await Effect.runPromise(oms.createBranch("change", reviewer));
     const p = await Effect.runPromise(
       oms.createProposal({
-        title: "Test",
+        author: { ...reviewer, id: "author-p16" },
+        changeSet: emptyChanges(),
         description: "Test",
         sourceBranch: "change",
-        author: reviewer,
-        changeSet: emptyChanges(),
+        title: "Test",
       })
     );
     await Effect.runPromise(
       oms.reviewProposal(p.id, {
-        reviewer,
-        verdict: "approve",
         comments: "yes",
         reviewedAt: 1,
+        reviewer,
+        verdict: "approve",
       })
     );
     await Effect.runPromise(
       oms.reviewProposal(p.id, {
-        reviewer: { ...reviewer, id: "other" },
-        verdict: "reject",
         comments: "no",
         reviewedAt: 2,
+        reviewer: { ...reviewer, id: "other" },
+        verdict: "reject",
       })
     );
     await expect(
@@ -290,11 +290,11 @@ describe("Independent validation — safety invariants", () => {
     await Effect.runPromise(oms.createBranch("change", reviewer));
     const p = await Effect.runPromise(
       oms.createProposal({
-        title: "Test",
+        author: { ...reviewer, id: "author-p17" },
+        changeSet: emptyChanges(),
         description: "Test",
         sourceBranch: "change",
-        author: reviewer,
-        changeSet: emptyChanges(),
+        title: "Test",
       })
     );
     await Effect.runPromise(

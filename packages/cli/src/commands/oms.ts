@@ -1,3 +1,5 @@
+import * as fs from "node:fs";
+
 import type { Subject } from "@operon/schema";
 import { Effect } from "effect";
 
@@ -9,9 +11,12 @@ export function runOms(args: string[]): Effect.Effect<number, unknown, never> {
     const action = args[1];
     const isJson = args.includes("--json");
 
+    const dbIndex = args.indexOf("--db");
+    const dbPath = dbIndex === -1 ? undefined : args[dbIndex + 1];
+
     const ctx = yield* Effect.tryPromise({
       catch: (e) => e,
-      try: () => createRuntimeContext(),
+      try: () => createRuntimeContext(dbPath),
     });
 
     try {
@@ -186,6 +191,196 @@ export function runOms(args: string[]): Effect.Effect<number, unknown, never> {
         return 0;
       }
 
+      if (group === "artifact" && action === "apply") {
+        const branch = args[2];
+        const fileIndex = args.indexOf("--file");
+        const revIndex = args.indexOf("--revision");
+        const idempIndex = args.indexOf("--idempotency-key");
+
+        if (!branch || fileIndex === -1) {
+          console.error(
+            "Error: Missing required arguments: <branch> --file <path>"
+          );
+          console.error(
+            "  Usage: operon oms artifact apply <branch> --file <artifact.json> [--revision <n>] [--idempotency-key <key>] [--json]"
+          );
+          return 1;
+        }
+
+        const filePath = args[fileIndex + 1];
+        const expectedRevision =
+          revIndex === -1 ? undefined : Math.trunc(Number(args[revIndex + 1]));
+        const idempotencyKey =
+          idempIndex === -1 ? undefined : args[idempIndex + 1];
+
+        const fileContent = yield* Effect.try(() =>
+          fs.readFileSync(filePath, "utf-8")
+        );
+
+        const rawArtifact = JSON.parse(fileContent);
+        const receipt = yield* ctx.oms.applyArtifact({
+          artifact: rawArtifact,
+          branch,
+          expectedRevision,
+          idempotencyKey,
+        });
+
+        if (isJson) {
+          console.log(JSON.stringify(receipt, null, 2));
+        } else {
+          console.log(
+            `Applied artifact to branch '${branch}' at revision ${receipt.revision} (Digest: ${receipt.candidateDigest})`
+          );
+        }
+        return 0;
+      }
+
+      if (group === "candidate" && action === "inspect") {
+        const digest = args[2];
+        if (!digest) {
+          console.error("Error: Missing candidate digest.");
+          console.error(
+            "  Usage: operon oms candidate inspect <candidateDigest> [--json]"
+          );
+          return 1;
+        }
+
+        const candidate = yield* ctx.oms.inspectCandidate(digest);
+        if (isJson) {
+          console.log(JSON.stringify(candidate, null, 2));
+        } else {
+          console.log(
+            `Candidate ${digest}: revision ${candidate.revision}, compiled ${new Date(candidate.compiledAt).toISOString()}`
+          );
+        }
+        return 0;
+      }
+
+      if (group === "candidate" && action === "diff") {
+        const digest = args[2];
+        if (!digest) {
+          console.error("Error: Missing candidate digest.");
+          console.error(
+            "  Usage: operon oms candidate diff <candidateDigest> [--json]"
+          );
+          return 1;
+        }
+
+        const diff = yield* ctx.oms.diffCandidate(digest);
+        if (isJson) {
+          console.log(JSON.stringify(diff, null, 2));
+        } else {
+          console.log(`Candidate ${digest} diff vs main:`);
+          console.log(`  Added types: ${diff.addedTypes.join(", ") || "none"}`);
+          console.log(
+            `  Modified types: ${diff.modifiedTypes.join(", ") || "none"}`
+          );
+          console.log(`  Added links: ${diff.addedLinks.join(", ") || "none"}`);
+          console.log(
+            `  Added actions: ${diff.addedActions.join(", ") || "none"}`
+          );
+        }
+        return 0;
+      }
+
+      if (group === "release" && action === "publish") {
+        const candidateIndex = args.indexOf("--candidate");
+        const expectedIndex = args.indexOf("--expected-release");
+        const isInitial = args.includes("--initial");
+        const reviewerIndex = args.indexOf("--reviewer");
+        const idempIndex = args.indexOf("--idempotency-key");
+
+        if (candidateIndex === -1 || reviewerIndex === -1) {
+          console.error(
+            "Error: Missing required arguments: --candidate <digest> --reviewer <id>"
+          );
+          console.error(
+            "  Usage: operon oms release publish --candidate <digest> [--expected-release <digest> | --initial] --reviewer <id> [--idempotency-key <key>] [--json]"
+          );
+          return 1;
+        }
+
+        const candidateDigest = args[candidateIndex + 1];
+        const reviewerId = args[reviewerIndex + 1];
+        const idempotencyKey =
+          idempIndex === -1 ? undefined : args[idempIndex + 1];
+        const expectedCurrentRelease = isInitial
+          ? ({ kind: "none" } as const)
+          : ({
+              digest:
+                expectedIndex === -1 ? undefined : args[expectedIndex + 1],
+              kind: "release",
+            } as const);
+
+        const publisher: Subject = {
+          id: reviewerId,
+          name: reviewerId.toUpperCase(),
+          roles: ["lead_architect"],
+          type: "user",
+        };
+
+        const pubReceipt = yield* ctx.oms.publishRelease({
+          candidateDigest,
+          expectedCurrentRelease,
+          idempotencyKey,
+          publisher,
+          reviewRefs: [`rev_${reviewerId}`],
+        });
+
+        if (isJson) {
+          console.log(JSON.stringify(pubReceipt, null, 2));
+        } else {
+          console.log(
+            `Published release ${pubReceipt.release.releaseId} (Version: ${pubReceipt.release.version}, Digest: ${pubReceipt.release.canonicalDigest})`
+          );
+        }
+        return 0;
+      }
+
+      if (group === "release" && action === "get") {
+        const idIndex = args.indexOf("--id");
+        const idempIndex = args.indexOf("--idempotency-key");
+
+        if (idIndex === -1 && idempIndex === -1) {
+          console.error(
+            "Error: Must specify either --id <publicationId> or --idempotency-key <key>"
+          );
+          return 1;
+        }
+
+        const publicationId = idIndex === -1 ? undefined : args[idIndex + 1];
+        const idempotencyKey =
+          idempIndex === -1 ? undefined : args[idempIndex + 1];
+
+        const pubReceipt = yield* ctx.oms.getPublication({
+          idempotencyKey,
+          publicationId,
+        });
+
+        if (isJson) {
+          console.log(JSON.stringify(pubReceipt, null, 2));
+        } else {
+          console.log(
+            `Publication ${pubReceipt.publicationId}: Version ${pubReceipt.release.version} (Status: ${pubReceipt.status})`
+          );
+        }
+        return 0;
+      }
+
+      if (group === "release" && action === "active") {
+        const release = yield* ctx.oms.getActiveRelease();
+        if (isJson) {
+          console.log(JSON.stringify(release, null, 2));
+        } else if (release) {
+          console.log(
+            `Active Release: ${release.releaseId} (Version ${release.version}, Digest: ${release.canonicalDigest})`
+          );
+        } else {
+          console.log("No active release published.");
+        }
+        return 0;
+      }
+
       console.error(`Error: Unknown oms command: ${group} ${action}`);
       console.error("  Available commands:");
       console.error("    operon oms branch create <branch> --author <id>");
@@ -198,6 +393,18 @@ export function runOms(args: string[]): Effect.Effect<number, unknown, never> {
       console.error(
         "    operon oms proposal merge <id> --author <id> [--require-specialist]"
       );
+      console.error(
+        "    operon oms artifact apply <branch> --file <path> [--revision <rev>] [--idempotency-key <key>]"
+      );
+      console.error("    operon oms candidate inspect <digest>");
+      console.error("    operon oms candidate diff <digest>");
+      console.error(
+        "    operon oms release publish --candidate <digest> [--expected-release <digest> | --initial] --reviewer <id>"
+      );
+      console.error(
+        "    operon oms release get --id <id> | --idempotency-key <key>"
+      );
+      console.error("    operon oms release active");
       return 1;
     } finally {
       ctx.close();

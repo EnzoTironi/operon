@@ -13,6 +13,7 @@ export interface OntologyBranch {
   readonly createdAt: number;
   readonly createdBy: Subject;
   readonly isMain: boolean;
+  readonly revision?: number;
 }
 
 /**

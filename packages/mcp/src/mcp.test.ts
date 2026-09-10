@@ -405,4 +405,130 @@ describe("@operon/mcp", () => {
     })) as any;
     expect(res.isError).toBeFalsy();
   });
+
+  it("handles V0-B DefinitionArtifact application, candidate inspection, and publication through MCP tools", async () => {
+    const objectStore = new InMemoryObjectStore();
+    const auditStore = new InMemoryAuditStore();
+    const server = createOperonMcpServer({
+      actionTypes: [],
+      auditStore,
+      objectStore,
+      objectTypes: [],
+    });
+    const [cTransport, sTransport] = InMemoryTransport.createLinkedPair();
+    await server.connect(sTransport);
+    const client = new Client(
+      { name: "test-v0-b-mcp-client", version: "1.0.0" },
+      { capabilities: {} }
+    );
+    await client.connect(cTransport);
+
+    // Verify all 6 OMS tools are listed
+    const tools = await client.listTools();
+    const toolNames = tools.tools.map((t) => t.name);
+    expect(toolNames).toContain("operon_apply_definition_artifact");
+    expect(toolNames).toContain("operon_inspect_candidate");
+    expect(toolNames).toContain("operon_diff_candidate");
+    expect(toolNames).toContain("operon_publish_release");
+    expect(toolNames).toContain("operon_get_publication");
+    expect(toolNames).toContain("operon_get_active_release");
+
+    // Apply artifact via MCP
+    const testArtifact = {
+      actions: [
+        {
+          description: "Alert emergency dispatch",
+          effectClass: "external_side_effect",
+          id: "alert_dispatch",
+          name: "Alert Dispatch",
+          parametersSchema: { severity: "string" },
+          requiredRoles: ["dispatcher"],
+          riskTier: "high",
+        },
+      ],
+      freshness: [],
+      links: [],
+      policies: [],
+      queries: [],
+      types: [
+        {
+          id: "Incident",
+          name: "Incident",
+          primaryKey: "id",
+          properties: {
+            description: { name: "description", type: "string" },
+            id: { name: "id", required: true, type: "string" },
+          },
+        },
+      ],
+    };
+
+    const applyRes = (await client.callTool({
+      arguments: {
+        artifact: testArtifact,
+        branch: "main",
+        idempotencyKey: "mcp-idemp-1",
+      },
+      name: "operon_apply_definition_artifact",
+    })) as any;
+    expect(applyRes.isError).toBeFalsy();
+    const applyBody = JSON.parse(applyRes.content[0].text);
+    expect(applyBody.status).toBe("applied");
+    const candidateDigest = applyBody.candidateDigest;
+    expect(candidateDigest).toBeDefined();
+
+    // Inspect candidate via MCP
+    const inspectRes = (await client.callTool({
+      arguments: { candidateDigest },
+      name: "operon_inspect_candidate",
+    })) as any;
+    expect(inspectRes.isError).toBeFalsy();
+    const inspectBody = JSON.parse(inspectRes.content[0].text);
+    expect(inspectBody.canonicalDigest).toBe(candidateDigest);
+
+    // Diff candidate via MCP
+    const diffRes = (await client.callTool({
+      arguments: { candidateDigest },
+      name: "operon_diff_candidate",
+    })) as any;
+    expect(diffRes.isError).toBeFalsy();
+    const diffBody = JSON.parse(diffRes.content[0].text);
+    expect(diffBody.addedTypes).toContain("Incident");
+    expect(diffBody.addedActions).toContain("alert_dispatch");
+
+    // Publish release via MCP
+    const publishRes = (await client.callTool({
+      arguments: {
+        candidateDigest,
+        expectedCurrentRelease: { kind: "none" },
+        idempotencyKey: "mcp-pub-idemp-1",
+        publisherId: "arch_lead",
+        reviewRefs: ["rev_approval_001"],
+      },
+      name: "operon_publish_release",
+    })) as any;
+    expect(publishRes.isError).toBeFalsy();
+    const publishBody = JSON.parse(publishRes.content[0].text);
+    expect(publishBody.status).toBe("published");
+    expect(publishBody.release.version).toBe("1.0.0");
+    const pubId = publishBody.publicationId;
+
+    // Get active release via MCP
+    const activeRes = (await client.callTool({
+      arguments: {},
+      name: "operon_get_active_release",
+    })) as any;
+    expect(activeRes.isError).toBeFalsy();
+    const activeBody = JSON.parse(activeRes.content[0].text);
+    expect(activeBody.releaseId).toBe(publishBody.release.releaseId);
+
+    // Get publication via MCP
+    const getPubRes = (await client.callTool({
+      arguments: { publicationId: pubId },
+      name: "operon_get_publication",
+    })) as any;
+    expect(getPubRes.isError).toBeFalsy();
+    const getPubBody = JSON.parse(getPubRes.content[0].text);
+    expect(getPubBody.publicationId).toBe(pubId);
+  });
 });

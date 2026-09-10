@@ -341,6 +341,9 @@ export async function createRuntimeContext(
           });
         }
       }
+      if (data.oms) {
+        oms.importSnapshot(data.oms);
+      }
     } catch {
       // Ignore corrupted state file
     }
@@ -370,6 +373,7 @@ export async function createRuntimeContext(
 
         const payload = {
           decisions: (auditStore as any).decisions ?? [],
+          oms: oms.exportSnapshot(),
           overrides: (auditStore as any).overrides ?? [],
           proposals: proposalsToSave,
         };
