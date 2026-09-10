@@ -9,6 +9,7 @@ import {
   InMemoryObjectStore,
   NativeSqliteDriver,
   OntologyMetadataService,
+  ReconciliationService,
   SandboxedModelRunner,
   SqlBitemporalStore,
 } from "@operon/runtime";
@@ -200,6 +201,7 @@ export interface OperonRuntimeContext {
   readonly actionTypes: readonly ActionType[];
   readonly linkTypes: readonly LinkType[];
   readonly ingestion: AccountableIngestionService;
+  readonly reconciliation: ReconciliationService;
   readonly close: () => void;
 }
 
@@ -299,6 +301,7 @@ export async function createRuntimeContext(
 
   const inbox = new ActionInbox(auditStore, objectStore);
   const ingestion = new AccountableIngestionService(objectStore);
+  const reconciliation = ReconciliationService.make();
 
   const stateFile =
     process.env.OPERON_STATE_PATH ||
@@ -350,6 +353,9 @@ export async function createRuntimeContext(
       if (data.ingestion) {
         ingestion.importSnapshot(data.ingestion);
       }
+      if (data.reconciliation) {
+        reconciliation.importSnapshot(data.reconciliation);
+      }
     } catch {
       // Ignore corrupted state file
     }
@@ -383,6 +389,7 @@ export async function createRuntimeContext(
           oms: oms.exportSnapshot(),
           overrides: (auditStore as any).overrides ?? [],
           proposals: proposalsToSave,
+          reconciliation: reconciliation.exportSnapshot(),
         };
 
         fs.writeFileSync(stateFile, JSON.stringify(payload, null, 2), "utf-8");
@@ -402,6 +409,7 @@ export async function createRuntimeContext(
     objectStore,
     objectTypes,
     oms,
+    reconciliation,
     sandbox,
     securityEngine,
   };

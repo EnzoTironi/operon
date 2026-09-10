@@ -12,3 +12,4 @@ export * from "./action-log.js";
 export * from "./funnel-types.js";
 export * from "./definition.js";
 export * from "./ingestion.js";
+export * from "./reconciliation.js";

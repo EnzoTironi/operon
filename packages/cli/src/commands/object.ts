@@ -1,4 +1,4 @@
-import { SqlSchemaGenerator } from "@operon/runtime";
+import { createWorldView } from "@operon/schema";
 import type { ObjectInstance, ObjectTypeId } from "@operon/schema";
 import { Effect } from "effect";
 
@@ -112,27 +112,101 @@ export function runObject(
 
       if (sub === "query") {
         const typeId = args[1];
-        const id = args[2];
+        const id = args[2] && !args[2].startsWith("--") ? args[2] : undefined;
         const vtIndex = args.indexOf("--valid-time");
         const txIndex = args.indexOf("--tx-time");
 
-        if (!typeId || !id || vtIndex === -1 || txIndex === -1) {
+        if (!typeId) {
           console.error(
-            "Error: Missing required arguments for bitemporal point-in-time query."
+            "Error: Missing required argument <typeId> for object query."
           );
           console.error(
-            "  Usage: operon object query <typeId> <id> --valid-time <ms> --tx-time <ms> [--json]"
+            "  Usage: operon object query <typeId> [id] [--valid-time <ms>] [--tx-time <ms>] [--json]"
           );
           console.error(
-            "  Example: operon object query Patient P001 --valid-time 1789000000000 --tx-time 1789000000000"
+            "  Example: operon object query Patient P001 --valid-time 1789000000000 --json"
           );
           return 1;
         }
 
-        const validTime = Math.trunc(Number(args[vtIndex + 1]));
-        const txTime = Math.trunc(Number(args[txIndex + 1]));
+        const validTime =
+          vtIndex === -1 ? Date.now() : Math.trunc(Number(args[vtIndex + 1]));
+        const txTime =
+          txIndex === -1 ? 1 : Math.trunc(Number(args[txIndex + 1]));
 
-        const queryPlan = SqlSchemaGenerator.compileBitemporalQuery(
+        const worldView = createWorldView({
+          definitionReleaseRef: "operon.active.release",
+          environmentId: "default",
+          evidenceCoverage: [],
+          knowledgeRevision: txTime,
+          ontologyId: "operon.ontology",
+          pinnedAt: Date.now(),
+          policyContext: {},
+          tenantId: "default",
+          validTime,
+        });
+
+        const params: Record<string, unknown> = id ? { id } : {};
+        const result = yield* ctx.reconciliation.query(
+          {
+            cursor: null,
+            params,
+            queryId: typeId,
+            releaseRef: "operon.active.release",
+            worldView,
+          },
+          ctx.objectStore
+        );
+
+        if (isJson) {
+          console.log(JSON.stringify(result, null, 2));
+        } else {
+          console.log("=== BITEMPORAL EXACT QUERY RESULT (S04) ===");
+          console.log(`WorldView: ${result.worldView.digest}`);
+          console.log(
+            `Valid Time: ${new Date(result.worldView.validTime).toISOString()}`
+          );
+          console.log(
+            `Knowledge Revision: ${result.worldView.knowledgeRevision}`
+          );
+          console.log(
+            `Coverage: ${result.coverage.completeness} (isStale: ${result.coverage.isStale})`
+          );
+          console.log(`Matched Rows: ${result.rows.length}`);
+          for (const row of result.rows) {
+            console.log(
+              `  - ${row.typeId}#${row.id} (v${row.version}): ${JSON.stringify(row.properties)}`
+            );
+          }
+        }
+        return 0;
+      }
+
+      if (sub === "explain") {
+        const typeId = args[1];
+        const id = args[2];
+        const vtIndex = args.indexOf("--valid-time");
+        const txIndex = args.indexOf("--tx-time");
+
+        if (!typeId || !id) {
+          console.error(
+            "Error: Missing required arguments: <typeId> <id> for object explain."
+          );
+          console.error(
+            "  Usage: operon object explain <typeId> <id> [--valid-time <ms>] [--tx-time <ms>] [--json]"
+          );
+          console.error(
+            "  Example: operon object explain Patient P001 --valid-time 1789000000000"
+          );
+          return 1;
+        }
+
+        const validTime =
+          vtIndex === -1 ? Date.now() : Math.trunc(Number(args[vtIndex + 1]));
+        const txTime =
+          txIndex === -1 ? Date.now() : Math.trunc(Number(args[txIndex + 1]));
+
+        const queryPlan = ctx.reconciliation.explainQuery(
           typeId,
           id,
           validTime,
@@ -156,7 +230,9 @@ export function runObject(
             )
           );
         } else {
-          console.log("=== BITEMPORAL POINT-IN-TIME QUERY PLAN ===");
+          console.log(
+            "=== BITEMPORAL POINT-IN-TIME QUERY PLAN (S04 EXPLAIN) ==="
+          );
           console.log(`SQL: ${queryPlan.sql}`);
           console.log(`Params: ${JSON.stringify(queryPlan.params)}`);
         }
@@ -164,7 +240,7 @@ export function runObject(
       }
 
       console.error(`Error: Unknown object subcommand '${sub ?? ""}'`);
-      console.error("  Available subcommands: get, put, query");
+      console.error("  Available subcommands: get, put, query, explain");
       console.error("  Run 'operon object --help' for details.");
       return 1;
     } finally {

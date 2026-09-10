@@ -735,4 +735,129 @@ describe("@operon/mcp", () => {
     expect(afterAdmit).toBeDefined();
     expect(afterAdmit?.properties["volume"]).toBe(15000);
   });
+
+  it("supports exact bitemporal queries, explain, and identity resolution via MCP tools (V0-CH-06)", async () => {
+    const objectStore = new InMemoryObjectStore();
+    const auditStore = new InMemoryAuditStore();
+    const oms = new OntologyMetadataService();
+
+    // Seed object into store
+    await Effect.runPromise(
+      objectStore.putObject({
+        id: "tank-exact-1",
+        lastModifiedAt: Date.now(),
+        properties: { status: "operational", volume: 20000 },
+        typeId: "StorageTank" as any,
+        version: 1,
+      })
+    );
+
+    const builderKey: McpKey = {
+      agentId: "mcp-agent",
+      agentTier: 3,
+      keyId: "builder-key",
+      name: "ReconciliationAgent",
+      role: "builder",
+    };
+
+    const server = createOperonMcpServer({
+      actionTypes: [],
+      auditStore,
+      defaultCallerKey: builderKey,
+      objectStore,
+      objectTypes: [],
+      oms,
+    });
+
+    const [clientTransport, serverTransport] =
+      InMemoryTransport.createLinkedPair();
+    await server.connect(serverTransport);
+
+    const client = new Client(
+      { name: "test-client", version: "1.0.0" },
+      { capabilities: {} }
+    );
+    await client.connect(clientTransport);
+
+    // 1. Execute exact query via MCP
+    const queryRes = (await client.callTool({
+      arguments: {
+        queryId: "StorageTank",
+        validTime: Date.now(),
+      },
+      name: "operon_exact_query",
+    })) as any;
+    expect(queryRes.isError).toBeFalsy();
+    const queryResult = JSON.parse(queryRes.content[0].text);
+    expect(queryResult.rows).toHaveLength(1);
+    expect(queryResult.rows[0].id).toBe("tank-exact-1");
+    expect(queryResult.worldView).toBeDefined();
+    expect(queryResult.coverage.isStale).toBe(false);
+
+    // 2. Explain query via MCP
+    const explainRes = (await client.callTool({
+      arguments: {
+        objectId: "tank-exact-1",
+        txTime: Date.now(),
+        typeId: "StorageTank",
+        validTime: Date.now(),
+      },
+      name: "operon_explain_query",
+    })) as any;
+    expect(explainRes.isError).toBeFalsy();
+    const plan = JSON.parse(explainRes.content[0].text);
+    expect(plan.sql).toContain("SELECT");
+    expect(plan.params).toContain("tank-exact-1");
+
+    // 3. Propose identity resolution (ambiguous)
+    const propRes = (await client.callTool({
+      arguments: {
+        action: "merge",
+        confidence: 0.65, // below 0.85 threshold
+        sourceKey: "legacy-tank-A",
+        sourceSystem: "scada_legacy",
+        targetCanonicalId: "tank-exact-1",
+      },
+      name: "operon_propose_identity_resolution",
+    })) as any;
+    expect(propRes.isError).toBeFalsy();
+    const proposal = JSON.parse(propRes.content[0].text);
+    expect(proposal.proposalId).toBeDefined();
+
+    // 4. Resolve without override: stays unresolved_ambiguous
+    const resolveAmbiguousRes = (await client.callTool({
+      arguments: {
+        decisionRef: "dec-mcp-ai",
+        proposalId: proposal.proposalId,
+      },
+      name: "operon_resolve_identity",
+    })) as any;
+    expect(resolveAmbiguousRes.isError).toBeFalsy();
+    const ambigReceipt = JSON.parse(resolveAmbiguousRes.content[0].text);
+    expect(ambigReceipt.status).toBe("unresolved_ambiguous");
+
+    // 5. Resolve with forceOverride: succeeds
+    const resolveOverrideRes = (await client.callTool({
+      arguments: {
+        decisionRef: "dec-human-admin",
+        forceOverride: true,
+        proposalId: proposal.proposalId,
+      },
+      name: "operon_resolve_identity",
+    })) as any;
+    expect(resolveOverrideRes.isError).toBeFalsy();
+    const resolvedReceipt = JSON.parse(resolveOverrideRes.content[0].text);
+    expect(resolvedReceipt.status).toBe("resolved");
+    expect(resolvedReceipt.invalidatedProjections).toHaveLength(2);
+
+    // 6. List identity proposals
+    const listRes = (await client.callTool({
+      arguments: {},
+      name: "operon_list_identity_proposals",
+    })) as any;
+    expect(listRes.isError).toBeFalsy();
+    const list = JSON.parse(listRes.content[0].text);
+    expect(list).toHaveLength(1);
+    expect(list[0].proposalId).toBe(proposal.proposalId);
+  });
 });

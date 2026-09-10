@@ -19,7 +19,9 @@ import {
   ActionInbox,
   evaluateDecisionReadiness,
   executeWritePipeline,
+  ReconciliationService,
 } from "@operon/runtime";
+import { createWorldView } from "@operon/schema";
 import type {
   ActionType,
   ObjectType,
@@ -52,6 +54,7 @@ export interface OperonMcpServerOptions {
   readonly skillService?: SkillRegistryService;
   readonly recipeService?: RecipeRegistryService;
   readonly ingestionService?: AccountableIngestionService;
+  readonly reconciliationService?: ReconciliationService;
 }
 
 export function createOperonMcpServer(options: OperonMcpServerOptions) {
@@ -89,6 +92,9 @@ export function createOperonMcpServer(options: OperonMcpServerOptions) {
 
   const ingestionService =
     options.ingestionService ?? new AccountableIngestionService(objectStore);
+
+  const reconciliationService =
+    options.reconciliationService ?? ReconciliationService.make();
 
   const server = new Server(
     {
@@ -500,6 +506,96 @@ export function createOperonMcpServer(options: OperonMcpServerOptions) {
           type: "object",
         },
         name: "operon_admit_mapping_proposal",
+      },
+      {
+        description:
+          "Execute an exact bitemporal point-in-time query under an immutable WorldView (S04)",
+        inputSchema: {
+          properties: {
+            environmentId: { type: "string" },
+            knowledgeRevision: { type: "number" },
+            maxStalenessMs: { type: "number" },
+            params: { type: "object" },
+            queryId: { type: "string" },
+            releaseRef: { type: "string" },
+            tenantId: { type: "string" },
+            validTime: { type: "number" },
+          },
+          required: ["queryId"],
+          type: "object",
+        },
+        name: "operon_exact_query",
+      },
+      {
+        description:
+          "Explain an exact bitemporal point query without executing, returning SQL plan and parameter bindings (S04)",
+        inputSchema: {
+          properties: {
+            dialect: { enum: ["sqlite", "postgres"], type: "string" },
+            objectId: { type: "string" },
+            txTime: { type: "number" },
+            typeId: { type: "string" },
+            validTime: { type: "number" },
+          },
+          required: ["typeId", "objectId", "validTime", "txTime"],
+          type: "object",
+        },
+        name: "operon_explain_query",
+      },
+      {
+        description:
+          "Propose an identity resolution (deterministic or language-model matching) with source-system keys and provenance (S03)",
+        inputSchema: {
+          properties: {
+            action: { enum: ["link", "merge", "split"], type: "string" },
+            confidence: { type: "number" },
+            environmentId: { type: "string" },
+            evidence: { items: { type: "object" }, type: "array" },
+            idempotencyKey: { type: "string" },
+            proposalId: { type: "string" },
+            sourceKey: { type: "string" },
+            sourceSystem: { type: "string" },
+            splitDetails: { type: "object" },
+            targetCanonicalId: { type: "string" },
+            tenantId: { type: "string" },
+          },
+          required: [
+            "sourceSystem",
+            "sourceKey",
+            "targetCanonicalId",
+            "action",
+            "confidence",
+          ],
+          type: "object",
+        },
+        name: "operon_propose_identity_resolution",
+      },
+      {
+        description:
+          "Resolve an identity proposal per S03, preserving history and invalidating affected projections",
+        inputSchema: {
+          properties: {
+            decisionRef: { type: "string" },
+            environmentId: { type: "string" },
+            forceOverride: { type: "boolean" },
+            idempotencyKey: { type: "string" },
+            proposalId: { type: "string" },
+            tenantId: { type: "string" },
+          },
+          required: ["proposalId", "decisionRef"],
+          type: "object",
+        },
+        name: "operon_resolve_identity",
+      },
+      {
+        description: "List pending or resolved identity resolution proposals",
+        inputSchema: {
+          properties: {
+            tenantId: { type: "string" },
+          },
+          type: "object",
+        },
+        name: "operon_list_identity_proposals",
       },
     ];
 
@@ -1035,6 +1131,134 @@ export function createOperonMcpServer(options: OperonMcpServerOptions) {
         );
         return {
           content: [{ text: JSON.stringify(admitted, null, 2), type: "text" }],
+        };
+      }
+
+      if (name === "operon_exact_query") {
+        assertMcpKeyPermission(callerKey, "query_runtime");
+        const queryId = String(args.queryId);
+        const validTime = args.validTime ? Number(args.validTime) : Date.now();
+        const knowledgeRevision = args.knowledgeRevision
+          ? Number(args.knowledgeRevision)
+          : 1;
+        const tenantId = args.tenantId ? String(args.tenantId) : "default";
+        const environmentId = args.environmentId
+          ? String(args.environmentId)
+          : "default";
+        const releaseRef = args.releaseRef
+          ? String(args.releaseRef)
+          : "active-release";
+
+        const worldView = createWorldView({
+          definitionReleaseRef: releaseRef,
+          environmentId,
+          evidenceCoverage: [],
+          knowledgeRevision,
+          ontologyId: "operon.default",
+          pinnedAt: Date.now(),
+          policyContext: {},
+          tenantId,
+          validTime,
+        });
+
+        const result = await Effect.runPromise(
+          reconciliationService.query(
+            {
+              cursor: null,
+              params: (args.params as Record<string, unknown>) ?? {},
+              queryId,
+              releaseRef,
+              worldView,
+            },
+            objectStore,
+            {
+              maxStalenessMs: args.maxStalenessMs
+                ? Number(args.maxStalenessMs)
+                : undefined,
+            }
+          )
+        );
+
+        return {
+          content: [{ text: JSON.stringify(result, null, 2), type: "text" }],
+        };
+      }
+
+      if (name === "operon_explain_query") {
+        assertMcpKeyPermission(callerKey, "query_runtime");
+        const plan = reconciliationService.explainQuery(
+          String(args.typeId),
+          String(args.objectId),
+          Number(args.validTime),
+          Number(args.txTime),
+          (args.dialect as any) ?? "sqlite"
+        );
+        return {
+          content: [{ text: JSON.stringify(plan, null, 2), type: "text" }],
+        };
+      }
+
+      if (name === "operon_propose_identity_resolution") {
+        assertMcpKeyPermission(callerKey, "modify_schema");
+        const proposalId = args.proposalId
+          ? String(args.proposalId)
+          : `res_prop_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+        const proposal = await Effect.runPromise(
+          reconciliationService.proposeIdentityResolution({
+            action: args.action as any,
+            confidence: Number(args.confidence),
+            environmentId: args.environmentId
+              ? String(args.environmentId)
+              : undefined,
+            evidence: (args.evidence as any) ?? [],
+            idempotencyKey: args.idempotencyKey
+              ? String(args.idempotencyKey)
+              : undefined,
+            proposalId,
+            sourceKey: String(args.sourceKey),
+            sourceSystem: String(args.sourceSystem),
+            splitDetails: (args.splitDetails as any) ?? null,
+            targetCanonicalId: String(args.targetCanonicalId),
+            tenantId: args.tenantId ? String(args.tenantId) : undefined,
+          })
+        );
+        return {
+          content: [{ text: JSON.stringify(proposal, null, 2), type: "text" }],
+        };
+      }
+
+      if (name === "operon_resolve_identity") {
+        assertMcpKeyPermission(callerKey, "modify_schema");
+        const receipt = await Effect.runPromise(
+          reconciliationService.resolveIdentity(
+            String(args.proposalId),
+            String(args.decisionRef),
+            {
+              environmentId: args.environmentId
+                ? String(args.environmentId)
+                : undefined,
+              forceOverride: Boolean(args.forceOverride),
+              idempotencyKey: args.idempotencyKey
+                ? String(args.idempotencyKey)
+                : undefined,
+              tenantId: args.tenantId ? String(args.tenantId) : undefined,
+            }
+          )
+        );
+        return {
+          content: [{ text: JSON.stringify(receipt, null, 2), type: "text" }],
+        };
+      }
+
+      if (name === "operon_list_identity_proposals") {
+        assertMcpKeyPermission(callerKey, "query_runtime");
+        const proposals = await Effect.runPromise(
+          reconciliationService.listProposals(
+            args.tenantId ? String(args.tenantId) : undefined
+          )
+        );
+        return {
+          content: [{ text: JSON.stringify(proposals, null, 2), type: "text" }],
         };
       }
 

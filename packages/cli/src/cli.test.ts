@@ -188,4 +188,63 @@ describe("@operon/cli test suite", () => {
     );
     expect(listCode).toBe(0);
   });
+
+  it("executes exact bitemporal queries, explain plans, and identity reconciliation via CLI (V0-CH-06)", async () => {
+    // 1. Exact bitemporal query
+    const now = Date.now();
+    const queryCode = await Effect.runPromise(
+      runCli([
+        "object",
+        "query",
+        "Patient",
+        "P001",
+        "--valid-time",
+        String(now),
+        "--json",
+      ])
+    );
+    expect(queryCode).toBe(0);
+
+    // 2. Query explain plan
+    const explainCode = await Effect.runPromise(
+      runCli([
+        "object",
+        "explain",
+        "Patient",
+        "P001",
+        "--valid-time",
+        String(now),
+        "--tx-time",
+        String(now),
+        "--json",
+      ])
+    );
+    expect(explainCode).toBe(0);
+
+    // 3. Propose identity resolution (confidence 0.70 -> ambiguous)
+    const proposeCode = await Effect.runPromise(
+      runCli([
+        "reconcile",
+        "propose",
+        "--source-system",
+        "crm",
+        "--source-key",
+        "c-999",
+        "--target-canonical",
+        "P001",
+        "--action",
+        "merge",
+        "--confidence",
+        "0.70",
+        "--json",
+      ])
+    );
+    expect(proposeCode).toBe(0);
+
+    // 4. List identity proposals
+    const listPropCode = await Effect.runPromise(
+      runCli(["reconcile", "list", "--json"])
+    );
+    expect(listPropCode).toBe(0);
+  });
 });

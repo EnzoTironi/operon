@@ -1,3 +1,5 @@
+import { Schema } from "effect";
+
 import { computeCanonicalDigest } from "./definition.js";
 import type { Subject } from "./security.js";
 import type { ObjectTypeId } from "./types.js";
@@ -29,13 +31,14 @@ export interface SourceArtifact {
 /**
  * Provenance pointer linking every accepted field back to raw evidence.
  */
-export interface FieldProvenance {
-  readonly sourceId: string;
-  readonly locator: string;
-  readonly batchId: string;
-  readonly digest: string;
-  readonly fieldPath: string;
-}
+export const FieldProvenanceSchema = Schema.Struct({
+  batchId: Schema.String,
+  digest: Schema.String,
+  fieldPath: Schema.String,
+  locator: Schema.String,
+  sourceId: Schema.String,
+});
+export type FieldProvenance = Schema.Schema.Type<typeof FieldProvenanceSchema>;
 
 /**
  * CandidateRecord produced by mapping proposal.

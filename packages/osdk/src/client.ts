@@ -4,17 +4,23 @@ import type {
   DynamicSecurityEngine,
   ObjectSet,
   ObjectStore,
+  QueryOptions,
+  StaleDependencyError,
 } from "@operon/runtime";
 import {
   AuthorizationError,
   executeWritePipeline,
   ObjectSetService,
+  ReconciliationService,
 } from "@operon/runtime";
 import type {
   ActionType,
+  ExactQueryRequest,
   ObjectInstance,
   ObjectType,
+  QueryCoverage,
   SecurityContext,
+  WorldView,
 } from "@operon/schema";
 import { Effect } from "effect";
 
@@ -25,6 +31,7 @@ export interface OperonClientConfig {
   readonly actionTypes: readonly ActionType<any>[];
   readonly defaultSecurity?: SecurityContext;
   readonly securityEngine?: DynamicSecurityEngine;
+  readonly reconciliationService?: ReconciliationService;
 }
 
 export interface ObjectTypeAccessor<T = Record<string, unknown>> {
@@ -43,13 +50,28 @@ export interface ActionAccessor<Params = unknown> {
 }
 
 export interface OperonClient {
-  readonly objects: Record<string, ObjectTypeAccessor<any>>;
   readonly actions: Record<string, ActionAccessor<any>>;
+  readonly objects: Record<string, ObjectTypeAccessor<any>>;
   readonly oss: ObjectSetService;
+  readonly query: (
+    request: ExactQueryRequest,
+    options?: QueryOptions
+  ) => Effect.Effect<
+    {
+      readonly rows: readonly ObjectInstance[];
+      readonly coverage: QueryCoverage;
+      readonly worldView: WorldView;
+      readonly cursor: string | null;
+    },
+    StaleDependencyError
+  >;
+  readonly reconciliation: ReconciliationService;
 }
 
 export function createOperonClient(config: OperonClientConfig): OperonClient {
   const oss = new ObjectSetService(config.objectStore);
+  const reconciliation =
+    config.reconciliationService ?? ReconciliationService.make();
   const objects: Record<string, ObjectTypeAccessor<any>> = {};
   const actions: Record<string, ActionAccessor<any>> = {};
 
@@ -126,5 +148,8 @@ export function createOperonClient(config: OperonClientConfig): OperonClient {
     };
   }
 
-  return { actions, objects, oss };
+  const query = (request: ExactQueryRequest, options?: QueryOptions) =>
+    reconciliation.query(request, config.objectStore, options);
+
+  return { actions, objects, oss, query, reconciliation };
 }

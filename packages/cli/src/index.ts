@@ -11,6 +11,7 @@ import { runObject } from "./commands/object.js";
 import { runOms } from "./commands/oms.js";
 import { runReadiness } from "./commands/readiness.js";
 import { runRecipe } from "./commands/recipe.js";
+import { runReconcile } from "./commands/reconcile.js";
 import { runSandbox } from "./commands/sandbox.js";
 import { runSkill } from "./commands/skill.js";
 import { runSource } from "./commands/source.js";
@@ -25,7 +26,7 @@ Usage:
 
 Commands:
   doctor              Run environment, storage, and cryptographic audit health checks
-  object              Get, put, list, and bitemporally query ontology object instances
+  object              Get, put, list, bitemporal exact query, and SQL plan explain (S04)
   readiness           Evaluate Level-1 4C Decision Readiness (Completeness, Correctness, Currentness, Consistency)
   action              List registered actions or submit an action through the 7-Step Write Pipeline
   inbox               Inspect pending proposals, approve, or reject with human override dossiers
@@ -34,6 +35,7 @@ Commands:
   skill               List registered versioned skills or inspect schemas and digests
   recipe              List, get, or import declarative recipe packs (S14: grants no authority)
   source              Accountable raw source inventory, mapping proposals, and admission (S03, S15)
+  reconcile           Identity resolution proposals, deterministic & ML matching, reversible merge/split (S03)
   sandbox             Execute sandboxed models with fiber timeouts and verify determinism proofs
   mcp                 Launch Model Context Protocol (MCP) server over stdio for Claude Desktop / Cursor
   telemetry           Inspect Sentry & PostHog telemetry status, privacy scrubber, and diagnostic ping
@@ -89,12 +91,14 @@ Examples:
 Usage:
   operon object get <typeId> <id> [--json] [--db <path>]
   operon object put --type <typeId> --id <id> --properties '<json>' [--version <n>] [--db <path>]
-  operon object query <typeId> <id> --valid-time <ms> --tx-time <ms> [--json]
+  operon object query <typeId> [id] [--valid-time <ms>] [--tx-time <ms>] [--json]
+  operon object explain <typeId> <id> [--valid-time <ms>] [--tx-time <ms>] [--json]
 
 Examples:
   operon object get Patient P001 --json
   operon object put --type Patient --id P002 --properties '{"name":"Alice","egfr":70}'
-  operon object query Patient P001 --valid-time 1789000000000 --tx-time 1789000000000
+  operon object query Patient P001 --valid-time 1789000000000 --json
+  operon object explain Patient P001 --valid-time 1789000000000
 `);
         return Effect.succeed(0);
       }
@@ -307,10 +311,29 @@ Examples:
       return runSource(args.slice(1));
     }
 
+    case "reconcile": {
+      if (args.includes("--help") || args.includes("-h")) {
+        console.log(`
+Usage:
+  operon reconcile propose --source-system <sys> --source-key <key> --target-canonical <id> --action <link|merge|split> --confidence <float> [--reason <str>] [--original-ids <id1,id2>] [--idempotency-key <key>] [--json]
+  operon reconcile resolve <proposalId> --decision-ref <ref> [--force-override] [--idempotency-key <key>] [--json]
+  operon reconcile list [--json]
+  operon reconcile get <proposalId> [--json]
+
+Examples:
+  operon reconcile propose --source-system crm --source-key c_101 --target-canonical cust_999 --action merge --confidence 0.95 --json
+  operon reconcile resolve prop_123 --decision-ref dec_supervisor_1 --json
+  operon reconcile list --json
+`);
+        return Effect.succeed(0);
+      }
+      return runReconcile(args.slice(1));
+    }
+
     default: {
       console.error(`Error: Unknown command '${command}'\n`);
       console.error(
-        "  Available commands: doctor, object, readiness, action, inbox, audit, oms, skill, recipe, source, sandbox, mcp, telemetry, demo"
+        "  Available commands: doctor, object, readiness, action, inbox, audit, oms, skill, recipe, source, reconcile, sandbox, mcp, telemetry, demo"
       );
       console.error("  Run 'operon --help' to see usage and examples.");
       return Effect.succeed(1);
