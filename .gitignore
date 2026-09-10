@@ -8,3 +8,5 @@ dist
 coverage
 .agents
 skills-lock.json
+.evidence
+.operon-cli-state.json

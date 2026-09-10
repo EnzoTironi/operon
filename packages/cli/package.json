@@ -1,0 +1,35 @@
+{
+  "name": "@operon/cli",
+  "version": "0.1.0",
+  "description": "Agent-first and human-friendly CLI for Operon Operational Ontologies",
+  "bin": {
+    "operon": "./dist/bin.js"
+  },
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "clean": "rm -rf dist *.tsbuildinfo",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "@operon/alchemy": "workspace:*",
+    "@operon/mcp": "workspace:*",
+    "@operon/osdk": "workspace:*",
+    "@operon/runtime": "workspace:*",
+    "@operon/schema": "workspace:*",
+    "effect": "4.0.0-rc.112"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  }
+}

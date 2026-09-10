@@ -183,6 +183,37 @@ importers:
         specifier: ^2.1.8
         version: 2.1.9(@types/node@22.20.2)
 
+  packages/cli:
+    dependencies:
+      '@modelcontextprotocol/sdk':
+        specifier: ^1.30.0
+        version: 1.30.0(zod@4.6.0)
+      '@operon/alchemy':
+        specifier: workspace:*
+        version: link:../alchemy
+      '@operon/mcp':
+        specifier: workspace:*
+        version: link:../mcp
+      '@operon/osdk':
+        specifier: workspace:*
+        version: link:../osdk
+      '@operon/runtime':
+        specifier: workspace:*
+        version: link:../runtime
+      '@operon/schema':
+        specifier: workspace:*
+        version: link:../schema
+      effect:
+        specifier: 4.0.0-rc.112
+        version: 4.0.0-rc.112
+    devDependencies:
+      typescript:
+        specifier: ^5.7.2
+        version: 5.9.3
+      vitest:
+        specifier: ^2.1.8
+        version: 2.1.9(@types/node@22.20.2)
+
   packages/mcp:
     dependencies:
       '@modelcontextprotocol/sdk':

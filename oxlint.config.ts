@@ -9,6 +9,8 @@ export default defineConfig({
     "**/dist/**",
     "**/*.d.ts",
     "**/*.d.mts",
+    "**/.cursor/**",
+    "**/.agents/**",
   ],
   categories: {
     correctness: "error",
@@ -102,5 +104,9 @@ export default defineConfig({
     "effect/prefer-arr-sort": "off",
     "effect/prefer-effect-is": "off",
     "effect/no-runtime-typeof": "off",
+    "effect/use-filesystem-service": "off",
+    "effect/use-path-service": "off",
+    "effect/avoid-sync-fs": "off",
+    "effect/use-command-executor-service": "off",
   },
 });
