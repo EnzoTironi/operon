@@ -24,7 +24,7 @@ This document establishes the authoritative mapping between the **Operon V1 Rele
 | :-- | :-- | :-- | :-- | :-- | :-- |
 | **`V1-01`** | **G1 / WS01** | Reproducible contract candidate | `packages/schema/src/candidate.ts`<br>`packages/schema/src/compiler.ts`<br>`packages/schema/src/compiler.test.ts` | 🟢 **100% Done**<br>Pure compiler with typed diagnostics; canonical source precedence enforcement; byte-for-byte deterministic hashing; unknown schema version rejection. | None. All 15 tests pass. |
 | **`V1-02`** | **G1 / WS02** | Canonical evidence and bitemporal state | `packages/schema/src/evidence.ts`<br>`packages/runtime/src/canonical-evidence.ts`<br>`packages/runtime/src/canonical-evidence.test.ts` | 🟢 **100% Done**<br>Attributed claim lifecycle; contradictory evidence preservation without silent overwrite; valid-time correction preserves transaction history; independent SQL oracle parity. | None. All 5 tests pass. |
-| **`V1-03`** | **G1 / WS03** | Principal, grant and authority evaluator | `packages/runtime/src/auth.ts`<br>`packages/runtime/src/policy/` | 🟡 **80% Done**<br>OIDC JWT verification with RSA/HMAC; role validation. | Integrate server-bound authority evaluation, usage budgets, and audience-attenuated grants. |
+| **`V1-03`** | **G1 / WS03** | Principal, grant and authority evaluator | `packages/schema/src/authority-types.ts`<br>`packages/runtime/src/policy/authority-evaluator.ts`<br>`packages/runtime/src/policy/authority-evaluator.test.ts` | 🟢 **100% Done**<br>Server-bound principal context preventing client role/tenant elevation; aggregate-use budget exhaustion; audience/purpose attenuation; canonical 4-valued verdict algebra (ALLOW, DENY, REVIEW_REQUIRED, EVIDENCE_INSUFFICIENT). | None. All 10 tests pass. |
 | **`V1-04`** | **G1 / WS04** | Action Inbox and exact approval | `packages/runtime/src/inbox.ts`<br>`packages/runtime/src/approvals.ts` | 🟢 **90% Done**<br>Action proposal routing, TTL, hash check, and independent human veto. | Bind exact normalized proposal, release, evidence, and effect digest in durable store. |
 | **`V1-05`** | **G1 / WS04** | Atomic execution, delivery and reconciliation | `packages/runtime/src/transactions/atomic-commit-service.ts` | 🟡 **75% Done**<br>In-memory atomic commit service with outbox and reconciliation. | Back atomic commit service with native SQL/PostgreSQL transaction boundary and crash-recovery tests. |
 | **`V1-06`** | **G1 / WS05** | Independent review and scenario containment | `packages/runtime/src/oms.ts`<br>`packages/assurance/` | 🟢 **90% Done**<br>F1 and F2 evaluators; scenario sandboxing. | Verify containment across multi-tenant scenario boundaries and ensure scenario commands never reach live dispatcher. |
@@ -33,6 +33,6 @@ This document establishes the authoritative mapping between the **Operon V1 Rele
 
 ---
 
-## 3. Immediate Next Execution: `V1-03` (Principal, grant and authority evaluator)
+## 3. Immediate Next Execution: `V1-04` (Action Inbox and exact approval)
 
-With `V1-01` and `V1-02` resolved, the next dependent ticket on the critical path is `V1-03` (WS03 - Identity, grants and authority).
+With `V1-01`, `V1-02`, and `V1-03` resolved, the next dependent ticket on the critical path is `V1-04` (WS04 - Safe action and durable execution).

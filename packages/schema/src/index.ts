@@ -18,3 +18,4 @@ export * from "./assurance.js";
 export * from "./candidate.js";
 export * from "./compiler.js";
 export * from "./evidence.js";
+export * from "./authority-types.js";
