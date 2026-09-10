@@ -152,4 +152,68 @@ describe("V0-CH-01: External-agent identity, discovery and durable profile", () 
       );
       expect(missingSubError).toBeInstanceOf(AuthenticationError);
     }).pipe(Effect.runPromise));
+
+  it("denies malformed JWT token not adhering to 3-part format", () =>
+    Effect.gen(function* () {
+      const err1 = yield* Effect.flip(
+        verifier.verifyToken("single-string-token")
+      );
+      expect(err1).toBeInstanceOf(AuthenticationError);
+      expect(err1.reason).toContain("expected header.payload.signature");
+
+      const err2 = yield* Effect.flip(verifier.verifyToken("part1.part2"));
+      expect(err2).toBeInstanceOf(AuthenticationError);
+
+      const err3 = yield* Effect.flip(verifier.verifyToken("p1.p2.p3.p4"));
+      expect(err3).toBeInstanceOf(AuthenticationError);
+    }).pipe(Effect.runPromise));
+
+  it("enforces allowedAlgorithms whitelist and rejects disallowed algorithms", () =>
+    Effect.gen(function* () {
+      const rsaOnlyVerifier = new OidcTokenVerifier({
+        allowedAlgorithms: ["RS256"],
+        secretOrPublicKey: secretKey,
+      });
+
+      const hs256Token = createTestJwt({
+        aud: "operon-kernel",
+        sub: "agent-hs",
+      });
+
+      const err = yield* Effect.flip(rsaOnlyVerifier.verifyToken(hs256Token));
+      expect(err).toBeInstanceOf(AuthenticationError);
+      expect(err.reason).toContain("not allowed for this key type");
+    }).pipe(Effect.runPromise));
+
+  it("enforces nbf (not before) claim when token is not yet active", () =>
+    Effect.gen(function* () {
+      const futureNbfToken = createTestJwt({
+        aud: "operon-kernel",
+        iss: "https://auth.operon.ai",
+        nbf: Math.floor(Date.now() / 1000) + 3600, // 1 hour in future
+        sub: "agent-future",
+      });
+
+      const err = yield* Effect.flip(verifier.verifyToken(futureNbfToken));
+      expect(err).toBeInstanceOf(AuthenticationError);
+      expect(err.reason).toContain("Token not valid before");
+    }).pipe(Effect.runPromise));
+
+  it("accepts audience when claims.aud is an array of audiences containing expected audience", () =>
+    Effect.gen(function* () {
+      const multiAudToken = createTestJwt({
+        aud: ["telemetry-service", "operon-kernel", "audit-ledger"],
+        exp: Math.floor(Date.now() / 1000) + 3600,
+        iss: "https://auth.operon.ai",
+        sub: "agent-multi-aud",
+      });
+
+      const claims = yield* verifier.verifyToken(multiAudToken);
+      expect(claims.sub).toBe("agent-multi-aud");
+      expect(claims.aud).toEqual([
+        "telemetry-service",
+        "operon-kernel",
+        "audit-ledger",
+      ]);
+    }).pipe(Effect.runPromise));
 });

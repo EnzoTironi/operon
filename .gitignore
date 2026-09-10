@@ -16,3 +16,4 @@ skills-lock.json
 .vscode
 .stryker-tmp
 reports
+stryker-setup-*.js

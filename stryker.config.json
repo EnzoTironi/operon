@@ -2,6 +2,7 @@
   "$schema": "https://raw.githubusercontent.com/stryker-mutator/stryker-js/master/packages/core/schema/stryker-schema.json",
   "packageManager": "pnpm",
   "inPlace": true,
+  "ignoreStatic": true,
   "plugins": ["@stryker-mutator/vitest-runner"],
   "testRunner": "vitest",
   "mutate": [
