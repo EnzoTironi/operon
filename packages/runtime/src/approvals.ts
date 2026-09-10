@@ -35,6 +35,7 @@ export class ApprovalsEngine {
     const complianceApproved = reviews.some(
       (r) =>
         r.verdict === "approve" &&
+        r.reviewer.type !== "agent" &&
         (r.reviewer.roles.includes("compliance_officer") ||
           r.reviewer.roles.includes("compliance") ||
           r.reviewer.roles.includes("admin"))
@@ -43,6 +44,7 @@ export class ApprovalsEngine {
     const domainSpecialistApproved = reviews.some(
       (r) =>
         r.verdict === "approve" &&
+        r.reviewer.type !== "agent" &&
         (r.reviewer.roles.includes("domain_specialist") ||
           r.reviewer.roles.includes("lead_engineer") ||
           r.reviewer.roles.includes("lead_fde") ||

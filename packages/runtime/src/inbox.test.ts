@@ -1,5 +1,6 @@
 import type { ActionTypeId, Subject } from "@operon/schema";
 import {
+  computeEffectDigest,
   defineActionType,
   defineObjectType,
   defineProperty,
@@ -130,18 +131,22 @@ describe("ActionInbox Domain & Security Invariants (inbox.ts)", () => {
     return { item, res, submission };
   }
 
-  it("adds proposal, generates tamper-evident evidence hash, and lists pending proposals", async () => {
+  it("does add proposal, generate tamper-evident evidence hash, and list pending proposals", async () => {
     const { item } = await createProposal();
 
     expect(item.status).toBe("pending");
     expect(item.evidenceHash).toBeDefined();
     expect(item.evidenceHash).toHaveLength(64); // SHA-256 hex
+    expect(item.effectDigest).toBeDefined();
+    expect(item.effectDigest).toHaveLength(64);
+    expect(item.proposalDigest).toBeDefined();
+    expect(item.proposalDigest).toHaveLength(64);
     expect(item.proposerId).toBe(agentProposer.id);
     expect(inbox.getPendingProposals()).toHaveLength(1);
     expect(inbox.getProposal(item.id)).toBeDefined();
   });
 
-  it("approves proposal successfully with an authorized independent human operator", async () => {
+  it("does approve proposal successfully with an authorized independent human operator", async () => {
     const { item } = await createProposal();
 
     const decisionRecord = await Effect.runPromise(
@@ -164,7 +169,7 @@ describe("ActionInbox Domain & Security Invariants (inbox.ts)", () => {
     expect(patient!.version).toBe(2);
   });
 
-  it("denies approval when an AI agent attempts to approve (Human-in-the-Loop invariant)", async () => {
+  it("does deny approval when an AI agent attempts to approve (Human-in-the-Loop invariant)", async () => {
     const { item } = await createProposal();
 
     const err = await Effect.runPromise(
@@ -178,7 +183,7 @@ describe("ActionInbox Domain & Security Invariants (inbox.ts)", () => {
     expect(inbox.getProposal(item.id)?.status).toBe("pending");
   });
 
-  it("denies self-approval when proposer attempts to approve own proposal", async () => {
+  it("does deny self-approval when proposer attempts to approve own proposal", async () => {
     await createProposal();
 
     // Human proposer attempting to approve own proposal
@@ -213,7 +218,7 @@ describe("ActionInbox Domain & Security Invariants (inbox.ts)", () => {
     expect(inbox.getProposal(selfProposal.id)?.status).toBe("pending");
   });
 
-  it("denies approval when human lacks required approver role", async () => {
+  it("does deny approval when human lacks required approver role", async () => {
     const { item } = await createProposal();
 
     const err = await Effect.runPromise(
@@ -227,7 +232,7 @@ describe("ActionInbox Domain & Security Invariants (inbox.ts)", () => {
     expect(inbox.getProposal(item.id)?.status).toBe("pending");
   });
 
-  it("rejects expired proposals when approval is attempted after ttl", async () => {
+  it("does reject expired proposals when approval is attempted after ttl", async () => {
     // 1 ms TTL that expires immediately
     const { item } = await createProposal(
       { newDose: 30, patientId: "P-100" },
@@ -242,11 +247,11 @@ describe("ActionInbox Domain & Security Invariants (inbox.ts)", () => {
     expect((err as ProposalExecutionStateError).message).toContain(
       "has expired"
     );
-    expect(inbox.getProposal(item.id)?.status).toBe("rejected");
+    expect(inbox.getProposal(item.id)?.status).toBe("expired");
     expect(inbox.getPendingProposals()).toHaveLength(0);
   });
 
-  it("detects evidence hash drift when parameters or expected hash do not match", async () => {
+  it("does detect evidence hash drift when parameters or expected hash do not match", async () => {
     const { item, submission } = await createProposal();
 
     // 1. Wrong expected hash
@@ -275,7 +280,7 @@ describe("ActionInbox Domain & Security Invariants (inbox.ts)", () => {
     );
   });
 
-  it("fails approval on non-existent or non-pending proposals", async () => {
+  it("does fail approval on non-existent or non-pending proposals", async () => {
     const errNonExistent = await Effect.runPromise(
       Effect.flip(inbox.approveProposal("unknown-proposal-id", humanDoctor))
     );
@@ -291,7 +296,7 @@ describe("ActionInbox Domain & Security Invariants (inbox.ts)", () => {
     expect(errAlreadyApproved).toBeInstanceOf(ProposalNotFoundError);
   });
 
-  it("rejects proposal via human veto and records tamper-evident override record", async () => {
+  it("does reject proposal via human veto and record tamper-evident override record", async () => {
     const { item } = await createProposal({ newDose: 40, patientId: "P-100" });
 
     const override = await Effect.runPromise(
@@ -336,7 +341,7 @@ describe("ActionInbox Domain & Security Invariants (inbox.ts)", () => {
     expect(errReReject).toBeInstanceOf(ProposalNotFoundError);
   });
 
-  it("prevents AI agent from exercising veto/override", async () => {
+  it("does prevent AI agent from exercising veto/override", async () => {
     const { item } = await createProposal();
 
     const err = await Effect.runPromise(
@@ -355,5 +360,450 @@ describe("ActionInbox Domain & Security Invariants (inbox.ts)", () => {
       "requires a human operator"
     );
     expect(inbox.getProposal(item.id)?.status).toBe("pending");
+  });
+
+  // =========================================================================
+  // Gate G1 / Ticket V1-04 Normative Binary Acceptance Test Suite (S07)
+  // =========================================================================
+
+  it("does bind exact normalized effect digest in approval receipt and durable record (S07 / V1-04)", async () => {
+    // 1. Prepare proposal using prepare() intent
+    const proposal = await Effect.runPromise(
+      inbox.prepare({
+        actionType: UpdateDoseAction,
+        parameters: { newDose: 35, patientId: "P-100" },
+        proposer: agentProposer,
+        ttlMs: 3600 * 1000,
+      })
+    );
+
+    expect(proposal).toBeDefined();
+    expect(proposal.status).toBe("pending");
+    expect(proposal.effectDigest).toBeDefined();
+    expect(proposal.effectDigest).toHaveLength(64);
+    expect(proposal.actionRelease).toBe("1.0.0");
+    expect(proposal.policyRelease).toBe("1.0.0");
+
+    // Verify expected effectDigest matches computeEffectDigest directly
+    const expectedEffectDigest = computeEffectDigest({
+      actionId: UpdateDoseAction.id,
+      normalizedParameters: { newDose: 35, patientId: "P-100" },
+      requestedEffects: [],
+    });
+    expect(proposal.effectDigest).toBe(expectedEffectDigest);
+
+    // 2. Exact approval with expected effect digest
+    const receipt = await Effect.runPromise(
+      inbox.approve(proposal.id, proposal.effectDigest, humanDoctor)
+    );
+
+    expect(receipt).toBeDefined();
+    expect(receipt.decision).toBe("approved");
+    expect(receipt.proposalId).toBe(proposal.id);
+    expect(receipt.expectedDigest).toBe(proposal.effectDigest);
+    expect(receipt.effectDigest).toBe(proposal.effectDigest);
+    expect(receipt.proposalDigest).toBe(proposal.proposalDigest);
+    expect(receipt.evidenceHash).toBe(proposal.evidenceHash);
+    expect(receipt.actionRelease).toBe("1.0.0");
+    expect(receipt.policyRelease).toBe("1.0.0");
+    expect(receipt.approver.id).toBe(humanDoctor.id);
+    expect(receipt.receiptHash).toBeDefined();
+    expect(receipt.receiptHash).toHaveLength(64);
+
+    // Verify receipt is queryable
+    const queriedReceipt = inbox.getApprovalReceipt(receipt.id);
+    expect(queriedReceipt).toBeDefined();
+    expect(queriedReceipt?.receiptHash).toBe(receipt.receiptHash);
+
+    const queriedByProposal = inbox.getApprovalReceiptForProposal(proposal.id);
+    expect(queriedByProposal).toBeDefined();
+    expect(queriedByProposal?.id).toBe(receipt.id);
+
+    // Verify business state changed only after approval
+    const patient = await Effect.runPromise(
+      objectStore.getObject(PatientType.id, "P-100")
+    );
+    expect((patient!.properties as any).dose).toBe(35);
+  });
+
+  it("does deny approval when expectedDigest does not strictly match proposal effect digest (S07 / V1-04)", async () => {
+    const proposal = await Effect.runPromise(
+      inbox.prepare({
+        actionType: UpdateDoseAction,
+        parameters: { newDose: 45, patientId: "P-100" },
+        proposer: agentProposer,
+      })
+    );
+
+    const forgedDigest =
+      "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef";
+    const err = await Effect.runPromise(
+      Effect.flip(inbox.approve(proposal.id, forgedDigest, humanDoctor))
+    );
+
+    expect(err).toBeInstanceOf(ProposalExecutionStateError);
+    expect((err as ProposalExecutionStateError).message).toContain(
+      "Evidence hash mismatch"
+    );
+    expect(inbox.getProposal(proposal.id)?.status).toBe("pending");
+
+    // Business state must remain untouched
+    const patient = await Effect.runPromise(
+      objectStore.getObject(PatientType.id, "P-100")
+    );
+    expect((patient!.properties as any).dose).toBe(10);
+  });
+
+  it("does prevent execution of changed, stale, or expired proposals (S07 / V1-04)", async () => {
+    // 1. Expired proposal cannot execute
+    const expiredProposal = await Effect.runPromise(
+      inbox.prepare({
+        actionType: UpdateDoseAction,
+        parameters: { newDose: 50, patientId: "P-100" },
+        proposer: agentProposer,
+        ttlMs: -100, // Expired immediately
+      })
+    );
+
+    const expiredErr = await Effect.runPromise(
+      Effect.flip(
+        inbox.approve(
+          expiredProposal.id,
+          expiredProposal.effectDigest,
+          humanDoctor
+        )
+      )
+    );
+    expect(expiredErr).toBeInstanceOf(ProposalExecutionStateError);
+    expect((expiredErr as ProposalExecutionStateError).message).toContain(
+      "has expired"
+    );
+
+    // 2. Tampered / changed proposal parameters cannot execute
+    const validProposal = await Effect.runPromise(
+      inbox.prepare({
+        actionType: UpdateDoseAction,
+        parameters: { newDose: 60, patientId: "P-100" },
+        proposer: agentProposer,
+      })
+    );
+
+    // Tamper with parameters directly
+    (validProposal.submission.rawParameters as any).newDose = 9999;
+
+    const tamperedErr = await Effect.runPromise(
+      Effect.flip(
+        inbox.approve(validProposal.id, validProposal.effectDigest, humanDoctor)
+      )
+    );
+    expect(tamperedErr).toBeInstanceOf(ProposalExecutionStateError);
+    expect((tamperedErr as ProposalExecutionStateError).message).toContain(
+      "Evidence hash mismatch"
+    );
+
+    // 3. Rejected proposal cannot be approved or execute
+    const rejectedProposal = await Effect.runPromise(
+      inbox.prepare({
+        actionType: UpdateDoseAction,
+        parameters: { newDose: 70, patientId: "P-100" },
+        proposer: agentProposer,
+      })
+    );
+
+    await Effect.runPromise(
+      inbox.rejectProposal(
+        rejectedProposal.id,
+        humanDoctor,
+        "safety_risk",
+        "Vetoed due to severe allergy"
+      )
+    );
+
+    const rejectApproveErr = await Effect.runPromise(
+      Effect.flip(
+        inbox.approve(
+          rejectedProposal.id,
+          rejectedProposal.effectDigest,
+          humanDoctor
+        )
+      )
+    );
+    expect(rejectApproveErr).toBeInstanceOf(ProposalNotFoundError);
+
+    // 4. Replay attack: approved proposal cannot execute twice
+    const replayProposal = await Effect.runPromise(
+      inbox.prepare({
+        actionType: UpdateDoseAction,
+        parameters: { newDose: 80, patientId: "P-100" },
+        proposer: agentProposer,
+      })
+    );
+    await Effect.runPromise(
+      inbox.approve(replayProposal.id, replayProposal.effectDigest, humanDoctor)
+    );
+
+    const secondApproveErr = await Effect.runPromise(
+      Effect.flip(
+        inbox.approve(
+          replayProposal.id,
+          replayProposal.effectDigest,
+          humanDoctor
+        )
+      )
+    );
+    expect(secondApproveErr).toBeInstanceOf(ProposalNotFoundError);
+  });
+
+  it("does order proposals deterministically and apply filters with deterministic tie-breaking (S07 / V1-04)", () => {
+    const baseNow = Date.now();
+
+    // Create 3 proposals with distinct properties
+    const p1 = inbox.addProposal(
+      {
+        actionType: UpdateDoseAction,
+        rawParameters: { newDose: 11, patientId: "P-100" },
+        security: {
+          correlationId: "c1",
+          subject: { ...agentProposer, id: "agent-alpha" },
+          timestamp: baseNow - 100,
+        },
+      },
+      {
+        id: "prop-001",
+        outcome: "proposed",
+        parameters: { newDose: 11 },
+        recordHash: "hash1",
+        rulesEvaluated: [],
+        security: {
+          correlationId: "c1",
+          subject: agentProposer,
+          timestamp: baseNow - 100,
+        },
+        timestamp: baseNow - 100,
+      } as any,
+      100000
+    );
+
+    const p2 = inbox.addProposal(
+      {
+        actionType: UpdateDoseAction,
+        rawParameters: { newDose: 12, patientId: "P-100" },
+        security: {
+          correlationId: "c2",
+          subject: { ...agentProposer, id: "agent-beta" },
+          timestamp: baseNow - 50,
+        },
+      },
+      {
+        id: "prop-002",
+        outcome: "proposed",
+        parameters: { newDose: 12 },
+        recordHash: "hash2",
+        rulesEvaluated: [],
+        security: {
+          correlationId: "c2",
+          subject: agentProposer,
+          timestamp: baseNow - 50,
+        },
+        timestamp: baseNow - 50,
+      } as any,
+      100000
+    );
+
+    const p3Expired = inbox.addProposal(
+      {
+        actionType: UpdateDoseAction,
+        rawParameters: { newDose: 13, patientId: "P-100" },
+        security: {
+          correlationId: "c3",
+          subject: { ...agentProposer, id: "agent-alpha" },
+          timestamp: baseNow - 200,
+        },
+      },
+      {
+        id: "prop-003",
+        outcome: "proposed",
+        parameters: { newDose: 13 },
+        recordHash: "hash3",
+        rulesEvaluated: [],
+        security: {
+          correlationId: "c3",
+          subject: agentProposer,
+          timestamp: baseNow - 200,
+        },
+        timestamp: baseNow - 200,
+      } as any,
+      -50 // already expired
+    );
+
+    expect(p1.id).toBe("prop-001");
+    expect(p2.id).toBe("prop-002");
+    expect(p3Expired.id).toBe("prop-003");
+
+    // 1. Pending listing: strictly excludes expired proposal
+    const pending = inbox.getPendingProposals();
+    const pendingIds = pending.map((p) => p.id);
+    expect(pendingIds).toContain("prop-001");
+    expect(pendingIds).toContain("prop-002");
+    expect(pendingIds).not.toContain("prop-003");
+
+    // 2. Deterministic sorting by createdAt asc
+    const sortedAsc = inbox.listProposals({
+      sortBy: "createdAt",
+      sortDirection: "asc",
+      status: "pending",
+    });
+    for (let i = 1; i < sortedAsc.length; i++) {
+      expect(sortedAsc[i].createdAt).toBeGreaterThanOrEqual(
+        sortedAsc[i - 1].createdAt
+      );
+    }
+
+    // 3. Deterministic tie-breaking: identical timestamps sort by ID ascending
+    const pTie1 = inbox.addProposal(
+      {
+        actionType: UpdateDoseAction,
+        rawParameters: { newDose: 14, patientId: "P-100" },
+        security: {
+          correlationId: "ct1",
+          subject: agentProposer,
+          timestamp: baseNow,
+        },
+      },
+      {
+        id: "prop-zebra",
+        outcome: "proposed",
+        parameters: {},
+        recordHash: "hz",
+        rulesEvaluated: [],
+        security: {
+          correlationId: "ct1",
+          subject: agentProposer,
+          timestamp: baseNow,
+        },
+        timestamp: baseNow,
+      } as any,
+      50000
+    );
+    const pTie2 = inbox.addProposal(
+      {
+        actionType: UpdateDoseAction,
+        rawParameters: { newDose: 15, patientId: "P-100" },
+        security: {
+          correlationId: "ct2",
+          subject: agentProposer,
+          timestamp: baseNow,
+        },
+      },
+      {
+        id: "prop-apple",
+        outcome: "proposed",
+        parameters: {},
+        recordHash: "ha",
+        rulesEvaluated: [],
+        security: {
+          correlationId: "ct2",
+          subject: agentProposer,
+          timestamp: baseNow,
+        },
+        timestamp: baseNow,
+      } as any,
+      50000
+    );
+
+    // Overwrite createdAt to be strictly equal to test tie-breaking
+    (pTie1 as any).createdAt = 5000;
+    (pTie2 as any).createdAt = 5000;
+
+    const tiedResults = inbox
+      .listProposals({
+        sortBy: "createdAt",
+        sortDirection: "asc",
+        status: "pending",
+      })
+      .filter((p) => p.id === "prop-zebra" || p.id === "prop-apple");
+
+    expect(tiedResults[0].id).toBe("prop-apple");
+    expect(tiedResults[1].id).toBe("prop-zebra");
+
+    // 4. Filtering by proposerId
+    const alphaProposals = inbox.listProposals({
+      proposerId: "agent-alpha",
+      status: "all",
+    });
+    expect(alphaProposals.every((p) => p.proposerId === "agent-alpha")).toBe(
+      true
+    );
+    expect(alphaProposals.map((p) => p.id)).toContain("prop-001");
+
+    // 5. Pagination with limit and offset
+    const page1 = inbox.listProposals({
+      limit: 2,
+      offset: 0,
+      status: "pending",
+    });
+    const page2 = inbox.listProposals({
+      limit: 2,
+      offset: 2,
+      status: "pending",
+    });
+    expect(page1).toHaveLength(2);
+    expect(page2.length).toBeGreaterThan(0);
+    expect(page1[0].id).not.toBe(page2[0].id);
+  });
+
+  it("does preserve proposals and approval receipts across export and import snapshot (S07 / V1-04)", async () => {
+    // 1. Prepare and approve one proposal
+    const prop1 = await Effect.runPromise(
+      inbox.prepare({
+        actionType: UpdateDoseAction,
+        parameters: { newDose: 88, patientId: "P-100" },
+        proposer: agentProposer,
+      })
+    );
+    const receipt = await Effect.runPromise(
+      inbox.approve(prop1.id, prop1.effectDigest, humanDoctor)
+    );
+
+    // 2. Prepare another proposal left pending
+    const prop2 = await Effect.runPromise(
+      inbox.prepare({
+        actionType: UpdateDoseAction,
+        parameters: { newDose: 99, patientId: "P-100" },
+        proposer: agentProposer,
+      })
+    );
+
+    // 3. Export snapshot
+    const snapshot = inbox.exportSnapshot();
+    expect(snapshot.proposals.length).toBeGreaterThanOrEqual(2);
+    expect(snapshot.receipts.length).toBeGreaterThanOrEqual(1);
+
+    // 4. Create a completely fresh ActionInbox and import snapshot
+    const freshInbox = new ActionInbox(auditStore, objectStore);
+    freshInbox.importSnapshot(snapshot);
+
+    // 5. Verify restored state
+    const restoredProp1 = freshInbox.getProposal(prop1.id);
+    expect(restoredProp1?.status).toBe("approved");
+
+    const restoredReceipt = freshInbox.getApprovalReceipt(receipt.id);
+    expect(restoredReceipt).toBeDefined();
+    expect(restoredReceipt?.receiptHash).toBe(receipt.receiptHash);
+
+    const restoredProp2 = freshInbox.getProposal(prop2.id);
+    expect(restoredProp2?.status).toBe("pending");
+
+    // 6. Complete approval on the restored pending proposal
+    const receipt2 = await Effect.runPromise(
+      freshInbox.approve(prop2.id, prop2.effectDigest, humanDoctor)
+    );
+    expect(receipt2.decision).toBe("approved");
+    expect(freshInbox.getProposal(prop2.id)?.status).toBe("approved");
+
+    const patient = await Effect.runPromise(
+      objectStore.getObject(PatientType.id, "P-100")
+    );
+    expect((patient!.properties as any).dose).toBe(99);
   });
 });

@@ -270,3 +270,85 @@ export function computeOperationReceiptDigest(
 ): string {
   return computeCanonicalDigest(receiptWithoutDigest);
 }
+
+/**
+ * Compute RFC 8785 canonical digest of normalized action effects (S07 / V1-04)
+ */
+export function computeEffectDigest(effects: {
+  readonly actionId: string;
+  readonly normalizedParameters: Record<string, unknown>;
+  readonly requestedEffects?: readonly RequestedEffect[];
+  readonly intendedRecipients?: readonly string[];
+}): string {
+  return computeCanonicalDigest({
+    actionId: effects.actionId,
+    intendedRecipients: effects.intendedRecipients ?? [],
+    normalizedParameters: effects.normalizedParameters,
+    requestedEffects: effects.requestedEffects ?? [],
+  });
+}
+
+/**
+ * ActionProposal (S07 / V1-04):
+ * Immutable durable proposal binding normalized parameters, releases,
+ * evidence closure, requested effects, and canonical digests.
+ */
+export const ActionProposalSchema = Schema.Struct({
+  id: Schema.String,
+  actionId: Schema.String,
+  actionRelease: Schema.String,
+  tenantId: Schema.String,
+  environmentId: Schema.String,
+  proposer: SubjectSchema,
+  grantId: Schema.optional(Schema.String),
+  normalizedParameters: Schema.Record(Schema.String, Schema.Unknown),
+  objectRevisions: Schema.Array(ObjectRevisionRefSchema),
+  predicateDependencies: Schema.Array(PredicateDependencySchema),
+  evidenceClosure: Schema.Array(EvidenceClosureItemSchema),
+  requestedEffects: Schema.Array(RequestedEffectSchema),
+  intendedRecipients: Schema.Array(Schema.String),
+  usageReservations: Schema.Array(UsageReservationSchema),
+  worldView: WorldViewSchema,
+  verdict: DecisionVerdictSchema,
+  reviewReasons: Schema.optional(Schema.Array(Schema.String)),
+  checks: Schema.Array(ActionCheckResultSchema),
+  effectDigest: Schema.String,
+  canonicalDigest: Schema.String,
+  createdAt: Schema.Number,
+  expiresAt: Schema.Number,
+});
+export type ActionProposal = Schema.Schema.Type<typeof ActionProposalSchema>;
+
+export function computeActionProposalDigest(
+  proposalWithoutDigest: Omit<ActionProposal, "canonicalDigest">
+): string {
+  return computeCanonicalDigest(proposalWithoutDigest);
+}
+
+/**
+ * ApprovalReceipt (S07 / V1-04):
+ * Durable receipt produced when an authorized principal approves a proposal,
+ * binding exact normalized proposal, releases, evidence, and effect digest.
+ */
+export const ApprovalReceiptSchema = Schema.Struct({
+  id: Schema.String,
+  proposalId: Schema.String,
+  expectedDigest: Schema.String,
+  effectDigest: Schema.String,
+  proposalDigest: Schema.String,
+  decision: Schema.Literals(["approved", "rejected"]),
+  principal: SubjectSchema,
+  actionRelease: Schema.String,
+  policyRelease: Schema.String,
+  approvedAt: Schema.Number,
+  expiresAt: Schema.Number,
+  reason: Schema.optional(Schema.String),
+  receiptHash: Schema.String,
+});
+export type ApprovalReceipt = Schema.Schema.Type<typeof ApprovalReceiptSchema>;
+
+export function computeApprovalReceiptHash(
+  receiptWithoutHash: Omit<ApprovalReceipt, "receiptHash">
+): string {
+  return computeCanonicalDigest(receiptWithoutHash);
+}
