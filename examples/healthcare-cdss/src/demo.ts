@@ -1,8 +1,21 @@
+import { Effect } from "effect";
+
 import { runClinicalSimulation } from "./simulation.js";
 
-try {
-  await runClinicalSimulation();
-} catch (error: unknown) {
-  console.error("Simulation failed:", error);
-  process.exit(1);
-}
+const exitCode = await Effect.runPromise(
+  Effect.tryPromise({
+    try: () => runClinicalSimulation(),
+    catch: (error: unknown) => error,
+  }).pipe(
+    Effect.as(0),
+    Effect.catch((error) => {
+      console.error("Simulation failed:", error);
+      return Effect.succeed(1);
+    }),
+    Effect.catchDefect((defect) => {
+      console.error("Simulation failed:", defect);
+      return Effect.succeed(1);
+    })
+  )
+);
+process.exit(exitCode);

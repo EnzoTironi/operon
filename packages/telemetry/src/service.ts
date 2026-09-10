@@ -1,5 +1,5 @@
 import * as Sentry from "@sentry/node";
-import { Data, Effect, Logger } from "effect";
+import { Config, Data, Effect, Logger, Option, Redacted } from "effect";
 import type { Layer } from "effect";
 import { PostHog } from "posthog-node";
 
@@ -49,23 +49,56 @@ export class OperonTelemetryService {
   }
 
   private resolveConfig(config?: TelemetryConfig): TelemetryConfig {
-    const isExplicitlyDisabled =
-      process.env.OPERON_TELEMETRY_ENABLED === "false";
-    const isExplicitlyEnabled = process.env.OPERON_TELEMETRY_ENABLED === "true";
+    const env = Effect.runSync(
+      Effect.gen(function* () {
+        const telemetryEnabled = yield* Config.string(
+          "OPERON_TELEMETRY_ENABLED"
+        ).pipe(Config.option);
+        const sentryDsn = yield* Config.redacted("SENTRY_DSN").pipe(
+          Config.orElse(() => Config.redacted("NEXT_PUBLIC_SENTRY_DSN")),
+          Config.option
+        );
+        const posthogApiKey = yield* Config.redacted("POSTHOG_API_KEY").pipe(
+          Config.orElse(() => Config.redacted("NEXT_PUBLIC_POSTHOG_KEY")),
+          Config.option
+        );
+        const posthogHost = yield* Config.string("POSTHOG_HOST").pipe(
+          Config.orElse(() => Config.string("NEXT_PUBLIC_POSTHOG_HOST")),
+          Config.withDefault("https://us.i.posthog.com")
+        );
+        const release = yield* Config.string("OPERON_RELEASE").pipe(
+          Config.withDefault("operon@0.1.0")
+        );
+        const sentryEnvironment = yield* Config.string(
+          "SENTRY_ENVIRONMENT"
+        ).pipe(
+          Config.orElse(() => Config.string("NODE_ENV")),
+          Config.withDefault("development")
+        );
 
-    const sentryDsn =
-      config?.sentryDsn ||
-      process.env.SENTRY_DSN ||
-      process.env.NEXT_PUBLIC_SENTRY_DSN;
-    const posthogApiKey =
-      config?.posthogApiKey ||
-      process.env.POSTHOG_API_KEY ||
-      process.env.NEXT_PUBLIC_POSTHOG_KEY;
-    const posthogHost =
-      config?.posthogHost ||
-      process.env.POSTHOG_HOST ||
-      process.env.NEXT_PUBLIC_POSTHOG_HOST ||
-      "https://us.i.posthog.com";
+        return {
+          posthogApiKey: posthogApiKey.pipe(
+            Option.map(Redacted.value),
+            Option.getOrUndefined
+          ),
+          posthogHost,
+          release,
+          sentryDsn: sentryDsn.pipe(
+            Option.map(Redacted.value),
+            Option.getOrUndefined
+          ),
+          sentryEnvironment,
+          telemetryEnabled: Option.getOrUndefined(telemetryEnabled),
+        };
+      })
+    );
+
+    const isExplicitlyDisabled = env.telemetryEnabled === "false";
+    const isExplicitlyEnabled = env.telemetryEnabled === "true";
+
+    const sentryDsn = config?.sentryDsn || env.sentryDsn;
+    const posthogApiKey = config?.posthogApiKey || env.posthogApiKey;
+    const posthogHost = config?.posthogHost || env.posthogHost;
 
     const hasCredentials = Boolean(sentryDsn || posthogApiKey);
     const enabled =
@@ -76,14 +109,10 @@ export class OperonTelemetryService {
       enabled,
       posthogApiKey,
       posthogHost,
-      release: config?.release || process.env.OPERON_RELEASE || "operon@0.1.0",
+      release: config?.release || env.release,
       scrubKeys: config?.scrubKeys,
       sentryDsn,
-      sentryEnvironment:
-        config?.sentryEnvironment ||
-        process.env.SENTRY_ENVIRONMENT ||
-        process.env.NODE_ENV ||
-        "development",
+      sentryEnvironment: config?.sentryEnvironment || env.sentryEnvironment,
       sentrySampleRate: config?.sentrySampleRate ?? 1,
     };
   }
@@ -94,7 +123,7 @@ export class OperonTelemetryService {
     }
 
     if (this.config.sentryDsn && !this.sentryInitialized) {
-      try {
+      Effect.try(() => {
         Sentry.init({
           dsn: this.config.sentryDsn,
           environment: this.config.sentryEnvironment,
@@ -102,21 +131,17 @@ export class OperonTelemetryService {
           tracesSampleRate: this.config.sentrySampleRate,
         });
         this.sentryInitialized = true;
-      } catch {
-        // Fail-safe: Sentry init failure should never crash application
-      }
+      }).pipe(Effect.ignore, Effect.runSync);
     }
 
     if (this.config.posthogApiKey && !this.posthogClient) {
-      try {
-        this.posthogClient = new PostHog(this.config.posthogApiKey, {
+      Effect.try(() => {
+        this.posthogClient = new PostHog(this.config.posthogApiKey!, {
           flushAt: 1,
           flushInterval: 1000,
           host: this.config.posthogHost,
         });
-      } catch {
-        // Fail-safe: PostHog init failure should never crash application
-      }
+      }).pipe(Effect.ignore, Effect.runSync);
     }
   }
 
@@ -209,8 +234,8 @@ export class OperonTelemetryService {
     }
 
     if (this.posthogClient) {
-      try {
-        this.posthogClient.capture({
+      Effect.try(() => {
+        this.posthogClient!.capture({
           distinctId,
           event: eventPayload.event,
           properties: {
@@ -218,9 +243,7 @@ export class OperonTelemetryService {
             subjectType: eventPayload.subject?.type,
           },
         });
-      } catch {
-        // Fail-safe
-      }
+      }).pipe(Effect.ignore, Effect.runSync);
     }
   }
 
@@ -275,21 +298,19 @@ export class OperonTelemetryService {
     return Logger.layer([logger, Logger.tracerLogger]);
   }
 
-  async flushAndClose(): Promise<void> {
-    if (this.sentryInitialized) {
-      try {
-        await Sentry.flush(2000);
-      } catch {
-        // Ignore Sentry flush errors on shutdown
-      }
-    }
+  flushAndClose(): Promise<void> {
+    const sentryFlush = this.sentryInitialized
+      ? Effect.tryPromise(() => Sentry.flush(2000)).pipe(Effect.ignore)
+      : Effect.void;
 
-    if (this.posthogClient) {
-      try {
-        await this.posthogClient.shutdown();
-      } catch {
-        // Ignore PostHog shutdown errors on shutdown
-      }
-    }
+    const posthogShutdown = this.posthogClient
+      ? Effect.tryPromise(() => this.posthogClient!.shutdown()).pipe(
+          Effect.ignore
+        )
+      : Effect.void;
+
+    return Effect.all([sentryFlush, posthogShutdown], {
+      concurrency: "unbounded",
+    }).pipe(Effect.asVoid, Effect.runPromise);
   }
 }

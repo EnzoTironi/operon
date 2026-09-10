@@ -1,15 +1,22 @@
+import { Schema } from "effect";
+
 /**
  * Ingestion mode for the Object Data Funnel
  */
-export type FunnelIngestionMode = "batch" | "streaming";
+export const FunnelIngestionMode = Schema.Literals(["batch", "streaming"]);
+export type FunnelIngestionMode = typeof FunnelIngestionMode.Type;
+export const FunnelIngestionModeSchema = FunnelIngestionMode;
 
 /**
  * Precedence rule when external source batch syncs conflict with local unmaterialized action edits
  */
-export type ConflictResolutionPolicy =
-  | "user_edit_wins"
-  | "source_wins"
-  | "timestamp_wins";
+export const ConflictResolutionPolicy = Schema.Literals([
+  "user_edit_wins",
+  "source_wins",
+  "timestamp_wins",
+]);
+export type ConflictResolutionPolicy = typeof ConflictResolutionPolicy.Type;
+export const ConflictResolutionPolicySchema = ConflictResolutionPolicy;
 
 /**
  * Transform expression or function from source field to target property

@@ -304,16 +304,14 @@ export class AccountableIngestionService {
 
       // If string and mediaType is JSON, parse it to ensure valid structure
       if (options.mediaType.includes("json") && typeof payload === "string") {
-        try {
-          payload = JSON.parse(payload);
-        } catch (error: any) {
-          return yield* Effect.fail(
+        payload = yield* Effect.try({
+          catch: (error: unknown) =>
             new CorruptInputError({
               locator: options.locator,
-              reason: `Corrupt JSON payload: ${error.message}`,
-            })
-          );
-        }
+              reason: `Corrupt JSON payload: ${String((error as any)?.message ?? error)}`,
+            }),
+          try: () => JSON.parse(payload as string),
+        });
       }
 
       // 2. Compute canonical digest

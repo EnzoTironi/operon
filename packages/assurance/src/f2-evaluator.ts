@@ -232,32 +232,29 @@ export class F2MirrorService {
 
       const payloadCanonicalDigest = computeCanonicalDigest(receiptPayload);
 
-      try {
-        const isValid = verify(
-          null,
-          Buffer.from(payloadCanonicalDigest, "utf-8"),
-          receipt.signerPublicKey,
-          Buffer.from(receipt.signature, "hex")
-        );
-
-        if (!isValid) {
-          return yield* Effect.fail(
-            new F1SignatureVerificationError({
-              candidateDigest: receipt.candidateDigest,
-              signature: receipt.signature,
-            })
-          );
-        }
-
-        return true;
-      } catch {
-        return yield* Effect.fail(
+      const isValid = yield* Effect.try({
+        catch: () =>
           new F1SignatureVerificationError({
             candidateDigest: receipt.candidateDigest,
             signature: receipt.signature,
-          })
-        );
+          }),
+        try: () =>
+          verify(
+            null,
+            Buffer.from(payloadCanonicalDigest, "utf-8"),
+            receipt.signerPublicKey,
+            Buffer.from(receipt.signature, "hex")
+          ),
+      });
+
+      if (!isValid) {
+        return yield* new F1SignatureVerificationError({
+          candidateDigest: receipt.candidateDigest,
+          signature: receipt.signature,
+        });
       }
+
+      return true;
     });
   }
 }

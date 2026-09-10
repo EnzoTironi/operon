@@ -30,19 +30,17 @@ describe("ApiKeyRegistry & Scoped Key Validation", () => {
 
   it("rejects unregistered/fabricated keys with security failure", async () => {
     const registry = new ApiKeyRegistry();
-    let error: unknown;
-    try {
-      await Effect.runPromise(
-        registry.validateKey("bk_forged_unregistered_key")
-      );
-    } catch (caughtError) {
-      error = caughtError;
-    }
-
-    expect(error).toBeInstanceOf(McpSecurityError);
-    expect((error as McpSecurityError).message).toContain(
-      "credential not found in registry"
+    const exit = await Effect.runPromiseExit(
+      registry.validateKey("bk_forged_unregistered_key")
     );
+
+    expect(exit._tag).toBe("Failure");
+    if (exit._tag === "Failure" && exit.cause._tag === "Fail") {
+      expect(exit.cause.error._tag).toBe("McpSecurityError");
+      expect(exit.cause.error.message).toContain(
+        "credential not found in registry"
+      );
+    }
   });
 
   it("rejects revoked (inactive) keys", async () => {
@@ -56,17 +54,17 @@ describe("ApiKeyRegistry & Scoped Key Validation", () => {
       role: "builder",
     });
 
-    let error: unknown;
-    try {
-      await Effect.runPromise(registry.validateKey("bk_revoked"));
-    } catch (caughtError) {
-      error = caughtError;
-    }
-
-    expect(error).toBeInstanceOf(McpSecurityError);
-    expect((error as McpSecurityError).message).toContain(
-      "credential not found in registry"
+    const exit = await Effect.runPromiseExit(
+      registry.validateKey("bk_revoked")
     );
+
+    expect(exit._tag).toBe("Failure");
+    if (exit._tag === "Failure" && exit.cause._tag === "Fail") {
+      expect(exit.cause.error._tag).toBe("McpSecurityError");
+      expect(exit.cause.error.message).toContain(
+        "credential not found in registry"
+      );
+    }
   });
 
   it("rejects expired keys", async () => {
@@ -81,15 +79,15 @@ describe("ApiKeyRegistry & Scoped Key Validation", () => {
       role: "builder",
     });
 
-    let error: unknown;
-    try {
-      await Effect.runPromise(registry.validateKey("bk_expired"));
-    } catch (caughtError) {
-      error = caughtError;
-    }
+    const exit = await Effect.runPromiseExit(
+      registry.validateKey("bk_expired")
+    );
 
-    expect(error).toBeInstanceOf(McpSecurityError);
-    expect((error as McpSecurityError).message).toContain("has expired");
+    expect(exit._tag).toBe("Failure");
+    if (exit._tag === "Failure" && exit.cause._tag === "Fail") {
+      expect(exit.cause.error._tag).toBe("McpSecurityError");
+      expect(exit.cause.error.message).toContain("has expired");
+    }
   });
 
   it("enforces role boundaries between Consumer and Builder keys via assertMcpKeyPermission", () => {

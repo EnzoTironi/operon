@@ -7,7 +7,12 @@ import {
 } from "@operon/recipes";
 import type { RecipePack } from "@operon/recipes";
 import { SkillService } from "@operon/skills";
-import { Effect } from "effect";
+import { Data, Effect } from "effect";
+
+class RecipeReadError extends Data.TaggedError("RecipeReadError")<{
+  readonly path: string;
+  readonly cause: unknown;
+}> {}
 
 export function runRecipe(
   args: string[]
@@ -86,15 +91,22 @@ export function runRecipe(
       ) {
         pack = AviationSkywisePack;
       } else {
-        try {
-          const content = fs.readFileSync(pathOrBuiltin, "utf-8");
-          pack = JSON.parse(content) as RecipePack;
-        } catch (error: any) {
+        const fileResult = yield* Effect.try({
+          try: () => {
+            const content = fs.readFileSync(pathOrBuiltin, "utf-8");
+            return JSON.parse(content) as RecipePack;
+          },
+          catch: (cause: unknown) =>
+            new RecipeReadError({ path: pathOrBuiltin, cause }),
+        }).pipe(Effect.exit);
+
+        if (fileResult._tag === "Failure") {
           console.error(
-            `Error reading recipe file '${pathOrBuiltin}': ${error.message}`
+            `Error reading recipe file '${pathOrBuiltin}': ${String(fileResult.cause)}`
           );
           return 1;
         }
+        pack = fileResult.value;
       }
 
       const receipt = yield* recipeService

@@ -41,10 +41,10 @@ import type {
 } from "@operon/schema";
 import { BUILTIN_SKILLS, SkillService } from "@operon/skills";
 import type { SkillRegistryService } from "@operon/skills";
-import { Data, Effect } from "effect";
+import { Cause, Data, Effect, Exit } from "effect";
 
 import type { McpKey } from "./keys.js";
-import { assertMcpKeyPermission } from "./keys.js";
+import { checkMcpKeyPermission } from "./keys.js";
 import { projectActionToTool } from "./projection.js";
 
 export class McpResourceNotFoundError extends Data.TaggedError(
@@ -926,64 +926,72 @@ export function createOperonMcpServer(options: OperonMcpServerOptions) {
   });
 
   // Handler: List Resources
-  server.setRequestHandler(ListResourcesRequestSchema, async (_request) => {
-    const skills = await Effect.runPromise(skillService.listSkills());
-    const recipes = await Effect.runPromise(recipeService.listRecipes());
+  server.setRequestHandler(ListResourcesRequestSchema, (_request) =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const skills = yield* skillService.listSkills();
+        const recipes = yield* recipeService.listRecipes();
 
-    const skillResources = skills.map((s) => ({
-      description: s.description,
-      mimeType: "application/json",
-      name: s.name,
-      uri: `operon://skills/${s.id}`,
-    }));
+        const skillResources = skills.map((s) => ({
+          description: s.description,
+          mimeType: "application/json",
+          name: s.name,
+          uri: `operon://skills/${s.id}`,
+        }));
 
-    const recipeResources = recipes.map((r) => ({
-      description: r.description,
-      mimeType: "application/json",
-      name: r.name,
-      uri: `operon://recipes/${r.id}`,
-    }));
+        const recipeResources = recipes.map((r) => ({
+          description: r.description,
+          mimeType: "application/json",
+          name: r.name,
+          uri: `operon://recipes/${r.id}`,
+        }));
 
-    return {
-      resources: [...skillResources, ...recipeResources],
-    };
-  });
+        return {
+          resources: [...skillResources, ...recipeResources],
+        };
+      })
+    )
+  );
 
   // Handler: Read Resource
-  server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
-    const { uri } = request.params;
-    if (uri.startsWith("operon://skills/")) {
-      const skillId = uri.slice("operon://skills/".length);
-      const skill = await Effect.runPromise(skillService.getSkill(skillId));
-      return {
-        contents: [
-          {
-            mimeType: "application/json",
-            text: JSON.stringify(skill, null, 2),
-            uri,
-          },
-        ],
-      };
-    }
-    if (uri.startsWith("operon://recipes/")) {
-      const recipeId = uri.slice("operon://recipes/".length);
-      const recipe = await Effect.runPromise(recipeService.getRecipe(recipeId));
-      return {
-        contents: [
-          {
-            mimeType: "application/json",
-            text: JSON.stringify(recipe, null, 2),
-            uri,
-          },
-        ],
-      };
-    }
+  server.setRequestHandler(ReadResourceRequestSchema, (request) =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const { uri } = request.params;
+        if (uri.startsWith("operon://skills/")) {
+          const skillId = uri.slice("operon://skills/".length);
+          const skill = yield* skillService.getSkill(skillId);
+          return {
+            contents: [
+              {
+                mimeType: "application/json",
+                text: JSON.stringify(skill, null, 2),
+                uri,
+              },
+            ],
+          };
+        }
+        if (uri.startsWith("operon://recipes/")) {
+          const recipeId = uri.slice("operon://recipes/".length);
+          const recipe = yield* recipeService.getRecipe(recipeId);
+          return {
+            contents: [
+              {
+                mimeType: "application/json",
+                text: JSON.stringify(recipe, null, 2),
+                uri,
+              },
+            ],
+          };
+        }
 
-    throw new McpResourceNotFoundError({ uri });
-  });
+        return yield* new McpResourceNotFoundError({ uri });
+      })
+    )
+  );
 
   // Handler: Call Tool
-  server.setRequestHandler(CallToolRequestSchema, async (request) => {
+  server.setRequestHandler(CallToolRequestSchema, (request) => {
     const { name, arguments: args = {} } = request.params;
 
     // Default caller subject representing the LLM Agent
@@ -1003,10 +1011,10 @@ export function createOperonMcpServer(options: OperonMcpServerOptions) {
       type: "agent",
     };
 
-    try {
+    const executeTool = Effect.fn("McpServer.executeTool")(function* () {
       if (name === "operon_query_objects") {
         const typeId = String(args.typeId) as ObjectTypeId;
-        let objects = await Effect.runPromise(objectStore.findObjects(typeId));
+        let objects = yield* objectStore.findObjects(typeId);
 
         if (securityEngine) {
           objects = securityEngine.filterInstances(objects, callerSubject);
@@ -1028,9 +1036,7 @@ export function createOperonMcpServer(options: OperonMcpServerOptions) {
       if (name === "operon_get_object") {
         const typeId = String(args.typeId) as ObjectTypeId;
         const objectId = String(args.objectId);
-        let obj = await Effect.runPromise(
-          objectStore.getObject(typeId, objectId)
-        );
+        let obj = yield* objectStore.getObject(typeId, objectId);
 
         if (!obj) {
           return {
@@ -1108,8 +1114,9 @@ export function createOperonMcpServer(options: OperonMcpServerOptions) {
         }
 
         const proposalId = String(args.proposalId);
-        const decisionRecord = await Effect.runPromise(
-          inbox.approveProposal(proposalId, callerSubject)
+        const decisionRecord = yield* inbox.approveProposal(
+          proposalId,
+          callerSubject
         );
 
         return {
@@ -1148,13 +1155,11 @@ export function createOperonMcpServer(options: OperonMcpServerOptions) {
         }
 
         const proposalId = String(args.proposalId);
-        const override = await Effect.runPromise(
-          inbox.rejectProposal(
-            proposalId,
-            callerSubject,
-            String(args.category ?? "operational_override") as OverrideCategory,
-            String(args.reason)
-          )
+        const override = yield* inbox.rejectProposal(
+          proposalId,
+          callerSubject,
+          String(args.category ?? "operational_override") as OverrideCategory,
+          String(args.reason)
         );
 
         return {
@@ -1177,9 +1182,7 @@ export function createOperonMcpServer(options: OperonMcpServerOptions) {
       if (name === "operon_check_readiness") {
         const typeId = String(args.typeId) as ObjectTypeId;
         const objectId = String(args.objectId);
-        const obj = await Effect.runPromise(
-          objectStore.getObject(typeId, objectId)
-        );
+        const obj = yield* objectStore.getObject(typeId, objectId);
         const objType = objectTypeMap.get(typeId);
 
         if (!obj || !objType) {
@@ -1224,14 +1227,12 @@ export function createOperonMcpServer(options: OperonMcpServerOptions) {
           ? String(args.idempotencyKey)
           : undefined;
 
-        const receipt = await Effect.runPromise(
-          oms.applyArtifact({
-            artifact,
-            branch,
-            expectedRevision,
-            idempotencyKey,
-          })
-        );
+        const receipt = yield* oms.applyArtifact({
+          artifact,
+          branch,
+          expectedRevision,
+          idempotencyKey,
+        });
 
         return {
           content: [{ text: JSON.stringify(receipt, null, 2), type: "text" }],
@@ -1240,9 +1241,7 @@ export function createOperonMcpServer(options: OperonMcpServerOptions) {
 
       if (name === "operon_inspect_candidate") {
         const candidateDigest = String(args.candidateDigest);
-        const candidate = await Effect.runPromise(
-          oms.inspectCandidate(candidateDigest)
-        );
+        const candidate = yield* oms.inspectCandidate(candidateDigest);
         return {
           content: [{ text: JSON.stringify(candidate, null, 2), type: "text" }],
         };
@@ -1250,9 +1249,7 @@ export function createOperonMcpServer(options: OperonMcpServerOptions) {
 
       if (name === "operon_diff_candidate") {
         const candidateDigest = String(args.candidateDigest);
-        const diff = await Effect.runPromise(
-          oms.diffCandidate(candidateDigest)
-        );
+        const diff = yield* oms.diffCandidate(candidateDigest);
         return {
           content: [{ text: JSON.stringify(diff, null, 2), type: "text" }],
         };
@@ -1278,15 +1275,13 @@ export function createOperonMcpServer(options: OperonMcpServerOptions) {
           type: "user",
         };
 
-        const pubReceipt = await Effect.runPromise(
-          oms.publishRelease({
-            candidateDigest,
-            expectedCurrentRelease,
-            idempotencyKey,
-            publisher,
-            reviewRefs,
-          })
-        );
+        const pubReceipt = yield* oms.publishRelease({
+          candidateDigest,
+          expectedCurrentRelease,
+          idempotencyKey,
+          publisher,
+          reviewRefs,
+        });
 
         return {
           content: [
@@ -1303,12 +1298,10 @@ export function createOperonMcpServer(options: OperonMcpServerOptions) {
           ? String(args.idempotencyKey)
           : undefined;
 
-        const pubReceipt = await Effect.runPromise(
-          oms.getPublication({
-            idempotencyKey,
-            publicationId,
-          })
-        );
+        const pubReceipt = yield* oms.getPublication({
+          idempotencyKey,
+          publicationId,
+        });
 
         return {
           content: [
@@ -1318,7 +1311,7 @@ export function createOperonMcpServer(options: OperonMcpServerOptions) {
       }
 
       if (name === "operon_get_active_release") {
-        const activeRelease = await Effect.runPromise(oms.getActiveRelease());
+        const activeRelease = yield* oms.getActiveRelease();
         return {
           content: [
             { text: JSON.stringify(activeRelease, null, 2), type: "text" },
@@ -1327,45 +1320,42 @@ export function createOperonMcpServer(options: OperonMcpServerOptions) {
       }
 
       if (name === "operon_list_skills") {
-        assertMcpKeyPermission(callerKey, "query_runtime");
-        const skills = await Effect.runPromise(skillService.listSkills());
+        yield* checkMcpKeyPermission(callerKey, "query_runtime");
+        const skills = yield* skillService.listSkills();
         return {
           content: [{ text: JSON.stringify(skills, null, 2), type: "text" }],
         };
       }
 
       if (name === "operon_get_skill") {
-        assertMcpKeyPermission(callerKey, "query_runtime");
-        const skill = await Effect.runPromise(
-          skillService.getSkill(String(args.skillId))
-        );
+        yield* checkMcpKeyPermission(callerKey, "query_runtime");
+        const skill = yield* skillService.getSkill(String(args.skillId));
         return {
           content: [{ text: JSON.stringify(skill, null, 2), type: "text" }],
         };
       }
 
       if (name === "operon_list_recipes") {
-        assertMcpKeyPermission(callerKey, "query_runtime");
-        const recipes = await Effect.runPromise(recipeService.listRecipes());
+        yield* checkMcpKeyPermission(callerKey, "query_runtime");
+        const recipes = yield* recipeService.listRecipes();
         return {
           content: [{ text: JSON.stringify(recipes, null, 2), type: "text" }],
         };
       }
 
       if (name === "operon_get_recipe") {
-        assertMcpKeyPermission(callerKey, "query_runtime");
-        const recipe = await Effect.runPromise(
-          recipeService.getRecipe(String(args.recipeId))
-        );
+        yield* checkMcpKeyPermission(callerKey, "query_runtime");
+        const recipe = yield* recipeService.getRecipe(String(args.recipeId));
         return {
           content: [{ text: JSON.stringify(recipe, null, 2), type: "text" }],
         };
       }
 
       if (name === "operon_import_recipe") {
-        assertMcpKeyPermission(callerKey, "modify_schema");
-        const receipt = await Effect.runPromise(
-          recipeService.importRecipe(args.pack as RecipePack, skillService)
+        yield* checkMcpKeyPermission(callerKey, "modify_schema");
+        const receipt = yield* recipeService.importRecipe(
+          args.pack as RecipePack,
+          skillService
         );
         return {
           content: [{ text: JSON.stringify(receipt, null, 2), type: "text" }],
@@ -1373,35 +1363,31 @@ export function createOperonMcpServer(options: OperonMcpServerOptions) {
       }
 
       if (name === "operon_ingest_source") {
-        assertMcpKeyPermission(callerKey, "modify_pipeline");
-        const receipt = await Effect.runPromise(
-          ingestionService.ingestRawSource({
-            environmentId: args.environmentId
-              ? String(args.environmentId)
-              : undefined,
-            idempotencyKey: args.idempotencyKey
-              ? String(args.idempotencyKey)
-              : undefined,
-            locator: String(args.locator),
-            mediaType: String(args.mediaType),
-            permittedUses: args.permittedUses as string[] | undefined,
-            rawPayload: args.payload,
-            sensitivity: args.sensitivity as any,
-            tenantId: args.tenantId ? String(args.tenantId) : undefined,
-          })
-        );
+        yield* checkMcpKeyPermission(callerKey, "modify_pipeline");
+        const receipt = yield* ingestionService.ingestRawSource({
+          environmentId: args.environmentId
+            ? String(args.environmentId)
+            : undefined,
+          idempotencyKey: args.idempotencyKey
+            ? String(args.idempotencyKey)
+            : undefined,
+          locator: String(args.locator),
+          mediaType: String(args.mediaType),
+          permittedUses: args.permittedUses as string[] | undefined,
+          rawPayload: args.payload,
+          sensitivity: args.sensitivity as any,
+          tenantId: args.tenantId ? String(args.tenantId) : undefined,
+        });
         return {
           content: [{ text: JSON.stringify(receipt, null, 2), type: "text" }],
         };
       }
 
       if (name === "operon_get_source") {
-        assertMcpKeyPermission(callerKey, "query_runtime");
-        const source = await Effect.runPromise(
-          ingestionService.getSource(
-            String(args.sourceId),
-            args.tenantId ? String(args.tenantId) : undefined
-          )
+        yield* checkMcpKeyPermission(callerKey, "query_runtime");
+        const source = yield* ingestionService.getSource(
+          String(args.sourceId),
+          args.tenantId ? String(args.tenantId) : undefined
         );
         return {
           content: [{ text: JSON.stringify(source, null, 2), type: "text" }],
@@ -1409,11 +1395,9 @@ export function createOperonMcpServer(options: OperonMcpServerOptions) {
       }
 
       if (name === "operon_list_sources") {
-        assertMcpKeyPermission(callerKey, "query_runtime");
-        const sources = await Effect.runPromise(
-          ingestionService.listSources(
-            args.tenantId ? String(args.tenantId) : undefined
-          )
+        yield* checkMcpKeyPermission(callerKey, "query_runtime");
+        const sources = yield* ingestionService.listSources(
+          args.tenantId ? String(args.tenantId) : undefined
         );
         return {
           content: [{ text: JSON.stringify(sources, null, 2), type: "text" }],
@@ -1421,27 +1405,26 @@ export function createOperonMcpServer(options: OperonMcpServerOptions) {
       }
 
       if (name === "operon_propose_mapping") {
-        assertMcpKeyPermission(callerKey, "modify_schema");
-        const proposal = await Effect.runPromise(
-          ingestionService.proposeMapping({
-            author: callerSubject,
-            definitionDigest: String(args.definitionDigest),
-            primaryKeyField: String(args.primaryKeyField),
-            propertyMappings: args.propertyMappings as any,
-            sourceIds: args.sourceIds as string[],
-            targetObjectTypeId: String(args.targetObjectTypeId) as ObjectTypeId,
-            tenantId: args.tenantId ? String(args.tenantId) : undefined,
-          })
-        );
+        yield* checkMcpKeyPermission(callerKey, "modify_schema");
+        const proposal = yield* ingestionService.proposeMapping({
+          author: callerSubject,
+          definitionDigest: String(args.definitionDigest),
+          primaryKeyField: String(args.primaryKeyField),
+          propertyMappings: args.propertyMappings as any,
+          sourceIds: args.sourceIds as string[],
+          targetObjectTypeId: String(args.targetObjectTypeId) as ObjectTypeId,
+          tenantId: args.tenantId ? String(args.tenantId) : undefined,
+        });
         return {
           content: [{ text: JSON.stringify(proposal, null, 2), type: "text" }],
         };
       }
 
       if (name === "operon_admit_mapping_proposal") {
-        assertMcpKeyPermission(callerKey, "modify_schema");
-        const admitted = await Effect.runPromise(
-          ingestionService.admitProposal(String(args.proposalId), callerSubject)
+        yield* checkMcpKeyPermission(callerKey, "modify_schema");
+        const admitted = yield* ingestionService.admitProposal(
+          String(args.proposalId),
+          callerSubject
         );
         return {
           content: [{ text: JSON.stringify(admitted, null, 2), type: "text" }],
@@ -1449,7 +1432,7 @@ export function createOperonMcpServer(options: OperonMcpServerOptions) {
       }
 
       if (name === "operon_exact_query") {
-        assertMcpKeyPermission(callerKey, "query_runtime");
+        yield* checkMcpKeyPermission(callerKey, "query_runtime");
         const queryId = String(args.queryId);
         const validTime = args.validTime ? Number(args.validTime) : Date.now();
         const knowledgeRevision = args.knowledgeRevision
@@ -1475,22 +1458,20 @@ export function createOperonMcpServer(options: OperonMcpServerOptions) {
           validTime,
         });
 
-        const result = await Effect.runPromise(
-          reconciliationService.query(
-            {
-              cursor: null,
-              params: (args.params as Record<string, unknown>) ?? {},
-              queryId,
-              releaseRef,
-              worldView,
-            },
-            objectStore,
-            {
-              maxStalenessMs: args.maxStalenessMs
-                ? Number(args.maxStalenessMs)
-                : undefined,
-            }
-          )
+        const result = yield* reconciliationService.query(
+          {
+            cursor: null,
+            params: (args.params as Record<string, unknown>) ?? {},
+            queryId,
+            releaseRef,
+            worldView,
+          },
+          objectStore,
+          {
+            maxStalenessMs: args.maxStalenessMs
+              ? Number(args.maxStalenessMs)
+              : undefined,
+          }
         );
 
         return {
@@ -1499,7 +1480,7 @@ export function createOperonMcpServer(options: OperonMcpServerOptions) {
       }
 
       if (name === "operon_explain_query") {
-        assertMcpKeyPermission(callerKey, "query_runtime");
+        yield* checkMcpKeyPermission(callerKey, "query_runtime");
         const plan = reconciliationService.explainQuery(
           String(args.typeId),
           String(args.objectId),
@@ -1513,12 +1494,12 @@ export function createOperonMcpServer(options: OperonMcpServerOptions) {
       }
 
       if (name === "operon_propose_identity_resolution") {
-        assertMcpKeyPermission(callerKey, "modify_schema");
+        yield* checkMcpKeyPermission(callerKey, "modify_schema");
         const proposalId = args.proposalId
           ? String(args.proposalId)
           : `res_prop_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-        const proposal = await Effect.runPromise(
-          reconciliationService.proposeIdentityResolution({
+        const proposal = yield* reconciliationService.proposeIdentityResolution(
+          {
             action: args.action as any,
             confidence: Number(args.confidence),
             environmentId: args.environmentId
@@ -1534,7 +1515,7 @@ export function createOperonMcpServer(options: OperonMcpServerOptions) {
             splitDetails: (args.splitDetails as any) ?? null,
             targetCanonicalId: String(args.targetCanonicalId),
             tenantId: args.tenantId ? String(args.tenantId) : undefined,
-          })
+          }
         );
         return {
           content: [{ text: JSON.stringify(proposal, null, 2), type: "text" }],
@@ -1542,22 +1523,20 @@ export function createOperonMcpServer(options: OperonMcpServerOptions) {
       }
 
       if (name === "operon_resolve_identity") {
-        assertMcpKeyPermission(callerKey, "modify_schema");
-        const receipt = await Effect.runPromise(
-          reconciliationService.resolveIdentity(
-            String(args.proposalId),
-            String(args.decisionRef),
-            {
-              environmentId: args.environmentId
-                ? String(args.environmentId)
-                : undefined,
-              forceOverride: Boolean(args.forceOverride),
-              idempotencyKey: args.idempotencyKey
-                ? String(args.idempotencyKey)
-                : undefined,
-              tenantId: args.tenantId ? String(args.tenantId) : undefined,
-            }
-          )
+        yield* checkMcpKeyPermission(callerKey, "modify_schema");
+        const receipt = yield* reconciliationService.resolveIdentity(
+          String(args.proposalId),
+          String(args.decisionRef),
+          {
+            environmentId: args.environmentId
+              ? String(args.environmentId)
+              : undefined,
+            forceOverride: Boolean(args.forceOverride),
+            idempotencyKey: args.idempotencyKey
+              ? String(args.idempotencyKey)
+              : undefined,
+            tenantId: args.tenantId ? String(args.tenantId) : undefined,
+          }
         );
         return {
           content: [{ text: JSON.stringify(receipt, null, 2), type: "text" }],
@@ -1565,11 +1544,9 @@ export function createOperonMcpServer(options: OperonMcpServerOptions) {
       }
 
       if (name === "operon_list_identity_proposals") {
-        assertMcpKeyPermission(callerKey, "query_runtime");
-        const proposals = await Effect.runPromise(
-          reconciliationService.listProposals(
-            args.tenantId ? String(args.tenantId) : undefined
-          )
+        yield* checkMcpKeyPermission(callerKey, "query_runtime");
+        const proposals = yield* reconciliationService.listProposals(
+          args.tenantId ? String(args.tenantId) : undefined
         );
         return {
           content: [{ text: JSON.stringify(proposals, null, 2), type: "text" }],
@@ -1577,7 +1554,7 @@ export function createOperonMcpServer(options: OperonMcpServerOptions) {
       }
 
       if (name === "operon_prepare_action") {
-        assertMcpKeyPermission(callerKey, "execute_action");
+        yield* checkMcpKeyPermission(callerKey, "execute_action");
         const proposer: Subject = {
           agentTier: args.proposerTier
             ? (Number(args.proposerTier) as 1 | 2 | 3 | 4)
@@ -1590,19 +1567,17 @@ export function createOperonMcpServer(options: OperonMcpServerOptions) {
           type: (args.proposerType as "user" | "agent" | "system") || "agent",
         };
 
-        const prepared = await Effect.runPromise(
-          governedActionService.prepareAction({
-            actionId: String(args.actionId),
-            environmentId: args.environmentId
-              ? String(args.environmentId)
-              : "default",
-            grantId: args.grantId ? String(args.grantId) : undefined,
-            proposer,
-            rawParameters: args.parameters ?? {},
-            tenantId: args.tenantId ? String(args.tenantId) : "default",
-            ttlMs: args.ttlMs ? Number(args.ttlMs) : undefined,
-          })
-        );
+        const prepared = yield* governedActionService.prepareAction({
+          actionId: String(args.actionId),
+          environmentId: args.environmentId
+            ? String(args.environmentId)
+            : "default",
+          grantId: args.grantId ? String(args.grantId) : undefined,
+          proposer,
+          rawParameters: args.parameters ?? {},
+          tenantId: args.tenantId ? String(args.tenantId) : "default",
+          ttlMs: args.ttlMs ? Number(args.ttlMs) : undefined,
+        });
 
         return {
           content: [{ text: JSON.stringify(prepared, null, 2), type: "text" }],
@@ -1610,7 +1585,7 @@ export function createOperonMcpServer(options: OperonMcpServerOptions) {
       }
 
       if (name === "operon_approve_prepared_action") {
-        assertMcpKeyPermission(callerKey, "execute_action");
+        yield* checkMcpKeyPermission(callerKey, "execute_action");
         const reviewer: Subject = {
           agentTier: 4,
           id: args.reviewerId ? String(args.reviewerId) : callerKey.agentId,
@@ -1621,24 +1596,22 @@ export function createOperonMcpServer(options: OperonMcpServerOptions) {
           type: (args.reviewerType as "user" | "agent" | "system") || "user",
         };
 
-        const approval = await Effect.runPromise(
-          governedActionService.approvePreparedAction({
-            decision: (args.decision as "approved" | "rejected") || "approved",
-            preparedDigest: String(args.preparedDigest),
-            reason: args.reason ? String(args.reason) : undefined,
-            reviewerContext: {
-              assurance:
-                (args.assurance as "human_verified" | "delegated_service") ||
-                "human_verified",
-              environmentId: args.environmentId
-                ? String(args.environmentId)
-                : "default",
-              reviewer,
-              tenantId: args.tenantId ? String(args.tenantId) : "default",
-            },
-            viewedDigest: String(args.viewedDigest),
-          })
-        );
+        const approval = yield* governedActionService.approvePreparedAction({
+          decision: (args.decision as "approved" | "rejected") || "approved",
+          preparedDigest: String(args.preparedDigest),
+          reason: args.reason ? String(args.reason) : undefined,
+          reviewerContext: {
+            assurance:
+              (args.assurance as "human_verified" | "delegated_service") ||
+              "human_verified",
+            environmentId: args.environmentId
+              ? String(args.environmentId)
+              : "default",
+            reviewer,
+            tenantId: args.tenantId ? String(args.tenantId) : "default",
+          },
+          viewedDigest: String(args.viewedDigest),
+        });
 
         return {
           content: [{ text: JSON.stringify(approval, null, 2), type: "text" }],
@@ -1646,7 +1619,7 @@ export function createOperonMcpServer(options: OperonMcpServerOptions) {
       }
 
       if (name === "operon_commit_action") {
-        assertMcpKeyPermission(callerKey, "execute_action");
+        yield* checkMcpKeyPermission(callerKey, "execute_action");
         const tenantId = args.tenantId ? String(args.tenantId) : "default";
         const environmentId = args.environmentId
           ? String(args.environmentId)
@@ -1654,29 +1627,26 @@ export function createOperonMcpServer(options: OperonMcpServerOptions) {
         const preparedDigest = String(args.preparedDigest);
         const idempotencyKey = String(args.idempotencyKey);
 
-        const prepared = await Effect.runPromise(
-          governedActionService.getPreparedAction(preparedDigest, tenantId)
+        const prepared = yield* governedActionService.getPreparedAction(
+          preparedDigest,
+          tenantId
         );
 
         let approval = undefined;
         if (args.approvalId) {
-          approval = await Effect.runPromise(
-            governedActionService.getApprovalRecord(
-              String(args.approvalId),
-              tenantId
-            )
+          approval = yield* governedActionService.getApprovalRecord(
+            String(args.approvalId),
+            tenantId
           );
         }
 
-        const receipt = await Effect.runPromise(
-          atomicCommitService.commit({
-            approval,
-            environmentId,
-            idempotencyKey,
-            prepared,
-            tenantId,
-          })
-        );
+        const receipt = yield* atomicCommitService.commit({
+          approval,
+          environmentId,
+          idempotencyKey,
+          prepared,
+          tenantId,
+        });
 
         return {
           content: [{ text: JSON.stringify(receipt, null, 2), type: "text" }],
@@ -1684,12 +1654,13 @@ export function createOperonMcpServer(options: OperonMcpServerOptions) {
       }
 
       if (name === "operon_get_action_status") {
-        assertMcpKeyPermission(callerKey, "query_runtime");
+        yield* checkMcpKeyPermission(callerKey, "query_runtime");
         const tenantId = args.tenantId ? String(args.tenantId) : "default";
         const operationId = String(args.operationId);
 
-        const operation = await Effect.runPromise(
-          atomicCommitService.getOperation(operationId, tenantId)
+        const operation = yield* atomicCommitService.getOperation(
+          operationId,
+          tenantId
         );
 
         if (!operation) {
@@ -1707,7 +1678,7 @@ export function createOperonMcpServer(options: OperonMcpServerOptions) {
       }
 
       if (name === "operon_generate_view") {
-        assertMcpKeyPermission(callerKey, "query_runtime");
+        yield* checkMcpKeyPermission(callerKey, "query_runtime");
         const view = generateDisposableAppView({
           audience: args.audience ? String(args.audience) : undefined,
           data: args.data as any,
@@ -1722,70 +1693,64 @@ export function createOperonMcpServer(options: OperonMcpServerOptions) {
       }
 
       if (name === "operon_assurance_evaluate_f1") {
-        assertMcpKeyPermission(callerKey, "query_runtime");
-        const receipt = await Effect.runPromise(
-          f1Evaluator.evaluate({
-            candidateDigest: String(args.candidateDigest),
-            candidateId: String(args.candidateId),
-            catalogDigest: String(args.catalogDigest),
-            catalogId: String(args.catalogId),
-            idempotencyKey: args.idempotencyKey
-              ? String(args.idempotencyKey)
-              : undefined,
-            profile: (args.profile as any) ?? "local",
-            testCases: (args.testCases as any) ?? [],
-          })
-        );
+        yield* checkMcpKeyPermission(callerKey, "query_runtime");
+        const receipt = yield* f1Evaluator.evaluate({
+          candidateDigest: String(args.candidateDigest),
+          candidateId: String(args.candidateId),
+          catalogDigest: String(args.catalogDigest),
+          catalogId: String(args.catalogId),
+          idempotencyKey: args.idempotencyKey
+            ? String(args.idempotencyKey)
+            : undefined,
+          profile: (args.profile as any) ?? "local",
+          testCases: (args.testCases as any) ?? [],
+        });
         return {
           content: [{ text: JSON.stringify(receipt, null, 2), type: "text" }],
         };
       }
 
       if (name === "operon_assurance_mirror_f2") {
-        assertMcpKeyPermission(callerKey, "query_runtime");
-        const receipt = await Effect.runPromise(
-          f2Mirror.evaluateMirror({
-            candidateDigest: String(args.candidateDigest),
-            claim: (args.claim as any) ?? "observed-action",
-            companyEvidenceRef: String(args.companyEvidenceRef),
-            consentScope: args.consentScope as any,
-            corrections: (args.corrections as any) ?? [],
-            idempotencyKey: args.idempotencyKey
-              ? String(args.idempotencyKey)
-              : undefined,
-            participantId: String(args.participantId),
-            profileDigest: String(args.profileDigest),
-            rubricDigest: String(args.rubricDigest),
-          })
-        );
+        yield* checkMcpKeyPermission(callerKey, "query_runtime");
+        const receipt = yield* f2Mirror.evaluateMirror({
+          candidateDigest: String(args.candidateDigest),
+          claim: (args.claim as any) ?? "observed-action",
+          companyEvidenceRef: String(args.companyEvidenceRef),
+          consentScope: args.consentScope as any,
+          corrections: (args.corrections as any) ?? [],
+          idempotencyKey: args.idempotencyKey
+            ? String(args.idempotencyKey)
+            : undefined,
+          participantId: String(args.participantId),
+          profileDigest: String(args.profileDigest),
+          rubricDigest: String(args.rubricDigest),
+        });
         return {
           content: [{ text: JSON.stringify(receipt, null, 2), type: "text" }],
         };
       }
 
       if (name === "operon_assurance_scan_publication") {
-        assertMcpKeyPermission(callerKey, "query_runtime");
+        yield* checkMcpKeyPermission(callerKey, "query_runtime");
         const targetDir = args.targetDirectory
           ? String(args.targetDirectory)
           : process.cwd();
-        const scanRes = await Effect.runPromise(
-          publicationBoundary.scanDirectory(targetDir, {
-            allowedPublicOnly: args.allowedPublicOnly === true,
-          })
-        );
+        const scanRes = yield* publicationBoundary.scanDirectory(targetDir, {
+          allowedPublicOnly: args.allowedPublicOnly === true,
+        });
         return {
           content: [{ text: JSON.stringify(scanRes, null, 2), type: "text" }],
         };
       }
 
       if (name === "operon_assurance_verify_receipt") {
-        assertMcpKeyPermission(callerKey, "query_runtime");
+        yield* checkMcpKeyPermission(callerKey, "query_runtime");
         const rcpt = args.receipt as any;
         let isValid = false;
         if (rcpt.outcome) {
-          isValid = await Effect.runPromise(f1Evaluator.verifyReceipt(rcpt));
+          isValid = yield* f1Evaluator.verifyReceipt(rcpt);
         } else if (rcpt.claim) {
-          isValid = await Effect.runPromise(f2Mirror.verifyReceipt(rcpt));
+          isValid = yield* f2Mirror.verifyReceipt(rcpt);
         }
         return {
           content: [
@@ -1801,7 +1766,7 @@ export function createOperonMcpServer(options: OperonMcpServerOptions) {
       const action = actionMap.get(actionId);
 
       if (action) {
-        assertMcpKeyPermission(callerKey, "execute_action");
+        yield* checkMcpKeyPermission(callerKey, "execute_action");
         const agentSubject: Subject = {
           agentTier: callerKey.agentTier,
           id: callerKey.agentId,
@@ -1810,20 +1775,18 @@ export function createOperonMcpServer(options: OperonMcpServerOptions) {
           type: "agent",
         };
 
-        const result = await Effect.runPromise(
-          executeWritePipeline(
-            {
-              actionType: action,
-              rawParameters: args,
-              security: {
-                correlationId: `mcp-${Date.now()}`,
-                subject: agentSubject,
-                timestamp: Date.now(),
-              },
+        const result = yield* executeWritePipeline(
+          {
+            actionType: action,
+            rawParameters: args,
+            security: {
+              correlationId: `mcp-${Date.now()}`,
+              subject: agentSubject,
+              timestamp: Date.now(),
             },
-            objectStore,
-            auditStore
-          )
+          },
+          objectStore,
+          auditStore
         );
 
         if (result.status === "proposed") {
@@ -1883,25 +1846,61 @@ export function createOperonMcpServer(options: OperonMcpServerOptions) {
         content: [{ text: `Unknown tool: ${name}`, type: "text" }],
         isError: true,
       };
-    } catch (error: any) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: JSON.stringify(
+    });
+
+    return Effect.runPromise(
+      Effect.gen(function* () {
+        const exit = yield* Effect.exit(executeTool());
+        if (Exit.isSuccess(exit)) {
+          return exit.value;
+        }
+
+        const failReason = exit.cause.reasons.find(Cause.isFailReason);
+        if (failReason) {
+          const failure = failReason.error;
+          return {
+            content: [
               {
-                error: error.name ?? "ExecutionError",
-                message: error.message ?? String(error),
-                details: error.details ?? undefined,
+                text: JSON.stringify(
+                  {
+                    details: (failure as any)?.details ?? undefined,
+                    error:
+                      (failure as any)?._tag ??
+                      (failure as any)?.name ??
+                      "ExecutionError",
+                    message: (failure as any)?.message ?? String(failure),
+                  },
+                  null,
+                  2
+                ),
+                type: "text" as const,
               },
-              null,
-              2
-            ),
-          },
-        ],
-        isError: true,
-      };
-    }
+            ],
+            isError: true,
+          };
+        }
+
+        const dieReason = exit.cause.reasons.find(Cause.isDieReason);
+        return {
+          content: [
+            {
+              text: JSON.stringify(
+                {
+                  error: "ExecutionDefect",
+                  message: dieReason
+                    ? String(dieReason.defect)
+                    : Cause.pretty(exit.cause),
+                },
+                null,
+                2
+              ),
+              type: "text" as const,
+            },
+          ],
+          isError: true,
+        };
+      })
+    );
   });
 
   return server;

@@ -1,5 +1,7 @@
 import { createHash, sign, verify } from "node:crypto";
 
+import { Effect } from "effect";
+
 export interface EvidenceEnvelope {
   readonly candidateDigest: string;
   readonly profileDigest: string;
@@ -75,30 +77,33 @@ export function verifyEvidenceEnvelope(
 
   const payloadDigest = computeDigest(payloadToVerify);
 
-  try {
-    const isValid = verify(
-      null,
-      Buffer.from(payloadDigest, "utf-8"),
-      publicKeyToUse,
-      Buffer.from(envelope.signature, "hex")
-    );
+  const verificationResult = Effect.try({
+    try: () =>
+      verify(
+        null,
+        Buffer.from(payloadDigest, "utf-8"),
+        publicKeyToUse,
+        Buffer.from(envelope.signature, "hex")
+      ),
+    catch: (error) => error,
+  }).pipe(Effect.exit, Effect.runSync);
 
-    if (!isValid) {
-      return {
-        verdict: "REJECTED_CORRUPT_EVIDENCE",
-        reason:
-          "Cryptographic signature does not match envelope payload digest",
-        checkedCasesCount: envelope.cases?.length ?? 0,
-        totalAssertions: 0,
-        verifiedAt: now,
-      };
-    }
-  } catch (error: unknown) {
+  if (verificationResult._tag === "Failure") {
     return {
       checkedCasesCount: envelope.cases?.length ?? 0,
-      reason: `Signature verification failed: ${String(error)}`,
+      reason: `Signature verification failed: ${String(verificationResult.cause)}`,
       totalAssertions: 0,
       verdict: "REJECTED_CORRUPT_EVIDENCE",
+      verifiedAt: now,
+    };
+  }
+
+  if (!verificationResult.value) {
+    return {
+      verdict: "REJECTED_CORRUPT_EVIDENCE",
+      reason: "Cryptographic signature does not match envelope payload digest",
+      checkedCasesCount: envelope.cases?.length ?? 0,
+      totalAssertions: 0,
       verifiedAt: now,
     };
   }

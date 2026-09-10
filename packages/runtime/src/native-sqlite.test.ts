@@ -73,21 +73,15 @@ describe("NativeSqliteDriver & SqlBitemporalStore", () => {
       properties: { val: "A-updated" },
     };
 
-    let failed = false;
-    try {
-      await Effect.runPromise(
-        store.commitAtomicTransaction({
-          mutations: [
-            { type: "put", instance: objAValid },
-            { type: "put", instance: objBInvalid },
-          ],
-        })
-      );
-    } catch {
-      failed = true;
-    }
-
-    expect(failed).toBe(true);
+    const exit = await Effect.runPromiseExit(
+      store.commitAtomicTransaction({
+        mutations: [
+          { type: "put", instance: objAValid },
+          { type: "put", instance: objBInvalid },
+        ],
+      })
+    );
+    expect(exit._tag).toBe("Failure");
 
     // Verify objA was ROLLED BACK and remains version 1!
     const checkA = await Effect.runPromise(

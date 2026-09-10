@@ -390,12 +390,17 @@ describe("@operon/assurance test suite", () => {
       }).toThrowError(PublicationLeakError);
     });
 
-    it("scans directories and detects leakage of protected material or paths", async () => {
-      const tempDir = fs.mkdtempSync(
-        path.join(process.cwd(), ".tmp-assurance-test-")
-      );
+    it("scans directories and detects leakage of protected material or paths", () =>
+      Effect.gen(function* () {
+        const tempDir = fs.mkdtempSync(
+          path.join(process.cwd(), ".tmp-assurance-test-")
+        );
+        yield* Effect.addFinalizer(() =>
+          Effect.sync(() => {
+            fs.rmSync(tempDir, { recursive: true, force: true });
+          })
+        );
 
-      try {
         // Create clean files
         fs.writeFileSync(
           path.join(tempDir, "README.md"),
@@ -410,9 +415,9 @@ describe("@operon/assurance test suite", () => {
         );
 
         // Scan clean dir
-        const cleanScan = await Effect.runPromise(
-          boundary.scanDirectory(tempDir, { allowedPublicOnly: true })
-        );
+        const cleanScan = yield* boundary.scanDirectory(tempDir, {
+          allowedPublicOnly: true,
+        });
         expect(cleanScan.isClean).toBe(true);
         expect(cleanScan.violations.length).toBe(0);
 
@@ -423,18 +428,15 @@ describe("@operon/assurance test suite", () => {
           "utf-8"
         );
 
-        const dirtyScan = await Effect.runPromise(
-          boundary.scanDirectory(tempDir, { allowedPublicOnly: true })
-        );
+        const dirtyScan = yield* boundary.scanDirectory(tempDir, {
+          allowedPublicOnly: true,
+        });
         expect(dirtyScan.isClean).toBe(false);
         expect(dirtyScan.violations.length).toBe(1);
         expect(dirtyScan.violations[0]?.rule).toBe(
           "S17-PROTECTED-CONTENT-LEAK"
         );
-      } finally {
-        fs.rmSync(tempDir, { recursive: true, force: true });
-      }
-    });
+      }).pipe(Effect.scoped, Effect.runPromise));
 
     it("sanitizes receipts by redacting sensitive fields while preserving verifiable digests", () => {
       const rawReceipt = {

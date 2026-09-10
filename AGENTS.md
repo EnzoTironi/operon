@@ -2,7 +2,7 @@
 
 This repository uses the Effect Typescript library.
 
-Before writing any Effect code, first read `node_modules/effect/AGENTS.md` **completely**, and follow its links when required. Search `node_modules/effect/src` for APIs the guide does not cover.
+Before writing any Effect code, first read `node_modules/effect/AGENTS.md` **completely**, and follow its links when required. Search `node_modules/effect/src` for APIs the guide does not cover. Also `.agents/skills/effect` **completely**
 
 ## Pre-launch Evolution
 
@@ -50,3 +50,9 @@ The rules:
 - **Narrow the Error channel (`E` in `Effect<A, E, R>`).** Eliminate phantom errors from error unions that upstream invariants have already ruled out. Prefer total functions (`never` in `E`) where partiality has been eliminated.
 - **Prune defensive fallbacks.** Remove defensive unwraps (`Option.getOrElse`, `?? []`, `?? 0`, defensive null checks) once types guarantee values exist.
 - **Internal contracts are not public compatibility layers.** When narrowing a contract, update all callers, downstream pipeline stages, and test suites atomically. Do not add backwards-compatibility shims or fallback branches. See skill `narrow-effect-contracts`.
+
+## Aggressive Testing
+
+Treat tests as the blueprint for correct behavior, not as passive regression checks that assume the implementation is the source of truth.
+
+Name tests declaratively: `"should do X"` → `"does X"`; `"should do X if Y"` → `"does X if Y"`. Write comprehensive tests that define what the code must do. If the tests pass, the behavior is correct.

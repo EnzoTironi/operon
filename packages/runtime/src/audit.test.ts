@@ -71,12 +71,10 @@ describe("Cryptographic SHA-256 AuditStore", () => {
     const read = Option.getOrUndefined(readOpt);
     expect(read).toBeDefined();
 
-    try {
+    Effect.try(() => {
       (read!.parameters as Record<string, unknown>).label =
         "changed-through-read";
-    } catch {
-      // Object.freeze may throw in strict mode
-    }
+    }).pipe(Effect.ignore, Effect.runSync);
 
     const rereadOpt = await Effect.runPromise(store.getDecision(appended.id));
     const reread = Option.getOrUndefined(rereadOpt);

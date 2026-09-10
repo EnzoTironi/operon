@@ -1,3 +1,5 @@
+import { Schema } from "effect";
+
 import type { ObjectInstance } from "./object-type.js";
 import type { Subject } from "./security.js";
 
@@ -15,12 +17,17 @@ export interface RestrictedView {
   readonly predicate: (instance: ObjectInstance, subject: Subject) => boolean;
 }
 
+export const PropertySecurityClassification = Schema.Literals([
+  "public",
+  "internal",
+  "confidential",
+  "restricted",
+  "pii",
+]);
 export type PropertySecurityClassification =
-  | "public"
-  | "internal"
-  | "confidential"
-  | "restricted"
-  | "pii";
+  typeof PropertySecurityClassification.Type;
+export const PropertySecurityClassificationSchema =
+  PropertySecurityClassification;
 
 /**
  * Multi-Dataset Object (MDO): Column/property-level mapping and security classification

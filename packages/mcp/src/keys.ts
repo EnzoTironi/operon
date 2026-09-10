@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 
-import { Effect } from "effect";
+import { Data, Effect } from "effect";
 
 export type McpKeyRole = "consumer" | "builder";
 
@@ -24,10 +24,11 @@ export interface RegisteredApiKey {
   readonly expiresAt?: number;
 }
 
-export class McpSecurityError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "McpSecurityError";
+export class McpSecurityError extends Data.TaggedError("McpSecurityError")<{
+  readonly message: string;
+}> {
+  constructor(args: string | { readonly message: string }) {
+    super(typeof args === "string" ? { message: args } : args);
   }
 }
 
@@ -121,6 +122,36 @@ defaultApiKeyRegistry.registerKey("ck_consumer_123", {
 /**
  * Validates that an MCP caller possesses the appropriate key for the requested operation.
  */
+export function checkMcpKeyPermission(
+  key: McpKey,
+  operation:
+    | "query_runtime"
+    | "execute_action"
+    | "modify_schema"
+    | "modify_pipeline"
+): Effect.Effect<void, McpSecurityError> {
+  if (
+    key.role === "consumer" &&
+    (operation === "modify_schema" || operation === "modify_pipeline")
+  ) {
+    return Effect.fail(
+      new McpSecurityError(
+        `Consumer key '${key.keyId}' cannot perform schema/pipeline modification '${operation}'. Builder key required.`
+      )
+    );
+  }
+
+  if (key.role === "builder" && operation === "execute_action") {
+    return Effect.fail(
+      new McpSecurityError(
+        `Builder key '${key.keyId}' cannot execute production actions. Consumer key required.`
+      )
+    );
+  }
+
+  return Effect.void;
+}
+
 export function assertMcpKeyPermission(
   key: McpKey,
   operation:
@@ -129,20 +160,7 @@ export function assertMcpKeyPermission(
     | "modify_schema"
     | "modify_pipeline"
 ): void {
-  if (
-    key.role === "consumer" &&
-    (operation === "modify_schema" || operation === "modify_pipeline")
-  ) {
-    throw new McpSecurityError(
-      `Consumer key '${key.keyId}' cannot perform schema/pipeline modification '${operation}'. Builder key required.`
-    );
-  }
-
-  if (key.role === "builder" && operation === "execute_action") {
-    throw new McpSecurityError(
-      `Builder key '${key.keyId}' cannot execute production actions. Consumer key required.`
-    );
-  }
+  Effect.runSync(checkMcpKeyPermission(key, operation));
 }
 
 export function assertBuilderKey(

@@ -15,52 +15,65 @@ import { describe, expect, it } from "vitest";
 import { createOperonMcpServer } from "./server.js";
 
 describe("Independent MCP approval trust-boundary validation", () => {
-  it("P04 a consumer cannot approve its own proposal by naming a human", async () => {
-    let effects = 0;
-    const action = defineActionType({
-      id: "local_test",
-      name: "Local test",
-      description: "Local only",
-      parametersSchema: Schema.Struct({}),
-      riskTier: "high",
-      minimumAgentTier: 2,
-      defaultExecutionMode: "proposal",
-      sideEffects: [
-        {
-          id: "counter",
-          description: "local",
-          execute: () =>
-            Effect.sync(() => {
-              effects++;
-            }),
-        },
-      ],
-    });
-    const server = createOperonMcpServer({
-      actionTypes: [action],
-      auditStore: new InMemoryAuditStore(),
-      objectStore: new InMemoryObjectStore(),
-      objectTypes: [],
-      oms: new OntologyMetadataService(),
-    });
-    const client = new Client(
-      { name: "independent-validator", version: "1.0.0" },
-      { capabilities: {} }
-    );
-    const [clientTransport, serverTransport] =
-      InMemoryTransport.createLinkedPair();
-    await server.connect(serverTransport);
-    await client.connect(clientTransport);
-    try {
-      const proposed: any = await client.callTool({
-        name: "operon_local_test",
-        arguments: {},
+  it("P04 a consumer cannot approve its own proposal by naming a human", () =>
+    Effect.gen(function* () {
+      let effects = 0;
+      const action = defineActionType({
+        id: "local_test",
+        name: "Local test",
+        description: "Local only",
+        parametersSchema: Schema.Struct({}),
+        riskTier: "high",
+        minimumAgentTier: 2,
+        defaultExecutionMode: "proposal",
+        sideEffects: [
+          {
+            id: "counter",
+            description: "local",
+            execute: () =>
+              Effect.sync(() => {
+                effects++;
+              }),
+          },
+        ],
       });
+      const server = createOperonMcpServer({
+        actionTypes: [action],
+        auditStore: new InMemoryAuditStore(),
+        objectStore: new InMemoryObjectStore(),
+        objectTypes: [],
+        oms: new OntologyMetadataService(),
+      });
+      const client = new Client(
+        { name: "independent-validator", version: "1.0.0" },
+        { capabilities: {} }
+      );
+      const [clientTransport, serverTransport] =
+        InMemoryTransport.createLinkedPair();
+      yield* Effect.promise(() => server.connect(serverTransport));
+      yield* Effect.promise(() => client.connect(clientTransport));
+
+      yield* Effect.addFinalizer(() =>
+        Effect.all(
+          [
+            Effect.promise(() => client.close()),
+            Effect.promise(() => server.close()),
+          ],
+          { concurrency: "unbounded" }
+        )
+      );
+
+      const proposed: any = yield* Effect.promise(() =>
+        client.callTool({
+          name: "operon_local_test",
+          arguments: {},
+        })
+      );
       expect(proposed.isError).toBeFalsy();
       const body = JSON.parse(proposed.content[0].text);
       expect(body.status).toBe("PROPOSAL_CREATED");
-      await client
-        .callTool({
+      yield* Effect.promise(() =>
+        client.callTool({
           name: "operon_approve_proposal",
           arguments: {
             proposalId: body.proposalId,
@@ -68,11 +81,7 @@ describe("Independent MCP approval trust-boundary validation", () => {
             approverRoles: ["reviewer"],
           },
         })
-        .catch(() => undefined);
+      ).pipe(Effect.ignore);
       expect(effects).toBe(0);
-    } finally {
-      await client.close();
-      await server.close();
-    }
-  });
+    }).pipe(Effect.scoped, Effect.runPromise));
 });

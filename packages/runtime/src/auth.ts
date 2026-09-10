@@ -1,7 +1,7 @@
 import { createHmac, createVerify } from "node:crypto";
 
 import type { SecurityContext, Subject, SubjectType } from "@operon/schema";
-import { Effect } from "effect";
+import { Config, Effect, Option } from "effect";
 
 import { AuthenticationError, AuthorizationError } from "./errors.js";
 
@@ -89,23 +89,20 @@ export class OidcTokenVerifier {
       }
 
       const [rawHeader, rawPayload, rawSig] = parts;
-      let header: OidcTokenHeader;
-      let claims: OidcTokenClaims;
-
-      try {
-        header = JSON.parse(
-          Buffer.from(rawHeader, "base64url").toString("utf-8")
-        ) as OidcTokenHeader;
-        claims = JSON.parse(
-          Buffer.from(rawPayload, "base64url").toString("utf-8")
-        ) as OidcTokenClaims;
-      } catch (error) {
-        return yield* Effect.fail(
+      const { claims, header } = yield* Effect.try({
+        catch: (error) =>
           new AuthenticationError({
             reason: `Failed to decode JWT base64url: ${String(error)}`,
-          })
-        );
-      }
+          }),
+        try: () => ({
+          claims: JSON.parse(
+            Buffer.from(rawPayload, "base64url").toString("utf-8")
+          ) as OidcTokenClaims,
+          header: JSON.parse(
+            Buffer.from(rawHeader, "base64url").toString("utf-8")
+          ) as OidcTokenHeader,
+        }),
+      });
 
       // 1. Signature Verification
       if (!["HS256", "RS256"].includes(header.alg)) {
@@ -254,10 +251,11 @@ export function resolveAgentContext(
       );
     }
 
+    const envTenantId = yield* Effect.option(Config.string("OPERON_TENANT_ID"));
     const tenantId =
       claims.tenantId ??
       (claims.attributes?.tenantId as string | undefined) ??
-      process.env.OPERON_TENANT_ID ??
+      Option.getOrUndefined(envTenantId) ??
       "tenant-default";
 
     // Non-disclosure security boundary:
@@ -270,9 +268,12 @@ export function resolveAgentContext(
       );
     }
 
+    const envEnvironmentId = yield* Effect.option(
+      Config.string("OPERON_ENVIRONMENT_ID")
+    );
     const environmentId =
       (claims.attributes?.environmentId as string | undefined) ??
-      process.env.OPERON_ENVIRONMENT_ID ??
+      Option.getOrUndefined(envEnvironmentId) ??
       "default";
 
     if (
@@ -296,9 +297,10 @@ export function resolveAgentContext(
       ? rawGrants.map(String)
       : (claims.roles ?? []);
 
+    const envProfile = yield* Effect.option(Config.string("OPERON_PROFILE"));
     const rawProfile =
       (claims.attributes?.profile as string | undefined) ??
-      process.env.OPERON_PROFILE ??
+      Option.getOrUndefined(envProfile) ??
       "external-agent";
 
     const profile: OperonProfile =

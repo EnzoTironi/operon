@@ -99,8 +99,8 @@ export class SandboxedModelRunner {
         }),
         Effect.mapBoth({
           onFailure: (err) =>
-            err instanceof SandboxExecutionError
-              ? err
+            (err as any)?._tag === "SandboxExecutionError"
+              ? (err as SandboxExecutionError)
               : new SandboxExecutionError({
                   modelId,
                   reason: String((err as any)?.message ?? err),

@@ -1,56 +1,44 @@
 import { Schema } from "effect";
 
-export type SubjectType = "user" | "agent" | "system";
+export const SubjectType = Schema.Literals(["user", "agent", "system"]);
+export type SubjectType = typeof SubjectType.Type;
 
 /**
  * 4-Tier Agent Authorization Ladder from Chapter 11
  */
-export type AgentAuthorizationTier =
-  | 1 // Observe: Read-only access
-  | 2 // Propose: Creates proposal in Human Inbox
-  | 3 // Execute with Approval: Agent is executor, Human confirms
-  | 4; // Bounded Autonomy: Automatic execution within risk envelope
+export const AgentAuthorizationTier = Schema.Literals([1, 2, 3, 4]);
+export type AgentAuthorizationTier = typeof AgentAuthorizationTier.Type;
 
-export interface Subject {
-  readonly id: string;
-  readonly type: SubjectType;
-  readonly name: string;
-  readonly roles: readonly string[];
-  readonly agentTier?: AgentAuthorizationTier;
-  readonly metadata?: Record<string, unknown>;
-}
-
-export const SubjectSchema = Schema.Struct({
+export const Subject = Schema.Struct({
   id: Schema.String,
-  type: Schema.Literals(["user", "agent", "system"]),
+  type: SubjectType,
   name: Schema.String,
   roles: Schema.Array(Schema.String),
-  agentTier: Schema.optional(Schema.Literals([1, 2, 3, 4])),
-  metadata: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)),
+  agentTier: Schema.optionalKey(AgentAuthorizationTier),
+  metadata: Schema.optionalKey(Schema.Record(Schema.String, Schema.Unknown)),
 });
+export type Subject = typeof Subject.Type;
+export const SubjectSchema = Subject;
 
 /**
  * Canonical decision algebra per ADR-D05:
  * ALLOW | DENY | REVIEW_REQUIRED | EVIDENCE_INSUFFICIENT
  */
-export type DecisionVerdict =
-  | "allow"
-  | "review"
-  | "deny"
-  | "review_required"
-  | "evidence_insufficient";
-
-export const DecisionVerdictSchema = Schema.Literals([
+export const DecisionVerdict = Schema.Literals([
   "allow",
   "review",
   "deny",
   "review_required",
   "evidence_insufficient",
 ]);
+export type DecisionVerdict = typeof DecisionVerdict.Type;
+export const DecisionVerdictSchema = DecisionVerdict;
 
-export interface SecurityContext {
-  readonly subject: Subject;
-  readonly correlationId: string;
-  readonly clientIp?: string;
-  readonly timestamp: number;
-}
+export const SecurityContext = Schema.Struct({
+  subject: Subject,
+  correlationId: Schema.String,
+  clientIp: Schema.optionalKey(Schema.String),
+  timestamp: Schema.Number,
+});
+export type SecurityContext = typeof SecurityContext.Type;
+export const SecurityContextSchema = SecurityContext;

@@ -1,11 +1,10 @@
 import { Schema } from "effect";
 
+import { ObjectTypeId, Provenance } from "./types.js";
 import type {
   DataClassification,
   EntityTypology,
   FreshnessBudget,
-  ObjectTypeId,
-  Provenance,
 } from "./types.js";
 import type { ValueType } from "./value-types.js";
 
@@ -77,24 +76,20 @@ export function defineProperty<T>(
 /**
  * Runtime instance of an Object with metadata
  */
-export interface ObjectInstance<T = Record<string, unknown>> {
-  readonly id: string;
-  readonly typeId: ObjectTypeId;
-  readonly properties: T;
-  readonly provenance?: Provenance;
-  readonly lastModifiedAt: number; // unix epoch ms
-  readonly validFrom?: number; // bitemporal valid time start
-  readonly validTo?: number; // bitemporal valid time end
-  readonly version: number; // optimistic concurrency version
-}
-
 export const ObjectInstanceSchema = Schema.Struct({
   id: Schema.String,
-  typeId: Schema.String,
+  typeId: ObjectTypeId,
   properties: Schema.Record(Schema.String, Schema.Unknown),
-  provenance: Schema.optional(Schema.Unknown),
+  provenance: Schema.optionalKey(Provenance),
   lastModifiedAt: Schema.Number,
-  validFrom: Schema.optional(Schema.Number),
-  validTo: Schema.optional(Schema.Number),
+  validFrom: Schema.optionalKey(Schema.Number),
+  validTo: Schema.optionalKey(Schema.Number),
   version: Schema.Number,
 });
+
+export interface ObjectInstance<T = Record<string, unknown>> extends Omit<
+  Schema.Schema.Type<typeof ObjectInstanceSchema>,
+  "properties"
+> {
+  readonly properties: T;
+}

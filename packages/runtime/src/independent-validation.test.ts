@@ -103,36 +103,35 @@ describe("Independent validation — safety invariants", () => {
   });
 
   for (const tier of [1, 3] as const) {
-    it(`P05 tier ${tier} cannot execute without its required authority`, async () => {
-      let externalCount = 0;
-      const action = defineActionType({
-        id: "tier_test",
-        name: "Tier test",
-        description: "Synthetic effect",
-        parametersSchema: Schema.Struct({}),
-        riskTier: "high",
-        minimumAgentTier: tier,
-        defaultExecutionMode: "automated",
-        sideEffects: [
-          {
-            id: "counter",
-            description: "local only",
-            execute: () =>
-              Effect.sync(() => {
-                externalCount++;
-              }),
-          },
-        ],
-      });
-      await Effect.runPromise(
-        executeWritePipeline(
+    it(`P05 tier ${tier} cannot execute without its required authority`, () =>
+      Effect.gen(function* () {
+        let externalCount = 0;
+        const action = defineActionType({
+          id: "tier_test",
+          name: "Tier test",
+          description: "Synthetic effect",
+          parametersSchema: Schema.Struct({}),
+          riskTier: "high",
+          minimumAgentTier: tier,
+          defaultExecutionMode: "automated",
+          sideEffects: [
+            {
+              id: "counter",
+              description: "local only",
+              execute: () =>
+                Effect.sync(() => {
+                  externalCount++;
+                }),
+            },
+          ],
+        });
+        yield* executeWritePipeline(
           submit(action, agent(tier)),
           new InMemoryObjectStore(),
           new InMemoryAuditStore()
-        )
-      ).catch(() => undefined);
-      expect(externalCount).toBe(0);
-    });
+        ).pipe(Effect.ignore);
+        expect(externalCount).toBe(0);
+      }).pipe(Effect.runPromise));
   }
 
   it("P06 cannot execute changed parameters with an old approval hash", async () => {
@@ -229,28 +228,29 @@ describe("Independent validation — safety invariants", () => {
     expect(currentItem?.version).toBe(1);
   });
 
-  it("P10 SQLite historical query binds all placeholders", () => {
-    const db = new DatabaseSync(":memory:");
-    try {
-      for (const sql of SqlSchemaGenerator.generateDDL("sqlite")) {
-        db.exec(sql);
-      }
-      db.prepare(
-        "INSERT INTO operon_objects VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
-      ).run("a", "Thing", 1, "{}", 0, null, 0, null, "main");
-      const q = SqlSchemaGenerator.compileBitemporalQuery(
-        "Thing",
-        "a",
-        100,
-        100,
-        "sqlite"
-      );
-      // Adapt the seed insertion if a legitimate schema migration changes the table.
-      expect(db.prepare(q.sql).all(...(q.params as any[]))).toHaveLength(1);
-    } finally {
-      db.close();
-    }
-  });
+  it("P10 SQLite historical query binds all placeholders", () =>
+    Effect.acquireUseRelease(
+      Effect.sync(() => new DatabaseSync(":memory:")),
+      (db) =>
+        Effect.sync(() => {
+          for (const sql of SqlSchemaGenerator.generateDDL("sqlite")) {
+            db.exec(sql);
+          }
+          db.prepare(
+            "INSERT INTO operon_objects VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+          ).run("a", "Thing", 1, "{}", 0, null, 0, null, "main");
+          const q = SqlSchemaGenerator.compileBitemporalQuery(
+            "Thing",
+            "a",
+            100,
+            100,
+            "sqlite"
+          );
+          // Adapt the seed insertion if a legitimate schema migration changes the table.
+          expect(db.prepare(q.sql).all(...(q.params as any[]))).toHaveLength(1);
+        }),
+      (db) => Effect.sync(() => db.close())
+    ).pipe(Effect.runSync));
 
   it("P16 a rejected ontology proposal cannot merge", async () => {
     const oms = new OntologyMetadataService();

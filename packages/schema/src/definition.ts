@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { Schema } from "effect";
 
 import type { Subject } from "./security.js";
+import { DataClassification, EntityTypology } from "./types.js";
 
 /**
  * Declared effect class for operations and action definitions
@@ -34,12 +35,8 @@ export const TypeDef = Schema.Struct({
   description: Schema.optional(Schema.String),
   properties: Schema.Record(Schema.String, PropertyDef),
   primaryKey: Schema.String,
-  typology: Schema.optional(
-    Schema.Literals(["master", "transaction", "observation", "reference"])
-  ),
-  classification: Schema.optional(
-    Schema.Literals(["public", "internal", "confidential", "restricted"])
-  ),
+  typology: Schema.optional(EntityTypology),
+  classification: Schema.optional(DataClassification),
 });
 export type TypeDef = Schema.Schema.Type<typeof TypeDef>;
 

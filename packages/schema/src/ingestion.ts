@@ -1,32 +1,31 @@
 import { Schema } from "effect";
 
 import { computeCanonicalDigest } from "./definition.js";
-import type { Subject } from "./security.js";
-import type { ObjectTypeId } from "./types.js";
+import { Subject } from "./security.js";
+import { DataClassification, ObjectTypeId } from "./types.js";
 
-export type SensitivityLevel =
-  | "public"
-  | "internal"
-  | "confidential"
-  | "restricted";
+export const SensitivityLevel = DataClassification;
+export type SensitivityLevel = typeof SensitivityLevel.Type;
 
 /**
  * SourceArtifact (S03, S15, Chapter 15 & 16)
  * Raw evidence artifact cataloged before mapping or admission.
  */
-export interface SourceArtifact {
-  readonly sourceId: string;
-  readonly digest: string;
-  readonly mediaType: string;
-  readonly permittedUses: readonly string[];
-  readonly sensitivity: SensitivityLevel;
-  readonly locator: string;
-  readonly receivedAt: number;
-  readonly batchId: string;
-  readonly tenantId?: string;
-  readonly environmentId?: string;
-  readonly rawPayload: unknown;
-}
+export const SourceArtifact = Schema.Struct({
+  sourceId: Schema.String,
+  digest: Schema.String,
+  mediaType: Schema.String,
+  permittedUses: Schema.Array(Schema.String),
+  sensitivity: SensitivityLevel,
+  locator: Schema.String,
+  receivedAt: Schema.Number,
+  batchId: Schema.String,
+  tenantId: Schema.optionalKey(Schema.String),
+  environmentId: Schema.optionalKey(Schema.String),
+  rawPayload: Schema.Unknown,
+});
+export type SourceArtifact = typeof SourceArtifact.Type;
+export const SourceArtifactSchema = SourceArtifact;
 
 /**
  * Provenance pointer linking every accepted field back to raw evidence.
@@ -38,51 +37,59 @@ export const FieldProvenanceSchema = Schema.Struct({
   locator: Schema.String,
   sourceId: Schema.String,
 });
-export type FieldProvenance = Schema.Schema.Type<typeof FieldProvenanceSchema>;
+export type FieldProvenance = typeof FieldProvenanceSchema.Type;
 
 /**
  * CandidateRecord produced by mapping proposal.
  */
-export interface CandidateRecord {
-  readonly rawRecordId: string;
-  readonly targetObjectTypeId: ObjectTypeId;
-  readonly properties: Record<string, unknown>;
-  readonly confidence: number;
-  readonly provenance: {
-    readonly sourceId: string;
-    readonly locator: string;
-    readonly batchId: string;
-    readonly digest: string;
-    readonly fieldProvenances: Record<string, FieldProvenance>;
-  };
-}
+export const CandidateRecordProvenance = Schema.Struct({
+  sourceId: Schema.String,
+  locator: Schema.String,
+  batchId: Schema.String,
+  digest: Schema.String,
+  fieldProvenances: Schema.Record(Schema.String, FieldProvenanceSchema),
+});
+
+export const CandidateRecord = Schema.Struct({
+  rawRecordId: Schema.String,
+  targetObjectTypeId: ObjectTypeId,
+  properties: Schema.Record(Schema.String, Schema.Unknown),
+  confidence: Schema.Number,
+  provenance: CandidateRecordProvenance,
+});
+export type CandidateRecord = typeof CandidateRecord.Type;
+export const CandidateRecordSchema = CandidateRecord;
 
 /**
  * MappingProposal (V0-CH-05)
  * Accountable mapping from raw sources to candidate records.
  */
-export interface MappingProposal {
-  readonly proposalId: string;
-  readonly definitionDigest: string;
-  readonly sources: readonly string[];
-  readonly records: readonly CandidateRecord[];
-  readonly openQuestions: readonly string[];
-  readonly confidence: number;
-  readonly status: "draft" | "submitted" | "approved" | "rejected";
-  readonly createdAt: number;
-  readonly createdBy: Subject;
-}
+export const MappingProposal = Schema.Struct({
+  proposalId: Schema.String,
+  definitionDigest: Schema.String,
+  sources: Schema.Array(Schema.String),
+  records: Schema.Array(CandidateRecord),
+  openQuestions: Schema.Array(Schema.String),
+  confidence: Schema.Number,
+  status: Schema.Literals(["draft", "submitted", "approved", "rejected"]),
+  createdAt: Schema.Number,
+  createdBy: Subject,
+});
+export type MappingProposal = typeof MappingProposal.Type;
+export const MappingProposalSchema = MappingProposal;
 
 /**
  * IngestionReceipt returned upon successful accountable ingestion.
  */
-export interface IngestionReceipt {
-  readonly batchId: string;
-  readonly sourceArtifact: SourceArtifact;
-  readonly status: "ingested" | "replayed";
-  readonly idempotencyKey?: string;
-  readonly timestamp: number;
-}
+export const IngestionReceipt = Schema.Struct({
+  batchId: Schema.String,
+  sourceArtifact: SourceArtifact,
+  status: Schema.Literals(["ingested", "replayed"]),
+  idempotencyKey: Schema.optionalKey(Schema.String),
+  timestamp: Schema.Number,
+});
+export type IngestionReceipt = typeof IngestionReceipt.Type;
+export const IngestionReceiptSchema = IngestionReceipt;
 
 export function computeSourceDigest(payload: unknown): string {
   return computeCanonicalDigest(payload);

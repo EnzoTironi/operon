@@ -56,11 +56,12 @@ export function evaluateDecisionReadiness(
   for (const [propName, propDef] of propertyEntries) {
     const val = (instance.properties as any)?.[propName];
     if (val !== undefined && val !== null) {
-      try {
-        Schema.decodeUnknownSync(propDef.schema as Schema.Decoder<any>)(val);
-      } catch (error: any) {
+      const exit = Schema.decodeUnknownExit(
+        propDef.schema as Schema.Decoder<any>
+      )(val);
+      if (exit._tag === "Failure") {
         correctViolations.push(
-          `Property '${propName}' validation failed: ${error.message ?? String(error)}`
+          `Property '${propName}' validation failed: ${String(exit.cause)}`
         );
       }
     }

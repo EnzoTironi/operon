@@ -251,31 +251,34 @@ describe("@operon/cli test suite", () => {
     expect(listPropCode).toBe(0);
   });
 
-  it("prepares, approves, commits, checks status, and generates disposable views (Gate V0-E: V0-CH-07, V0-CH-08, V0-CH-09)", async () => {
-    const logs: string[] = [];
-    const origLog = console.log;
-    console.log = (...args: any[]) => {
-      logs.push(args.map(String).join(" "));
-      origLog(...args);
-    };
+  it("prepares, approves, commits, checks status, and generates disposable views (Gate V0-E: V0-CH-07, V0-CH-08, V0-CH-09)", () =>
+    Effect.gen(function* () {
+      const logs: string[] = [];
+      const origLog = console.log;
+      console.log = (...args: any[]) => {
+        logs.push(args.map(String).join(" "));
+        origLog(...args);
+      };
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => {
+          console.log = origLog;
+        })
+      );
 
-    try {
       // 1. Prepare action (zero business side effects)
       logs.length = 0;
-      const prepCode = await Effect.runPromise(
-        runCli([
-          "action",
-          "prepare",
-          "update_vitals",
-          "--params",
-          '{"patientId":"P001","heartRate":78}',
-          "--subject-id",
-          "agent-007",
-          "--role",
-          "operator",
-          "--json",
-        ])
-      );
+      const prepCode = yield* runCli([
+        "action",
+        "prepare",
+        "update_vitals",
+        "--params",
+        '{"patientId":"P001","heartRate":78}',
+        "--subject-id",
+        "agent-007",
+        "--role",
+        "operator",
+        "--json",
+      ]);
       expect(prepCode).toBe(0);
       const prepOutput = JSON.parse(logs.at(-1)!);
       expect(prepOutput.status).toBe("PREPARED");
@@ -285,60 +288,52 @@ describe("@operon/cli test suite", () => {
 
       // Verify zero business mutation before commit:
       logs.length = 0;
-      await Effect.runPromise(
-        runCli(["object", "get", "Patient", "P001", "--json"])
-      );
+      yield* runCli(["object", "get", "Patient", "P001", "--json"]);
       const patientBefore = JSON.parse(logs.at(-1)!);
       expect(patientBefore.properties.heartRate).not.toBe(78);
 
       // 2. Reject mismatched proposal approval
-      const mismatchCode = await Effect.runPromise(
-        runCli([
-          "action",
-          "approve",
-          digest,
-          "--viewed-digest",
-          "tampered_digest_12345",
-          "--reviewer-id",
-          "dr_smith",
-          "--role",
-          "clinician",
-        ])
-      );
+      const mismatchCode = yield* runCli([
+        "action",
+        "approve",
+        digest,
+        "--viewed-digest",
+        "tampered_digest_12345",
+        "--reviewer-id",
+        "dr_smith",
+        "--role",
+        "clinician",
+      ]);
       expect(mismatchCode).toBe(1);
 
       // 3. Reject self-approval (reviewer === proposer)
-      const selfApproveCode = await Effect.runPromise(
-        runCli([
-          "action",
-          "approve",
-          digest,
-          "--viewed-digest",
-          digest,
-          "--reviewer-id",
-          "agent-007",
-          "--role",
-          "clinician",
-        ])
-      );
+      const selfApproveCode = yield* runCli([
+        "action",
+        "approve",
+        digest,
+        "--viewed-digest",
+        digest,
+        "--reviewer-id",
+        "agent-007",
+        "--role",
+        "clinician",
+      ]);
       expect(selfApproveCode).toBe(1);
 
       // 4. Legitimate exact approval by human reviewer
       logs.length = 0;
-      const approveCode = await Effect.runPromise(
-        runCli([
-          "action",
-          "approve",
-          digest,
-          "--viewed-digest",
-          digest,
-          "--reviewer-id",
-          "dr_smith",
-          "--role",
-          "physician",
-          "--json",
-        ])
-      );
+      const approveCode = yield* runCli([
+        "action",
+        "approve",
+        digest,
+        "--viewed-digest",
+        digest,
+        "--reviewer-id",
+        "dr_smith",
+        "--role",
+        "physician",
+        "--json",
+      ]);
       expect(approveCode).toBe(0);
       const approveOutput = JSON.parse(logs.at(-1)!);
       expect(approveOutput.status).toBe("APPROVED");
@@ -348,18 +343,16 @@ describe("@operon/cli test suite", () => {
       // 5. Local Atomic Commit
       logs.length = 0;
       const idempotencyKey = `cli-v0e-commit-${Date.now()}`;
-      const commitCode = await Effect.runPromise(
-        runCli([
-          "action",
-          "commit",
-          digest,
-          "--approval-id",
-          approvalId,
-          "--idempotency-key",
-          idempotencyKey,
-          "--json",
-        ])
-      );
+      const commitCode = yield* runCli([
+        "action",
+        "commit",
+        digest,
+        "--approval-id",
+        approvalId,
+        "--idempotency-key",
+        idempotencyKey,
+        "--json",
+      ]);
       expect(commitCode).toBe(0);
       const commitOutput = JSON.parse(logs.at(-1)!);
       expect(commitOutput.status).toBe("COMMITTED");
@@ -369,17 +362,18 @@ describe("@operon/cli test suite", () => {
 
       // Verify business mutation applied atomically after commit
       logs.length = 0;
-      await Effect.runPromise(
-        runCli(["object", "get", "Patient", "P001", "--json"])
-      );
+      yield* runCli(["object", "get", "Patient", "P001", "--json"]);
       const patientAfter = JSON.parse(logs.at(-1)!);
       expect(patientAfter.properties.heartRate).toBe(78);
 
       // 6. Action status inspection
       logs.length = 0;
-      const statusCode = await Effect.runPromise(
-        runCli(["action", "status", operationId, "--json"])
-      );
+      const statusCode = yield* runCli([
+        "action",
+        "status",
+        operationId,
+        "--json",
+      ]);
       expect(statusCode).toBe(0);
       const statusOutput = JSON.parse(logs.at(-1)!);
       expect(statusOutput.operationId).toBe(operationId);
@@ -387,19 +381,17 @@ describe("@operon/cli test suite", () => {
 
       // 7. Generate disposable view
       logs.length = 0;
-      const viewCode = await Effect.runPromise(
-        runCli([
-          "view",
-          "generate",
-          "--title",
-          "Patient Vitals Clinical Overview",
-          "--state",
-          "PROPOSED",
-          "--data",
-          '{"patientId":"P001","heartRate":78,"egfr":52}',
-          "--json",
-        ])
-      );
+      const viewCode = yield* runCli([
+        "view",
+        "generate",
+        "--title",
+        "Patient Vitals Clinical Overview",
+        "--state",
+        "PROPOSED",
+        "--data",
+        '{"patientId":"P001","heartRate":78,"egfr":52}',
+        "--json",
+      ]);
       expect(viewCode).toBe(0);
       const viewOutput = JSON.parse(logs.at(-1)!);
       expect(viewOutput.isDisposable).toBe(true);
@@ -408,20 +400,22 @@ describe("@operon/cli test suite", () => {
       expect(viewOutput.rendered).toContain("PROPOSED");
       expect(viewOutput.rendered).toContain("source of truth");
       expect(viewOutput.rendered).toContain("disposable");
-    } finally {
-      console.log = origLog;
-    }
-  });
+    }).pipe(Effect.scoped, Effect.runPromise));
 
-  it("drives assurance F1 evaluation, receipt verification, F2 mirror, and publication boundary scan (Gate V0-F: V0-CH-10, V0-CH-11, V0-CH-12)", async () => {
-    const logs: string[] = [];
-    const origLog = console.log;
-    console.log = (msg: string) => {
-      logs.push(msg);
-      origLog(msg);
-    };
+  it("drives assurance F1 evaluation, receipt verification, F2 mirror, and publication boundary scan (Gate V0-F: V0-CH-10, V0-CH-11, V0-CH-12)", () =>
+    Effect.gen(function* () {
+      const logs: string[] = [];
+      const origLog = console.log;
+      console.log = (msg: string) => {
+        logs.push(msg);
+        origLog(msg);
+      };
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => {
+          console.log = origLog;
+        })
+      );
 
-    try {
       // 1. Evaluate F1 Company-in-a-Box via CLI
       logs.length = 0;
       const casesJson = JSON.stringify([
@@ -434,21 +428,19 @@ describe("@operon/cli test suite", () => {
         },
       ]);
 
-      const evalCode = await Effect.runPromise(
-        runCli([
-          "assurance",
-          "evaluate",
-          "--candidate",
-          "cand_v0_cli_candidate",
-          "--profile",
-          "local",
-          "--catalog",
-          "cat_v0_cli_catalog",
-          "--cases",
-          casesJson,
-          "--json",
-        ])
-      );
+      const evalCode = yield* runCli([
+        "assurance",
+        "evaluate",
+        "--candidate",
+        "cand_v0_cli_candidate",
+        "--profile",
+        "local",
+        "--catalog",
+        "cat_v0_cli_catalog",
+        "--cases",
+        casesJson,
+        "--json",
+      ]);
       expect(evalCode).toBe(0);
       const f1Receipt = JSON.parse(logs.at(-1)!);
       expect(f1Receipt.outcome).toBe("PASS");
@@ -462,16 +454,24 @@ describe("@operon/cli test suite", () => {
         `.tmp-test-receipt-${Date.now()}.json`
       );
       fs.writeFileSync(tempReceiptPath, JSON.stringify(f1Receipt), "utf-8");
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => {
+          if (fs.existsSync(tempReceiptPath)) {
+            fs.unlinkSync(tempReceiptPath);
+          }
+        })
+      );
 
       logs.length = 0;
-      const verifyCode = await Effect.runPromise(
-        runCli(["assurance", "verify-receipt", tempReceiptPath, "--json"])
-      );
+      const verifyCode = yield* runCli([
+        "assurance",
+        "verify-receipt",
+        tempReceiptPath,
+        "--json",
+      ]);
       expect(verifyCode).toBe(0);
       const verifyOutput = JSON.parse(logs.at(-1)!);
       expect(verifyOutput.isValid).toBe(true);
-
-      fs.unlinkSync(tempReceiptPath);
 
       // 3. Evaluate F2 Consented Mirror via CLI
       logs.length = 0;
@@ -496,21 +496,19 @@ describe("@operon/cli test suite", () => {
         },
       ]);
 
-      const mirrorCode = await Effect.runPromise(
-        runCli([
-          "assurance",
-          "mirror",
-          "--participant",
-          "regional_hospital_group",
-          "--consent",
-          consentJson,
-          "--corrections",
-          correctionsJson,
-          "--claim",
-          "observed-action",
-          "--json",
-        ])
-      );
+      const mirrorCode = yield* runCli([
+        "assurance",
+        "mirror",
+        "--participant",
+        "regional_hospital_group",
+        "--consent",
+        consentJson,
+        "--corrections",
+        correctionsJson,
+        "--claim",
+        "observed-action",
+        "--json",
+      ]);
       expect(mirrorCode).toBe(0);
       const f2Receipt = JSON.parse(logs.at(-1)!);
       expect(f2Receipt.participantId).toBe("regional_hospital_group");
@@ -520,21 +518,16 @@ describe("@operon/cli test suite", () => {
 
       // 4. Scan publication boundary via CLI
       logs.length = 0;
-      const scanCode = await Effect.runPromise(
-        runCli([
-          "assurance",
-          "scan",
-          path.resolve(process.cwd(), "benchmarks/public"),
-          "--public-only",
-          "--json",
-        ])
-      );
+      const scanCode = yield* runCli([
+        "assurance",
+        "scan",
+        path.resolve(process.cwd(), "benchmarks/public"),
+        "--public-only",
+        "--json",
+      ]);
       expect(scanCode).toBe(0);
       const scanOutput = JSON.parse(logs.at(-1)!);
       expect(scanOutput.isClean).toBe(true);
       expect(scanOutput.violations.length).toBe(0);
-    } finally {
-      console.log = origLog;
-    }
-  });
+    }).pipe(Effect.scoped, Effect.runPromise));
 });

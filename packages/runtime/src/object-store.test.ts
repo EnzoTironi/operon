@@ -2,7 +2,6 @@ import type { ObjectInstance } from "@operon/schema";
 import { Effect } from "effect";
 import { describe, expect, it } from "vitest";
 
-import { ConcurrentModificationError } from "./errors.js";
 import { InMemoryObjectStore } from "./object-store.js";
 
 const makeObj = (
@@ -50,16 +49,13 @@ describe("InMemoryObjectStore OCC, Lazy Evaluation & Atomic Commits", () => {
     );
 
     // Attempt to overwrite existing v2 object with version 1
-    let error: unknown;
-    try {
-      await Effect.runPromise(
-        store.putObject(makeObj("v1-defense", 1, "rogue-v1-overwrite"))
-      );
-    } catch (caughtError) {
-      error = caughtError;
+    const exit = await Effect.runPromiseExit(
+      store.putObject(makeObj("v1-defense", 1, "rogue-v1-overwrite"))
+    );
+    expect(exit._tag).toBe("Failure");
+    if (exit._tag === "Failure" && exit.cause._tag === "Fail") {
+      expect(exit.cause.error._tag).toBe("ConcurrentModificationError");
     }
-
-    expect(error).toBeInstanceOf(ConcurrentModificationError);
     const current = await Effect.runPromise(
       store.getObject("Entity" as any, "v1-defense")
     );
@@ -93,21 +89,15 @@ describe("InMemoryObjectStore OCC, Lazy Evaluation & Atomic Commits", () => {
     await Effect.runPromise(store.putObject(makeObj("objB", 1, "origB")));
 
     // Batch with valid objA v2 and CONFLICTING objB (version 5 when version 2 expected)
-    let failed = false;
-    try {
-      await Effect.runPromise(
-        store.commitAtomicTransaction({
-          mutations: [
-            { type: "put", instance: makeObj("objA", 2, "modifiedA") },
-            { type: "put", instance: makeObj("objB", 5, "invalidB") },
-          ],
-        })
-      );
-    } catch {
-      failed = true;
-    }
-
-    expect(failed).toBe(true);
+    const batchExit = await Effect.runPromiseExit(
+      store.commitAtomicTransaction({
+        mutations: [
+          { type: "put", instance: makeObj("objA", 2, "modifiedA") },
+          { type: "put", instance: makeObj("objB", 5, "invalidB") },
+        ],
+      })
+    );
+    expect(batchExit._tag).toBe("Failure");
 
     // Verify objA was NOT modified and remains version 1!
     const a = await Effect.runPromise(store.getObject("Entity" as any, "objA"));

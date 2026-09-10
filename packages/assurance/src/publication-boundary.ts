@@ -7,7 +7,7 @@ import type {
   PublicationScanResult,
   PublicationViolation,
 } from "@operon/schema";
-import { Effect } from "effect";
+import { Cause, Effect, Exit, Option } from "effect";
 
 import { PublicationLeakError } from "./errors.js";
 
@@ -56,10 +56,10 @@ export class PublicationBoundaryService {
     return "PUBLIC";
   }
 
-  assertNoProtectedMaterial(
+  checkNoProtectedMaterial(
     content: string | Buffer,
     extraProtectedMarkers?: readonly string[]
-  ): void {
+  ): Effect.Effect<void, PublicationLeakError> {
     const text =
       typeof content === "string" ? content : content.toString("utf-8");
     const markers = [
@@ -69,22 +69,37 @@ export class PublicationBoundaryService {
 
     for (const marker of markers) {
       if (text.includes(marker)) {
-        throw new PublicationLeakError({
-          path: "in-memory-artifact",
-          violation: `Protected marker '${marker}' found in public artifact`,
-        });
+        return Effect.fail(
+          new PublicationLeakError({
+            path: "in-memory-artifact",
+            violation: `Protected marker '${marker}' found in public artifact`,
+          })
+        );
       }
     }
 
     // Check if entire content or any line matches protected digests
     const contentDigest = computeCanonicalDigest(text);
     if (this.protectedDigests.has(contentDigest)) {
-      throw new PublicationLeakError({
-        path: "in-memory-artifact",
-        violation: "Artifact byte digest matches protected material index",
-        matchedDigest: contentDigest,
-      });
+      return Effect.fail(
+        new PublicationLeakError({
+          matchedDigest: contentDigest,
+          path: "in-memory-artifact",
+          violation: "Artifact byte digest matches protected material index",
+        })
+      );
     }
+
+    return Effect.void;
+  }
+
+  assertNoProtectedMaterial(
+    content: string | Buffer,
+    extraProtectedMarkers?: readonly string[]
+  ): void {
+    Effect.runSync(
+      this.checkNoProtectedMaterial(content, extraProtectedMarkers)
+    );
   }
 
   scanDirectory(
@@ -95,14 +110,15 @@ export class PublicationBoundaryService {
     }
   ): Effect.Effect<PublicationScanResult, PublicationLeakError> {
     const classifyPath = (p: string) => this.classify(p);
-    const assertClean = (c: string | Buffer) =>
-      this.assertNoProtectedMaterial(c);
+    const checkLeak = (content: string | Buffer) =>
+      this.checkNoProtectedMaterial(content);
 
     return Effect.gen(function* () {
       const scannedPaths: string[] = [];
       const violations: PublicationViolation[] = [];
+      const filesToScan: { fullPath: string; relativePath: string }[] = [];
 
-      function walk(currentDir: string) {
+      const walk = (currentDir: string): void => {
         if (!fs.existsSync(currentDir)) return;
         const entries = fs.readdirSync(currentDir, { withFileTypes: true });
 
@@ -123,38 +139,51 @@ export class PublicationBoundaryService {
           if (entry.isDirectory()) {
             walk(fullPath);
           } else if (entry.isFile()) {
-            scannedPaths.push(relativePath);
-            const classification = classifyPath(relativePath);
+            filesToScan.push({ fullPath, relativePath });
+          }
+        }
+      };
 
-            if (options?.allowedPublicOnly && classification === "PROTECTED") {
+      walk(targetDir);
+
+      for (const { fullPath, relativePath } of filesToScan) {
+        scannedPaths.push(relativePath);
+        const classification = classifyPath(relativePath);
+
+        if (options?.allowedPublicOnly && classification === "PROTECTED") {
+          violations.push({
+            classification: "PROTECTED",
+            details: `Protected path pattern detected in public release candidate: '${relativePath}'`,
+            path: relativePath,
+            rule: "S17-PROTECTED-PATH-FORBIDDEN",
+          });
+          continue;
+        }
+
+        const content = yield* Effect.try(() =>
+          fs.readFileSync(fullPath, "utf-8")
+        ).pipe(Effect.option, Effect.map(Option.getOrUndefined));
+
+        if (content !== undefined) {
+          const exit = yield* Effect.exit(checkLeak(content));
+          if (Exit.isFailure(exit)) {
+            const failReason = exit.cause.reasons.find(Cause.isFailReason);
+            if (
+              failReason &&
+              failReason.error instanceof PublicationLeakError
+            ) {
+              const leak = failReason.error;
               violations.push({
                 classification: "PROTECTED",
-                details: `Protected path pattern detected in public release candidate: '${relativePath}'`,
+                details: leak.violation,
+                matchedDigest: leak.matchedDigest,
                 path: relativePath,
-                rule: "S17-PROTECTED-PATH-FORBIDDEN",
+                rule: "S17-PROTECTED-CONTENT-LEAK",
               });
-              continue;
-            }
-
-            try {
-              const content = fs.readFileSync(fullPath, "utf-8");
-              assertClean(content);
-            } catch (error: unknown) {
-              if (error instanceof PublicationLeakError) {
-                violations.push({
-                  classification: "PROTECTED",
-                  details: error.violation,
-                  matchedDigest: error.matchedDigest,
-                  path: relativePath,
-                  rule: "S17-PROTECTED-CONTENT-LEAK",
-                });
-              }
             }
           }
         }
       }
-
-      walk(targetDir);
 
       const isClean = violations.length === 0;
 
@@ -162,18 +191,18 @@ export class PublicationBoundaryService {
         const first = violations[0]!;
         return yield* Effect.fail(
           new PublicationLeakError({
+            matchedDigest: first.matchedDigest,
             path: first.path,
             violation: first.details,
-            matchedDigest: first.matchedDigest,
           })
         );
       }
 
       return {
         isClean,
+        scannedAt: Date.now(),
         scannedPaths,
         violations,
-        scannedAt: Date.now(),
       };
     });
   }

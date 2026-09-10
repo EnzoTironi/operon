@@ -34,48 +34,42 @@ export function runDoctor(options: {
     });
 
     // 3. Storage Context & Bitemporal Engine
-    try {
-      const ctx = yield* Effect.promise(() =>
-        createRuntimeContext(options.dbPath)
-      );
+    const storageEffect = Effect.acquireUseRelease(
+      Effect.promise(() => createRuntimeContext(options.dbPath)),
+      (ctx) =>
+        Effect.gen(function* () {
+          checks.push({
+            details: `Initialized ${options.dbPath ? "SQLite bitemporal store" : "in-memory object store"} with pre-seeded ontologies`,
+            name: "Storage Engine",
+            status: "PASS",
+          });
 
-      if (ctx && (ctx as any).auditStore !== undefined) {
-        checks.push({
-          details: `Initialized ${options.dbPath ? "SQLite bitemporal store" : "in-memory object store"} with pre-seeded ontologies`,
-          name: "Storage Engine",
-          status: "PASS",
-        });
+          // 4. Audit Chain Verification
+          const auditChainValid = yield* ctx.auditStore
+            .verifyAuditChain()
+            .pipe(Effect.catchTag("StorageError", () => Effect.succeed(false)));
 
-        // 4. Audit Chain Verification
-        const auditChainValid = yield* ctx.auditStore
-          .verifyAuditChain()
-          .pipe(Effect.catchTag("StorageError", () => Effect.succeed(false)));
+          checks.push({
+            details: `Audit store cryptographic hash chain verified (holds=${auditChainValid})`,
+            name: "Audit Store Hash Chain",
+            status: auditChainValid ? "PASS" : "FAIL",
+          });
 
-        checks.push({
-          details: `Audit store cryptographic hash chain verified (holds=${auditChainValid})`,
-          name: "Audit Store Hash Chain",
-          status: auditChainValid ? "PASS" : "FAIL",
-        });
+          // 5. Action Inbox State
+          const pending = ctx.inbox.getPendingProposals();
+          checks.push({
+            details: `Action Inbox online with ${pending.length} pending proposals`,
+            name: "Action Inbox",
+            status: "PASS",
+          });
+        }),
+      (ctx) => Effect.sync(() => ctx.close())
+    );
 
-        // 5. Action Inbox State
-        const pending = ctx.inbox.getPendingProposals();
-        checks.push({
-          details: `Action Inbox online with ${pending.length} pending proposals`,
-          name: "Action Inbox",
-          status: "PASS",
-        });
-
-        ctx.close();
-      } else {
-        checks.push({
-          details: "Failed to initialize storage context",
-          name: "Storage Engine",
-          status: "FAIL",
-        });
-      }
-    } catch (error: unknown) {
+    const storageResult = yield* storageEffect.pipe(Effect.exit);
+    if (storageResult._tag === "Failure") {
       checks.push({
-        details: `Storage initialization failed: ${String((error as any)?.message ?? error)}`,
+        details: `Storage initialization failed: ${String(storageResult.cause)}`,
         name: "Storage Engine",
         status: "FAIL",
       });

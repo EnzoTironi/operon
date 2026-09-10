@@ -67,92 +67,88 @@ describe("V0-CH-02 & V0-CH-03: CLI OMS authoring and publication lifecycle", () 
       const stateFile = yield* makeScopedTempFile("cli-state-oms", "{}");
       const prevEnvState = process.env.OPERON_STATE_PATH;
       process.env.OPERON_STATE_PATH = stateFile;
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => {
+          if (prevEnvState === undefined) {
+            delete process.env.OPERON_STATE_PATH;
+          } else {
+            process.env.OPERON_STATE_PATH = prevEnvState;
+          }
+        })
+      );
 
-      try {
-        // 1. Initial check: operon oms release active
-        const activeCode = yield* runCli([
-          "oms",
-          "release",
-          "active",
-          "--json",
-        ]);
-        expect(activeCode).toBe(0);
+      // 1. Initial check: operon oms release active
+      const activeCode = yield* runCli(["oms", "release", "active", "--json"]);
+      expect(activeCode).toBe(0);
 
-        // 2. Apply artifact: operon oms artifact apply main --file <path> --idempotency-key <key>
-        const applyCode = yield* runCli([
-          "oms",
-          "artifact",
-          "apply",
-          "main",
-          "--file",
-          artifactFile,
-          "--idempotency-key",
-          "cli-apply-key-01",
-          "--json",
-        ]);
-        expect(applyCode).toBe(0);
+      // 2. Apply artifact: operon oms artifact apply main --file <path> --idempotency-key <key>
+      const applyCode = yield* runCli([
+        "oms",
+        "artifact",
+        "apply",
+        "main",
+        "--file",
+        artifactFile,
+        "--idempotency-key",
+        "cli-apply-key-01",
+        "--json",
+      ]);
+      expect(applyCode).toBe(0);
 
-        // 3. Inspect candidate: operon oms candidate inspect <candidateDigest>
-        const inspectCode = yield* runCli([
-          "oms",
-          "candidate",
-          "inspect",
-          candidateDigest,
-          "--json",
-        ]);
-        expect(inspectCode).toBe(0);
+      // 3. Inspect candidate: operon oms candidate inspect <candidateDigest>
+      const inspectCode = yield* runCli([
+        "oms",
+        "candidate",
+        "inspect",
+        candidateDigest,
+        "--json",
+      ]);
+      expect(inspectCode).toBe(0);
 
-        // 4. Diff candidate: operon oms candidate diff <candidateDigest>
-        const diffCode = yield* runCli([
-          "oms",
-          "candidate",
-          "diff",
-          candidateDigest,
-          "--json",
-        ]);
-        expect(diffCode).toBe(0);
+      // 4. Diff candidate: operon oms candidate diff <candidateDigest>
+      const diffCode = yield* runCli([
+        "oms",
+        "candidate",
+        "diff",
+        candidateDigest,
+        "--json",
+      ]);
+      expect(diffCode).toBe(0);
 
-        // 5. Publish release: operon oms release publish --candidate <digest> --initial --reviewer <id>
-        const publishCode = yield* runCli([
-          "oms",
-          "release",
-          "publish",
-          "--candidate",
-          candidateDigest,
-          "--initial",
-          "--reviewer",
-          "lead_architect_cli",
-          "--idempotency-key",
-          "cli-pub-key-01",
-          "--json",
-        ]);
-        expect(publishCode).toBe(0);
+      // 5. Publish release: operon oms release publish --candidate <digest> --initial --reviewer <id>
+      const publishCode = yield* runCli([
+        "oms",
+        "release",
+        "publish",
+        "--candidate",
+        candidateDigest,
+        "--initial",
+        "--reviewer",
+        "lead_architect_cli",
+        "--idempotency-key",
+        "cli-pub-key-01",
+        "--json",
+      ]);
+      expect(publishCode).toBe(0);
 
-        // 6. Recover publication: operon oms release get --idempotency-key <key>
-        const getCode = yield* runCli([
-          "oms",
-          "release",
-          "get",
-          "--idempotency-key",
-          "cli-pub-key-01",
-          "--json",
-        ]);
-        expect(getCode).toBe(0);
+      // 6. Recover publication: operon oms release get --idempotency-key <key>
+      const getCode = yield* runCli([
+        "oms",
+        "release",
+        "get",
+        "--idempotency-key",
+        "cli-pub-key-01",
+        "--json",
+      ]);
+      expect(getCode).toBe(0);
 
-        // 7. Active release now reports published release
-        const finalActiveCode = yield* runCli([
-          "oms",
-          "release",
-          "active",
-          "--json",
-        ]);
-        expect(finalActiveCode).toBe(0);
-      } finally {
-        if (prevEnvState === undefined) {
-          delete process.env.OPERON_STATE_PATH;
-        } else {
-          process.env.OPERON_STATE_PATH = prevEnvState;
-        }
-      }
+      // 7. Active release now reports published release
+      const finalActiveCode = yield* runCli([
+        "oms",
+        "release",
+        "active",
+        "--json",
+      ]);
+      expect(finalActiveCode).toBe(0);
     }).pipe(Effect.scoped, Effect.runPromise));
 });

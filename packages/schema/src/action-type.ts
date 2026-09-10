@@ -1,16 +1,22 @@
-import type { Effect, Schema } from "effect";
+import type { Effect } from "effect";
+import { Schema } from "effect";
 
 import type { ObjectInstance } from "./object-type.js";
-import type {
-  AgentAuthorizationTier,
-  DecisionVerdict,
-  SecurityContext,
-} from "./security.js";
+import type { AgentAuthorizationTier, SecurityContext } from "./security.js";
+import { DecisionVerdict } from "./security.js";
 import type { ActionTypeId, ObjectTypeId } from "./types.js";
 
-export type RiskTier = "low" | "medium" | "high" | "critical";
+export const RiskTier = Schema.Literals(["low", "medium", "high", "critical"]);
+export type RiskTier = typeof RiskTier.Type;
+export const RiskTierSchema = RiskTier;
 
-export type ExecutionMode = "manual" | "proposal" | "automated";
+export const ExecutionMode = Schema.Literals([
+  "manual",
+  "proposal",
+  "automated",
+]);
+export type ExecutionMode = typeof ExecutionMode.Type;
+export const ExecutionModeSchema = ExecutionMode;
 
 /**
  * Context provided to guard rules during Submission Criteria evaluation
@@ -24,17 +30,23 @@ export interface ActionEvaluationContext {
   readonly now: number;
 }
 
-export type CriterionEvaluationResult =
-  | {
-      readonly passed: true;
-      readonly verdict?: "allow";
-      readonly failureReason?: undefined;
-    }
-  | {
-      readonly passed: false;
-      readonly verdict: DecisionVerdict;
-      readonly failureReason: string;
-    };
+export const CriterionEvaluationPassed = Schema.Struct({
+  passed: Schema.Literal(true),
+  verdict: Schema.optionalKey(Schema.Literal("allow")),
+  failureReason: Schema.optionalKey(Schema.Undefined),
+});
+
+export const CriterionEvaluationFailed = Schema.Struct({
+  passed: Schema.Literal(false),
+  verdict: DecisionVerdict,
+  failureReason: Schema.String,
+});
+
+export const CriterionEvaluationResult = Schema.Union([
+  CriterionEvaluationPassed,
+  CriterionEvaluationFailed,
+]);
+export type CriterionEvaluationResult = typeof CriterionEvaluationResult.Type;
 
 /**
  * Declarative submission criterion / guard (Line 1 verification)

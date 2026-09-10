@@ -115,10 +115,11 @@ export class KafkaCdcConnector {
             _deleted: true,
           })
           .pipe(
-            Effect.catch((error) => {
-              this.errorsCount++;
-              return Effect.fail(error);
-            })
+            Effect.tapError(() =>
+              Effect.sync(() => {
+                this.errorsCount++;
+              })
+            )
           );
         this.processedCount++;
         return;
@@ -135,10 +136,11 @@ export class KafkaCdcConnector {
       yield* this.funnel
         .ingestStreamRecord(mapping.pipelineId, properties)
         .pipe(
-          Effect.catch((error) => {
-            this.errorsCount++;
-            return Effect.fail(error);
-          })
+          Effect.tapError(() =>
+            Effect.sync(() => {
+              this.errorsCount++;
+            })
+          )
         );
 
       this.processedCount++;

@@ -2,7 +2,7 @@ import {
   OperonTelemetryService,
   TelemetryDiagnosticError,
 } from "@operon/telemetry";
-import { Effect } from "effect";
+import { Config, Effect, Option } from "effect";
 
 export function runTelemetry(
   args: string[]
@@ -68,6 +68,29 @@ export function runTelemetry(
       );
     }
 
+    const posthogApiKey = yield* Effect.option(
+      Config.redacted("POSTHOG_API_KEY").pipe(
+        Config.orElse(() => Config.redacted("NEXT_PUBLIC_POSTHOG_KEY"))
+      )
+    );
+    const posthogHost = yield* Effect.option(
+      Config.string("POSTHOG_HOST").pipe(
+        Config.orElse(() => Config.string("NEXT_PUBLIC_POSTHOG_HOST"))
+      )
+    );
+    const sentryDsn = yield* Effect.option(
+      Config.redacted("SENTRY_DSN").pipe(
+        Config.orElse(() => Config.redacted("NEXT_PUBLIC_SENTRY_DSN"))
+      )
+    );
+    const sentryEnv = yield* Effect.option(
+      Config.string("SENTRY_ENVIRONMENT").pipe(
+        Config.orElse(() => Config.string("NODE_ENV"))
+      )
+    );
+    const sentryOrg = yield* Effect.option(Config.string("SENTRY_ORG"));
+    const sentryProject = yield* Effect.option(Config.string("SENTRY_PROJECT"));
+
     const statusReport = {
       diagnosticErrorSent: isError,
       diagnosticPingSent: isPing,
@@ -75,23 +98,16 @@ export function runTelemetry(
       eventsBufferedCount: telemetry.getRecentEvents().length,
       posthog: {
         active: telemetry.isPostHogActive(),
-        apiKeyConfigured: Boolean(
-          process.env.POSTHOG_API_KEY || process.env.NEXT_PUBLIC_POSTHOG_KEY
-        ),
-        host: process.env.POSTHOG_HOST || "https://us.i.posthog.com",
+        apiKeyConfigured: Option.isSome(posthogApiKey),
+        host: Option.getOrElse(posthogHost, () => "https://us.i.posthog.com"),
       },
       privacyScrubberActive: true,
       sentry: {
         active: telemetry.isSentryActive(),
-        dsnConfigured: Boolean(
-          process.env.SENTRY_DSN || process.env.NEXT_PUBLIC_SENTRY_DSN
-        ),
-        environment:
-          process.env.SENTRY_ENVIRONMENT ||
-          process.env.NODE_ENV ||
-          "development",
-        organization: process.env.SENTRY_ORG || "zoen-1r",
-        project: process.env.SENTRY_PROJECT || "operon",
+        dsnConfigured: Option.isSome(sentryDsn),
+        environment: Option.getOrElse(sentryEnv, () => "development"),
+        organization: Option.getOrElse(sentryOrg, () => "zoen-1r"),
+        project: Option.getOrElse(sentryProject, () => "operon"),
       },
       timestamp: Date.now(),
     };

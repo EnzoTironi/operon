@@ -292,12 +292,12 @@ export class EmbeddedSqlDriver implements SqlDriver {
     const backupLinks = [...this.links];
 
     return fn(this).pipe(
-      // oxlint-disable-next-line promise/prefer-await-to-callbacks
-      Effect.catch((error) => {
-        this.objects = backupObjects;
-        this.links = backupLinks;
-        return Effect.fail(error);
-      })
+      Effect.tapError(() =>
+        Effect.sync(() => {
+          this.objects = backupObjects;
+          this.links = backupLinks;
+        })
+      )
     );
   }
 }

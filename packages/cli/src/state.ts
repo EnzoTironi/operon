@@ -30,7 +30,7 @@ import {
   defineLinkType,
   defineObjectType,
 } from "@operon/schema";
-import { Effect, Schema } from "effect";
+import { Config, Effect, Option, Redacted, Schema } from "effect";
 
 export const PatientType = defineObjectType({
   description: "Hospital patient undergoing medical treatment",
@@ -248,7 +248,13 @@ export async function createRuntimeContext(
 
   let objectStore: InMemoryObjectStore | SqlBitemporalStore;
   let close = noopClose;
-  const targetDbPath = dbPath || process.env.OPERON_DATABASE_URL;
+  const envDbUrl = Effect.runSync(
+    Effect.option(Config.redacted("OPERON_DATABASE_URL"))
+  );
+  const targetDbPath =
+    dbPath ||
+    process.env.OPERON_DATABASE_URL ||
+    envDbUrl.pipe(Option.map(Redacted.value), Option.getOrUndefined);
 
   if (targetDbPath) {
     const driver = new NativeSqliteDriver(targetDbPath);
@@ -337,16 +343,22 @@ export async function createRuntimeContext(
     objectStore
   );
 
+  const envStatePath = Effect.runSync(
+    Effect.option(Config.string("OPERON_STATE_PATH"))
+  );
   const stateFile =
-    process.env.OPERON_STATE_PATH ||
+    Option.getOrUndefined(envStatePath) ||
     (targetDbPath
       ? `${targetDbPath}.state.json`
       : path.join(process.cwd(), ".operon-cli-state.json"));
 
-  const isPersisted = process.env.OPERON_IN_MEMORY !== "true";
+  const envInMemory = Effect.runSync(
+    Effect.option(Config.string("OPERON_IN_MEMORY"))
+  );
+  const isPersisted = Option.getOrUndefined(envInMemory) !== "true";
 
   if (isPersisted && fs.existsSync(stateFile)) {
-    try {
+    Effect.try(() => {
       const data = JSON.parse(fs.readFileSync(stateFile, "utf-8"));
       if (Array.isArray(data.decisions) && data.decisions.length > 0) {
         const auditAny = auditStore as any;
@@ -407,15 +419,13 @@ export async function createRuntimeContext(
       if (data.atomicCommit) {
         atomicCommit.importSnapshot(data.atomicCommit);
       }
-    } catch {
-      // Ignore corrupted state file
-    }
+    }).pipe(Effect.ignore, Effect.runSync);
   }
 
   const enhancedClose = () => {
     close();
     if (isPersisted) {
-      try {
+      Effect.try(() => {
         const proposalMap = (inbox as any).proposals as Map<string, any>;
         const proposalsToSave = proposalMap
           ? [...proposalMap.values()].map((item) => ({
@@ -451,9 +461,7 @@ export async function createRuntimeContext(
         };
 
         fs.writeFileSync(stateFile, JSON.stringify(payload, null, 2), "utf-8");
-      } catch {
-        // Best effort persist
-      }
+      }).pipe(Effect.ignore, Effect.runSync);
     }
   };
 
