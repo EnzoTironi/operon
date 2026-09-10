@@ -14,3 +14,5 @@ skills-lock.json
 .env.local
 .env.*.local
 .vscode
+.stryker-tmp
+reports
