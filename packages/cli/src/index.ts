@@ -1,4 +1,5 @@
 import { OperonTelemetryService } from "@operon/telemetry";
+import { Effect } from "effect";
 
 import { runAction } from "./commands/action.js";
 import { runAudit } from "./commands/audit.js";
@@ -51,10 +52,10 @@ Examples:
 `);
 }
 
-async function dispatchCommand(
+function dispatchCommand(
   command: string,
   args: string[]
-): Promise<number> {
+): Effect.Effect<number, unknown, never> {
   switch (command) {
     case "doctor": {
       if (args.includes("--help") || args.includes("-h")) {
@@ -66,9 +67,9 @@ Examples:
   operon doctor --json
   operon doctor --db ./operon.db
 `);
-        return 0;
+        return Effect.succeed(0);
       }
-      return await runDoctor({
+      return runDoctor({
         dbPath: args.includes("--db")
           ? args[args.indexOf("--db") + 1]
           : undefined,
@@ -89,9 +90,9 @@ Examples:
   operon object put --type Patient --id P002 --properties '{"name":"Alice","egfr":70}'
   operon object query Patient P001 --valid-time 1789000000000 --tx-time 1789000000000
 `);
-        return 0;
+        return Effect.succeed(0);
       }
-      return await runObject(args.slice(1));
+      return runObject(args.slice(1));
     }
 
     case "readiness": {
@@ -104,9 +105,9 @@ Examples:
   operon readiness check Patient P001
   operon readiness check Patient P001 --json
 `);
-        return 0;
+        return Effect.succeed(0);
       }
-      return await runReadiness(args.slice(1));
+      return runReadiness(args.slice(1));
     }
 
     case "action": {
@@ -123,9 +124,9 @@ Examples:
   operon action submit update_vitals --params '{"patientId":"P001","heartRate":72}' --dry-run
   cat params.json | operon action submit update_vitals --stdin
 `);
-        return 0;
+        return Effect.succeed(0);
       }
-      return await runAction(args.slice(1));
+      return runAction(args.slice(1));
     }
 
     case "inbox": {
@@ -142,9 +143,9 @@ Examples:
   operon inbox approve proposal_123 --reviewer dr_li --role physician --override clinical_discretion --reason "Adjusted for fasting"
   operon inbox reject proposal_123 --reviewer chief_eng --role engineer --reason "Valve pressure excessive"
 `);
-        return 0;
+        return Effect.succeed(0);
       }
-      return await runInbox(args.slice(1));
+      return runInbox(args.slice(1));
     }
 
     case "audit": {
@@ -159,9 +160,9 @@ Examples:
   operon audit verify
   operon audit verify --json
 `);
-        return 0;
+        return Effect.succeed(0);
       }
-      return await runAudit(args.slice(1));
+      return runAudit(args.slice(1));
     }
 
     case "oms": {
@@ -179,9 +180,9 @@ Examples:
   operon oms proposal review prop_123 --reviewer doc_lead --verdict approve --comments "LGTM"
   operon oms proposal merge prop_123 --author lead_arch --require-specialist
 `);
-        return 0;
+        return Effect.succeed(0);
       }
-      return await runOms(args.slice(1));
+      return runOms(args.slice(1));
     }
 
     case "sandbox": {
@@ -194,9 +195,9 @@ Examples:
   operon sandbox verify predictive_vibration_model
   operon sandbox verify predictive_vibration_model --inputs '{"value":14.2}' --iterations 5 --json
 `);
-        return 0;
+        return Effect.succeed(0);
       }
-      return await runSandbox(args.slice(1));
+      return runSandbox(args.slice(1));
     }
 
     case "mcp": {
@@ -209,9 +210,9 @@ Examples:
   operon mcp start
   operon mcp start --agent-tier 4
 `);
-        return 0;
+        return Effect.succeed(0);
       }
-      return await runMcp(args.slice(1));
+      return runMcp(args.slice(1));
     }
 
     case "demo": {
@@ -227,9 +228,9 @@ Examples:
   operon demo sompo
   operon demo education
 `);
-        return 0;
+        return Effect.succeed(0);
       }
-      return await runDemo(args.slice(1));
+      return runDemo(args.slice(1));
     }
 
     case "telemetry": {
@@ -242,9 +243,9 @@ Examples:
   operon telemetry status
   operon telemetry status --ping --json
 `);
-        return 0;
+        return Effect.succeed(0);
       }
-      return await runTelemetry(args.slice(1));
+      return runTelemetry(args.slice(1));
     }
 
     default: {
@@ -253,42 +254,42 @@ Examples:
         "  Available commands: doctor, object, readiness, action, inbox, audit, oms, sandbox, mcp, telemetry, demo"
       );
       console.error("  Run 'operon --help' to see usage and examples.");
-      return 1;
+      return Effect.succeed(1);
     }
   }
 }
 
-export async function runCli(
+export function runCli(
   argv: string[] = process.argv.slice(2)
-): Promise<number> {
+): Effect.Effect<number, never, never> {
   const args = [...argv];
-  const startTime = Date.now();
-  const telemetry = OperonTelemetryService.getInstance();
-
+  const command = args[0];
   const isHelp =
     args.includes("--help") || args.includes("-h") || args.length === 0;
 
   if (args.includes("--version") || args.includes("-v")) {
     console.log("operon 0.1.0");
-    return 0;
+    return Effect.succeed(0);
   }
-
-  const command = args[0];
 
   if (isHelp && !command) {
     printHelp();
-    return 0;
+    return Effect.succeed(0);
   }
 
-  let exitCode = 0;
-  try {
-    exitCode = await dispatchCommand(command, args);
-    return exitCode;
-  } catch (error: unknown) {
-    telemetry.captureError(error, { args, command });
-    exitCode = 1;
-    throw error;
-  } finally {
+  const startTime = Date.now();
+  const telemetry = OperonTelemetryService.getInstance();
+
+  return Effect.gen(function* () {
+    const handleCommandError = (error: unknown) => {
+      telemetry.captureError(error, { args, command });
+      return Effect.succeed(1);
+    };
+
+    const exitCode = yield* dispatchCommand(command, args).pipe(
+      Effect.catch(handleCommandError)
+    );
+
     telemetry.trackEvent({
       event: "operon_cli_command",
       properties: {
@@ -297,8 +298,20 @@ export async function runCli(
         exitCode,
       },
     });
-    await telemetry.flushAndClose();
-  }
+
+    yield* Effect.promise(() => telemetry.flushAndClose());
+
+    return exitCode;
+  }).pipe(
+    Effect.annotateLogs({ cliCommand: command || "help" }),
+    Effect.provide(telemetry.getLoggerLayer())
+  );
+}
+
+export function runCliPromise(
+  argv: string[] = process.argv.slice(2)
+): Promise<number> {
+  return Effect.runPromise(runCli(argv));
 }
 
 export * from "./state.js";

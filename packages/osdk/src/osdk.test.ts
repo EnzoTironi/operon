@@ -34,7 +34,7 @@ describe("@operon/osdk", () => {
     riskTier: "low",
   });
 
-  it("should provide fluent client access to objects, sets, and actions", async () => {
+  it("provides fluent client access to objects, sets, and actions", async () => {
     const store = new InMemoryObjectStore();
     const audit = new InMemoryAuditStore();
 
@@ -107,7 +107,7 @@ describe("@operon/osdk", () => {
     expect(actionResult.decisionRecord.subject.id).toBe("dr-zhang");
   });
 
-  it("should generate TypeScript client source code from ontology schema including links", () => {
+  it("generates TypeScript client source code from ontology schema including links", () => {
     const source = generateOsdkSource({
       actionTypes: [UpdatePatientAction],
       linkTypes: [

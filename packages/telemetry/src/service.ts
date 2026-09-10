@@ -1,9 +1,17 @@
 import * as Sentry from "@sentry/node";
-import { Effect } from "effect";
+import { Data, Effect, Logger } from "effect";
+import type { Layer } from "effect";
 import { PostHog } from "posthog-node";
 
 import { TelemetryDataScrubber } from "./scrubber.js";
 import type { OperonTelemetryEvent, TelemetryConfig } from "./types.js";
+
+export class TelemetryLogCapturedError extends Data.TaggedError(
+  "TelemetryLogCapturedError"
+)<{
+  readonly message: string;
+  readonly level: string;
+}> {}
 
 export class OperonTelemetryService {
   private static instance: OperonTelemetryService | null = null;
@@ -201,6 +209,39 @@ export class OperonTelemetryService {
         })
       )
     );
+  }
+
+  /**
+   * Provides an Effect Logger layer that routes Effect.log* calls
+   * into Sentry breadcrumbs/errors and telemetry tracking.
+   */
+  getLoggerLayer(): Layer.Layer<never, never, never> {
+    const logger = Logger.make((options) => {
+      const level = options.logLevel;
+      const rawMsg = options.message;
+      const msg = Array.isArray(rawMsg)
+        ? rawMsg
+            .map((m) =>
+              typeof m === "object" && m !== null
+                ? JSON.stringify(this.scrubber.scrub(m))
+                : String(m)
+            )
+            .join(" ")
+        : String(rawMsg);
+
+      this.addBreadcrumb(`effect.log.${level.toLowerCase()}`, msg);
+      if (level === "Error" || level === "Fatal") {
+        this.captureError(
+          new TelemetryLogCapturedError({ level, message: msg }),
+          {
+            cause: options.cause,
+            level,
+          }
+        );
+      }
+    });
+
+    return Logger.layer([logger, Logger.tracerLogger]);
   }
 
   async flushAndClose(): Promise<void> {

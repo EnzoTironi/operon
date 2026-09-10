@@ -56,7 +56,7 @@ describe("@operon/runtime", () => {
     typology: "master",
   });
 
-  it("should evaluate 4C Decision Readiness accurately", () => {
+  it("evaluates 4C Decision Readiness accurately", () => {
     const now = Date.now();
 
     // 1. Ready instance
@@ -133,7 +133,7 @@ describe("@operon/runtime", () => {
     expect(currencyCheck.current.staleProperties.length).toBeGreaterThan(0);
   });
 
-  it("should execute the 7-step write pipeline and enforce agent tiers", async () => {
+  it("executes the 7-step write pipeline and enforces agent tiers", async () => {
     const objectStore = new InMemoryObjectStore();
     const auditStore = new InMemoryAuditStore();
 
@@ -267,7 +267,7 @@ describe("@operon/runtime", () => {
     expect(auditList.length).toBeGreaterThan(0);
   });
 
-  it("should handle proposals and human veto / override in ActionInbox", async () => {
+  it("handles proposals and human veto / override in ActionInbox", async () => {
     const objectStore = new InMemoryObjectStore();
     const auditStore = new InMemoryAuditStore();
     const inbox = new ActionInbox(auditStore, objectStore);

@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { runClinicalSimulation } from "./simulation.js";
 
 describe("Healthcare CDSS Reference Example", () => {
-  it("should run the clinical simulation and prevent trust collapse", async () => {
+  it("runs the clinical simulation and prevents trust collapse", async () => {
     const { auditLogs, overrides } = await runClinicalSimulation();
 
     expect(auditLogs.length).toBeGreaterThan(0);

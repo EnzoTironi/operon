@@ -21,7 +21,7 @@ import {
 } from "./index.js";
 
 describe("@operon/alchemy", () => {
-  it("should synthesize the Cloudflare Alchemy infrastructure manifest", () => {
+  it("synthesizes the Cloudflare Alchemy infrastructure manifest", () => {
     const manifest = synthesizeAlchemyManifest();
     expect(manifest.name).toBe("operon-stack");
     expect(manifest.provider).toBe("cloudflare");
@@ -31,7 +31,7 @@ describe("@operon/alchemy", () => {
     expect(manifest.resources.worker.type).toBe("cloudflare:worker");
   });
 
-  it("should handle HTTP requests through the worker gateway", async () => {
+  it("handles HTTP requests through the worker gateway", async () => {
     const objectStore = new InMemoryObjectStore();
     const auditStore = new InMemoryAuditStore();
     const inbox = new ActionInbox(auditStore, objectStore);

@@ -10,7 +10,7 @@ class TestTelemetryError extends Data.TaggedError("TestTelemetryError")<{
 
 describe("@operon/telemetry test suite", () => {
   describe("TelemetryDataScrubber", () => {
-    it("should redact default sensitive keys like password, token, and mrn", () => {
+    it("redacts default sensitive keys like password, token, and mrn", () => {
       const scrubber = new TelemetryDataScrubber();
       const payload = {
         actionId: "adjust_dose",
@@ -32,7 +32,7 @@ describe("@operon/telemetry test suite", () => {
       expect(scrubbed.actionId).toBe("adjust_dose");
     });
 
-    it("should pseudonymize sensitive identifiers cryptographically", () => {
+    it("pseudonymizes sensitive identifiers cryptographically", () => {
       const scrubber = new TelemetryDataScrubber();
       const anon1 = scrubber.pseudonymize("patient_alpha");
       const anon2 = scrubber.pseudonymize("patient_alpha");
@@ -43,7 +43,7 @@ describe("@operon/telemetry test suite", () => {
       expect(anon1).not.toBe(anon3); // Unique per input
     });
 
-    it("should handle circular references without infinite recursion", () => {
+    it("handles circular references without infinite recursion", () => {
       const scrubber = new TelemetryDataScrubber();
       const circularObj: any = { name: "test" };
       circularObj.self = circularObj;
@@ -55,7 +55,7 @@ describe("@operon/telemetry test suite", () => {
   });
 
   describe("OperonTelemetryService", () => {
-    it("should initialize safely in no-op mode without credentials", () => {
+    it("initializes safely in no-op mode without credentials", () => {
       const service = new OperonTelemetryService({ enabled: false });
       expect(service.isEnabled()).toBe(false);
       expect(service.isSentryActive()).toBe(false);
@@ -66,7 +66,7 @@ describe("@operon/telemetry test suite", () => {
       service.captureError(new TestTelemetryError({ message: "sample error" }));
     });
 
-    it("should track events into the recent events buffer", () => {
+    it("tracks events into the recent events buffer", () => {
       const service = new OperonTelemetryService({ enabled: false });
 
       service.trackEvent({
@@ -86,7 +86,7 @@ describe("@operon/telemetry test suite", () => {
       expect(events.at(-1).event).toBe("operon_action_submitted");
     });
 
-    it("should wrap Effect workflows in spans seamlessly", async () => {
+    it("wraps Effect workflows in spans seamlessly", async () => {
       const service = new OperonTelemetryService({ enabled: false });
 
       const effect = Effect.succeed({ result: "ok", value: 42 });
@@ -101,7 +101,7 @@ describe("@operon/telemetry test suite", () => {
       expect(res.result).toBe("ok");
     });
 
-    it("should catch errors in withSpan and propagate the failure cleanly", async () => {
+    it("catches errors in withSpan and propagates the failure cleanly", async () => {
       const service = new OperonTelemetryService({ enabled: false });
 
       const failure = Effect.fail(
@@ -114,7 +114,7 @@ describe("@operon/telemetry test suite", () => {
       );
     });
 
-    it("should flush and close gracefully", async () => {
+    it("flushes and closes gracefully", async () => {
       const service = new OperonTelemetryService({ enabled: false });
       await expect(service.flushAndClose()).resolves.toBeUndefined();
     });

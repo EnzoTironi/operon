@@ -17,7 +17,7 @@ import {
 } from "./index.js";
 
 describe("Operon Microservice Pillars (OMS, OSS, Funnel, Bitemporal, Security)", () => {
-  it("should support bitemporal time-travel queries across Valid and Transaction time", async () => {
+  it("supports bitemporal time-travel queries across Valid and Transaction time", async () => {
     const store = new BitemporalObjectStore();
 
     // T_v=100: Patient dose 14U
@@ -66,7 +66,7 @@ describe("Operon Microservice Pillars (OMS, OSS, Funnel, Bitemporal, Security)",
     expect((currentValid!.properties as any).dose).toBe(12);
   });
 
-  it("should manage branches and enforce multi-stakeholder ontology proposals in OMS", async () => {
+  it("manages branches and enforces multi-stakeholder ontology proposals in OMS", async () => {
     const oms = new OntologyMetadataService();
     const admin = {
       id: "admin",
@@ -165,7 +165,7 @@ describe("Operon Microservice Pillars (OMS, OSS, Funnel, Bitemporal, Security)",
     expect(mainSchema.objectTypes.has("Telemetry")).toBe(true);
   });
 
-  it("should perform set algebra and graph traversals in OSS", async () => {
+  it("performs set algebra and graph traversals in OSS", async () => {
     const store = new BitemporalObjectStore();
     const oss = new ObjectSetService(store);
 
@@ -241,7 +241,7 @@ describe("Operon Microservice Pillars (OMS, OSS, Funnel, Bitemporal, Security)",
     expect((partsList[0].properties as any).serial).toBe("SN-998");
   });
 
-  it("should ingest batch data and resolve conflicts in the Funnel Service", async () => {
+  it("ingests batch data and resolves conflicts in the Funnel Service", async () => {
     const store = new BitemporalObjectStore();
     const funnel = new FunnelService(store);
 
@@ -274,7 +274,7 @@ describe("Operon Microservice Pillars (OMS, OSS, Funnel, Bitemporal, Security)",
     expect((s1!.properties as any).tempC).toBe(85);
   });
 
-  it("should enforce Restricted Views and Multi-Dataset Objects in Dynamic Security", () => {
+  it("enforces Restricted Views and Multi-Dataset Objects in Dynamic Security", () => {
     const security = new DynamicSecurityEngine();
 
     // Row-level RV: Sales can only see active customers
@@ -353,7 +353,7 @@ describe("Operon Microservice Pillars (OMS, OSS, Funnel, Bitemporal, Security)",
     expect((compProjected.properties as any).ssn).toBe("000-11-2222");
   });
 
-  it("should automatically materialize 1-to-1 ActionLog objects upon action execution", async () => {
+  it("automatically materializes 1-to-1 ActionLog objects upon action execution", async () => {
     const store = new BitemporalObjectStore();
     const audit = new InMemoryAuditStore();
 

@@ -11,7 +11,7 @@ import {
 } from "./index.js";
 
 describe("@operon/schema", () => {
-  it("should define domain-specific ValueTypes with boundaries", () => {
+  it("defines domain-specific ValueTypes with boundaries", () => {
     const BloodGlucoseMgDl = defineValueType({
       description: "Blood glucose concentration in mg/dL",
       id: "BloodGlucoseMgDl",
@@ -30,7 +30,7 @@ describe("@operon/schema", () => {
     ).toThrow();
   });
 
-  it("should define an Object Type with typed properties and freshness budget", () => {
+  it("defines an Object Type with typed properties and freshness budget", () => {
     const Patient = defineObjectType({
       description: "Hospital Inpatient",
       id: "Patient",
@@ -62,7 +62,7 @@ describe("@operon/schema", () => {
     );
   });
 
-  it("should define Action Types with submission criteria", async () => {
+  it("defines Action Types with submission criteria", async () => {
     const AdjustDoseAction = defineActionType({
       defaultExecutionMode: "proposal",
       description: "Adjust bedtime basal insulin dose",
@@ -121,7 +121,7 @@ describe("@operon/schema", () => {
     expect(checkResult.verdict).toBe("review");
   });
 
-  it("should validate BitemporalCoordinates and ActionLog schemas", () => {
+  it("validates BitemporalCoordinates and ActionLog schemas", () => {
     const coords = {
       transactionTime: { recordedAt: 1000 },
       validTime: { validFrom: 500, validTo: 1500 },
@@ -130,7 +130,7 @@ describe("@operon/schema", () => {
     expect(coords.transactionTime.recordedAt).toBe(1000);
   });
 
-  it("should define Interface Types and Link Types with structural metadata", () => {
+  it("defines Interface Types and Link Types with structural metadata", () => {
     const LocationInterface = defineInterfaceType({
       description: "Spatial coordinates contract",
       id: "LocationInterface",
@@ -168,7 +168,7 @@ describe("@operon/schema", () => {
     expect(DoctorPatientLink.cascadeDelete).toBe(false);
   });
 
-  it("should define Action Types with freshness requirements and side-effect sagas", async () => {
+  it("defines Action Types with freshness requirements and side-effect sagas", async () => {
     let sideEffectRan = false;
     let compensationRan = false;
 

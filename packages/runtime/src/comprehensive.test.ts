@@ -68,7 +68,7 @@ import { executeWritePipeline } from "./write-pipeline.js";
 
 describe("Kernel-Level Comprehensive & Non-Tautological Coverage", () => {
   describe("ActionInbox (inbox.ts)", () => {
-    it("should reject approval of non-existent proposals with ProposalNotFoundError", async () => {
+    it("rejects approval of non-existent proposals with ProposalNotFoundError", async () => {
       const store = new InMemoryObjectStore();
       const audit = new InMemoryAuditStore();
       const inbox = new ActionInbox(audit, store);
@@ -92,7 +92,7 @@ describe("Kernel-Level Comprehensive & Non-Tautological Coverage", () => {
       }
     });
 
-    it("should record structured human veto overrides in audit ledger and update status", async () => {
+    it("records structured human veto overrides in audit ledger and updates status", async () => {
       const store = new InMemoryObjectStore();
       const audit = new InMemoryAuditStore();
       const inbox = new ActionInbox(audit, store);
@@ -193,7 +193,7 @@ describe("Kernel-Level Comprehensive & Non-Tautological Coverage", () => {
   });
 
   describe("Authentication & Token Claims (auth.ts)", () => {
-    it("should verify RS256 RSA signatures end-to-end", async () => {
+    it("verifies RS256 RSA signatures end-to-end", async () => {
       const { publicKey, privateKey } = generateKeyPairSync("rsa", {
         modulusLength: 2048,
         publicKeyEncoding: { format: "pem", type: "spki" },
@@ -230,7 +230,7 @@ describe("Kernel-Level Comprehensive & Non-Tautological Coverage", () => {
       expect(verifiedClaims.roles).toContain("analyst");
     });
 
-    it("should reject expired tokens, future nbf, issuer mismatch, and audience mismatch", async () => {
+    it("rejects expired tokens, future nbf, issuer mismatch, and audience mismatch", async () => {
       const secret = "shared-symmetric-secret-key-12345";
       const verifier = new OidcTokenVerifier({
         clockToleranceSeconds: 5,
@@ -316,7 +316,7 @@ describe("Kernel-Level Comprehensive & Non-Tautological Coverage", () => {
       expect(audRes._tag).toBe("Failure");
     });
 
-    it("should reject missing or non-Bearer authorization headers in HttpAuthMiddleware", async () => {
+    it("rejects missing or non-Bearer authorization headers in HttpAuthMiddleware", async () => {
       const verifier = new OidcTokenVerifier({ secretOrPublicKey: "secret" });
       const middleware = new HttpAuthMiddleware(verifier);
 
@@ -338,7 +338,7 @@ describe("Kernel-Level Comprehensive & Non-Tautological Coverage", () => {
   });
 
   describe("Distributed Lock Manager (cluster.ts)", () => {
-    it("should enforce fencing token uniqueness, renewal, and lease expiration", async () => {
+    it("enforces fencing token uniqueness, renewal, and lease expiration", async () => {
       const dlm = new DistributedLockManager();
 
       // Acquire initial lock
@@ -382,7 +382,7 @@ describe("Kernel-Level Comprehensive & Non-Tautological Coverage", () => {
   });
 
   describe("Bitemporal Store (bitemporal-store.ts)", () => {
-    it("should handle object deletion, reverse links, and historical time intervals", async () => {
+    it("handles object deletion, reverse links, and historical time intervals", async () => {
       const bStore = new BitemporalObjectStore();
       const typeId = "Aircraft" as ObjectTypeId;
 
@@ -430,7 +430,7 @@ describe("Kernel-Level Comprehensive & Non-Tautological Coverage", () => {
   });
 
   describe("Saga Orchestration & Reverse Compensation (write-pipeline.ts)", () => {
-    it("should roll back previously executed side effects in reverse order upon downstream failure", async () => {
+    it("rolls back previously executed side effects in reverse order upon downstream failure", async () => {
       const store = new InMemoryObjectStore();
       const audit = new InMemoryAuditStore();
 
@@ -523,7 +523,7 @@ describe("Kernel-Level Comprehensive & Non-Tautological Coverage", () => {
   });
 
   describe("Connectors & Funnel Conflicts (connectors.ts & funnel.ts)", () => {
-    it("should handle Debezium CDC delete operations and property transform errors", async () => {
+    it("handles Debezium CDC delete operations and property transform errors", async () => {
       const store = new InMemoryObjectStore();
       const funnel = new FunnelService(store);
       const cdc = new KafkaCdcConnector(funnel);
@@ -601,7 +601,7 @@ describe("Kernel-Level Comprehensive & Non-Tautological Coverage", () => {
       expect(report.errors.length).toBe(0);
     });
 
-    it("should enforce user_edit_wins and timestamp_wins conflict resolution policies", async () => {
+    it("enforces user_edit_wins and timestamp_wins conflict resolution policies", async () => {
       const store = new InMemoryObjectStore();
       const funnel = new FunnelService(store);
 
@@ -701,7 +701,7 @@ describe("Kernel-Level Comprehensive & Non-Tautological Coverage", () => {
   });
 
   describe("Execution Sandbox (sandbox.ts)", () => {
-    it("should enforce input validation and execution timeouts", async () => {
+    it("enforces input validation and execution timeouts", async () => {
       const sandbox = new SandboxedModelRunner();
 
       // 1. Unregistered model fails with ValidationError
@@ -760,7 +760,7 @@ describe("Kernel-Level Comprehensive & Non-Tautological Coverage", () => {
   });
 
   describe("Strangler Migration & Cutover (migration.ts)", () => {
-    it("should detect shadow property divergences and gate cutover readiness", async () => {
+    it("detects shadow property divergences and gates cutover readiness", async () => {
       const bStore = new BitemporalObjectStore();
       const coord = new MigrationEngine(bStore);
 
@@ -794,7 +794,7 @@ describe("Kernel-Level Comprehensive & Non-Tautological Coverage", () => {
   });
 
   describe("Resilience Health Monitor (resilience.ts)", () => {
-    it("should classify overall system health as healthy, degraded, or critical", async () => {
+    it("classifies overall system health as healthy, degraded, or critical", async () => {
       const degradeMgr = new DegradeModeManager();
       const monitor = new SystemHealthMap(degradeMgr);
 
@@ -832,7 +832,7 @@ describe("Kernel-Level Comprehensive & Non-Tautological Coverage", () => {
   });
 
   describe("4C Decision Readiness (readiness.ts)", () => {
-    it("should detect temporal inconsistencies where validFrom > validTo", () => {
+    it("detects temporal inconsistencies where validFrom > validTo", () => {
       const ObjectType = defineObjectType({
         description: "Asset",
         id: "Asset",
@@ -864,7 +864,7 @@ describe("Kernel-Level Comprehensive & Non-Tautological Coverage", () => {
   });
 
   describe("Governance Approvals (approvals.ts)", () => {
-    it("should prevent merging proposals with active rejections or insufficient approvals", () => {
+    it("prevents merging proposals with active rejections or insufficient approvals", () => {
       const approver = new ApprovalsEngine({
         requireComplianceReview: false,
         requiredMinApprovals: 2,
@@ -952,7 +952,7 @@ describe("Kernel-Level Comprehensive & Non-Tautological Coverage", () => {
   });
 
   describe("Runtime Verification Boundaries (verification.ts)", () => {
-    it("should halt writes that violate registered min and max property bounds", async () => {
+    it("halts writes that violate registered min and max property bounds", async () => {
       const verifier = new VEDOVerifier();
       const typeId = "BoilerPressure" as ObjectTypeId;
 
@@ -984,7 +984,7 @@ describe("Kernel-Level Comprehensive & Non-Tautological Coverage", () => {
   });
 
   describe("SQL Store Links & Bitemporal (sql-store.ts)", () => {
-    it("should persist and query links and historical snapshots in SQLite", async () => {
+    it("persists and queries links and historical snapshots in SQLite", async () => {
       const driver = new EmbeddedSqlDriver();
       const store = new SqlBitemporalStore(driver, "sqlite");
 
@@ -1007,7 +1007,7 @@ describe("Kernel-Level Comprehensive & Non-Tautological Coverage", () => {
   });
 
   describe("OMS Proposals (oms.ts)", () => {
-    it("should return ProposalNotFoundError for missing proposals and list all created proposals", async () => {
+    it("returns ProposalNotFoundError for missing proposals and lists all created proposals", async () => {
       const oms = new OntologyMetadataService();
 
       const notFoundRes = await Effect.runPromise(
@@ -1058,7 +1058,7 @@ describe("Kernel-Level Comprehensive & Non-Tautological Coverage", () => {
   });
 
   describe("ObjectSet Aggregations & Reverse Traversals (oss.ts)", () => {
-    it("should compute min, max, avg, sum aggregates and traverse reverse links", async () => {
+    it("computes min, max, avg, sum aggregates and traverses reverse links", async () => {
       const bStore = new BitemporalObjectStore();
       const oss = new ObjectSetService(bStore);
       const typeId = "Turbine" as ObjectTypeId;
@@ -1157,7 +1157,7 @@ describe("Kernel-Level Comprehensive & Non-Tautological Coverage", () => {
   });
 
   describe("ActionInbox Full Approval Cycle (inbox.ts)", () => {
-    it("should route high-risk action to inbox proposal, then execute successfully upon human approval", async () => {
+    it("routes high-risk action to inbox proposal, then executes successfully upon human approval", async () => {
       const store = new InMemoryObjectStore();
       const audit = new InMemoryAuditStore();
       const inbox = new ActionInbox(audit, store);
@@ -1254,7 +1254,7 @@ describe("Kernel-Level Comprehensive & Non-Tautological Coverage", () => {
   });
 
   describe("OMS Branching, Schema & Proposal Lifecycle (oms.ts)", () => {
-    it("should manage branches, action types, schema inspection, reviews, and merges with compliance enforcement", async () => {
+    it("manages branches, action types, schema inspection, reviews, and merges with compliance enforcement", async () => {
       const oms = new OntologyMetadataService();
       const dev: Subject = {
         id: "dev-1",
@@ -1463,7 +1463,7 @@ describe("Kernel-Level Comprehensive & Non-Tautological Coverage", () => {
   });
 
   describe("ObjectStore Invariants & Predicates (object-store.ts)", () => {
-    it("should handle findObjects with and without predicates, object deletion, and concurrency errors", async () => {
+    it("handles findObjects with and without predicates, object deletion, and concurrency errors", async () => {
       const store = new InMemoryObjectStore();
       const typeId = "Telemetry" as ObjectTypeId;
 
@@ -1546,7 +1546,7 @@ describe("Kernel-Level Comprehensive & Non-Tautological Coverage", () => {
   });
 
   describe("Bitemporal Store Transaction Time & Concurrency (bitemporal-store.ts)", () => {
-    it("should query asOfTransactionTime and enforce optimistic concurrency version matching", async () => {
+    it("queries asOfTransactionTime and enforces optimistic concurrency version matching", async () => {
       const bStore = new BitemporalObjectStore();
       const typeId = "Account" as ObjectTypeId;
 
@@ -1597,7 +1597,7 @@ describe("Kernel-Level Comprehensive & Non-Tautological Coverage", () => {
   });
 
   describe("VEDO State Transitions & CROV Engine (verification.ts)", () => {
-    it("should enforce valid state transition graphs and verify proposal structural readiness", async () => {
+    it("enforces valid state transition graphs and verifies proposal structural readiness", async () => {
       const verifier = new VEDOVerifier();
       const typeId = "Document" as ObjectTypeId;
 
@@ -1688,7 +1688,7 @@ describe("Kernel-Level Comprehensive & Non-Tautological Coverage", () => {
   });
 
   describe("OSS GroupBy & Forward Traversal (oss.ts)", () => {
-    it("should compute groupByProperty metrics, handle empty numeric aggregates, and traverse forward links", async () => {
+    it("computes groupByProperty metrics, handles empty numeric aggregates, and traverses forward links", async () => {
       const bStore = new BitemporalObjectStore();
       const oss = new ObjectSetService(bStore);
       const plantType = "Plant" as ObjectTypeId;
@@ -1792,7 +1792,7 @@ describe("Kernel-Level Comprehensive & Non-Tautological Coverage", () => {
   });
 
   describe("Resilience Degraded Modes (resilience.ts)", () => {
-    it("should reject non-critical or non-veto actions when system is degraded", async () => {
+    it("rejects non-critical or non-veto actions when system is degraded", async () => {
       const mgr = new DegradeModeManager();
 
       await Effect.runPromise(mgr.setMode("critical_only"));
@@ -1850,7 +1850,7 @@ describe("Kernel-Level Comprehensive & Non-Tautological Coverage", () => {
   });
 
   describe("Audit Store Filtering & Overrides (audit.ts)", () => {
-    it("should filter decision records by actionTypeId and limit, and manage overrides", async () => {
+    it("filters decision records by actionTypeId and limit, and manages overrides", async () => {
       const audit = new InMemoryAuditStore();
 
       await audit.appendDecision({
@@ -1914,7 +1914,7 @@ describe("Kernel-Level Comprehensive & Non-Tautological Coverage", () => {
   });
 
   describe("Funnel Ingestion Edge Cases & CDC Errors (funnel.ts & connectors.ts)", () => {
-    it("should skip records with missing primary key, apply property transformations, and track connector errors", async () => {
+    it("skips records with missing primary key, applies property transformations, and tracks connector errors", async () => {
       const store = new InMemoryObjectStore();
       const funnel = new FunnelService(store);
       const cdc = new KafkaCdcConnector(funnel);
@@ -1989,7 +1989,7 @@ describe("Kernel-Level Comprehensive & Non-Tautological Coverage", () => {
   });
 
   describe("Strangler Dual-Run Cutover Gate (migration.ts)", () => {
-    it("should create soft delete tombstones on delete events and certify cutover readiness when dual-run meets consistency gate", async () => {
+    it("creates soft delete tombstones on delete events and certifies cutover readiness when dual-run meets consistency gate", async () => {
       const bStore = new BitemporalObjectStore();
       const coord = new MigrationEngine(bStore);
 
@@ -2052,7 +2052,7 @@ describe("Kernel-Level Comprehensive & Non-Tautological Coverage", () => {
   });
 
   describe("SQL Bitemporal Store Queries & Historical Timelines (sql-store.ts)", () => {
-    it("should find objects by predicate and query historical states via asOfBitemporal in SQL", async () => {
+    it("finds objects by predicate and queries historical states via asOfBitemporal in SQL", async () => {
       const driver = new EmbeddedSqlDriver();
       const store = new SqlBitemporalStore(driver, "sqlite");
       const typeId = "Vessel" as ObjectTypeId;
@@ -2090,7 +2090,7 @@ describe("Kernel-Level Comprehensive & Non-Tautological Coverage", () => {
   });
 
   describe("Cluster Distributed Locking (cluster.ts)", () => {
-    it("should fail lock renewal on expired leases and reject stale fencing tokens", async () => {
+    it("fails lock renewal on expired leases and rejects stale fencing tokens", async () => {
       const dlm = new DistributedLockManager();
       const resource = "resource:valve-controller";
 
@@ -2120,7 +2120,7 @@ describe("Kernel-Level Comprehensive & Non-Tautological Coverage", () => {
   });
 
   describe("Security Views, Columnar Store & Readiness Validation Edge Cases", () => {
-    it("should passthrough objects when no RV/MDO mappings are defined", () => {
+    it("passes through objects when no RV/MDO mappings are defined", () => {
       const secEngine = new DynamicSecurityEngine();
       const instance: ObjectInstance = {
         id: "INST-1",
@@ -2143,7 +2143,7 @@ describe("Kernel-Level Comprehensive & Non-Tautological Coverage", () => {
       expect(projected.properties.secret).toBe("123");
     });
 
-    it("should track null counts in ColumnarBatchTable statistics", () => {
+    it("tracks null counts in ColumnarBatchTable statistics", () => {
       const table = ColumnarBatchEncoder.encode(
         [
           { reading: 42, sensorId: "S-1" },
@@ -2157,7 +2157,7 @@ describe("Kernel-Level Comprehensive & Non-Tautological Coverage", () => {
       expect(col?.stats.rowCount).toBe(2);
     });
 
-    it("should flag validation failure when property data type violates schema in decision readiness", () => {
+    it("flags validation failure when property data type violates schema in decision readiness", () => {
       const MetricType = defineObjectType({
         description: "Metric",
         id: "Metric",
@@ -2188,7 +2188,7 @@ describe("Kernel-Level Comprehensive & Non-Tautological Coverage", () => {
   });
 
   describe("Write Pipeline Freshness Budget & Concurrency Errors (write-pipeline.ts)", () => {
-    it("should fail write pipeline when freshness budget is exceeded", async () => {
+    it("fails write pipeline when freshness budget is exceeded", async () => {
       const store = new InMemoryObjectStore();
       const audit = new InMemoryAuditStore();
       const assetType = "TurbineAsset" as ObjectTypeId;
@@ -2251,7 +2251,7 @@ describe("Kernel-Level Comprehensive & Non-Tautological Coverage", () => {
       }
     });
 
-    it("should reject staged logic edits that encounter optimistic concurrency conflicts", async () => {
+    it("rejects staged logic edits that encounter optimistic concurrency conflicts", async () => {
       const store = new InMemoryObjectStore();
       const audit = new InMemoryAuditStore();
       const typeId = "Account" as ObjectTypeId;
@@ -2316,7 +2316,7 @@ describe("Kernel-Level Comprehensive & Non-Tautological Coverage", () => {
   });
 
   describe("Auth RS256, Audiences & Claims Verification (auth.ts)", () => {
-    it("should verify RS256 signed JWTs and enforce nbf and audience claims", async () => {
+    it("verifies RS256 signed JWTs and enforces nbf and audience claims", async () => {
       const { privateKey, publicKey } = generateKeyPairSync("rsa", {
         modulusLength: 2048,
       });
@@ -2415,7 +2415,7 @@ describe("Kernel-Level Comprehensive & Non-Tautological Coverage", () => {
   });
 
   describe("Approvals Engine Status Transition (approvals.ts)", () => {
-    it("should set proposal status to rejected when reviewer rejects", async () => {
+    it("sets proposal status to rejected when reviewer rejects", async () => {
       const approver = new ApprovalsEngine({
         requireComplianceReview: false,
         requiredMinApprovals: 1,
@@ -2482,7 +2482,7 @@ describe("Kernel-Level Comprehensive & Non-Tautological Coverage", () => {
   });
 
   describe("Tagged Error Constructors (errors.ts)", () => {
-    it("should instantiate AuthorizationError and NotFoundError with expected properties", () => {
+    it("instantiates AuthorizationError and NotFoundError with expected properties", () => {
       const authErr = new AuthorizationError({
         reason: "Insufficient RBAC tier",
       });
@@ -2500,7 +2500,7 @@ describe("Kernel-Level Comprehensive & Non-Tautological Coverage", () => {
   });
 
   describe("Kernel Edge Cases & Defenses", () => {
-    it("should cover bitemporal asOfValidTime nonexistent branch", async () => {
+    it("covers bitemporal asOfValidTime nonexistent branch", async () => {
       const bStore = new BitemporalObjectStore();
       const res = await Effect.runPromise(
         bStore.asOfValidTime("Account" as ObjectTypeId, "NONEXISTENT", 1000)
@@ -2508,7 +2508,7 @@ describe("Kernel-Level Comprehensive & Non-Tautological Coverage", () => {
       expect(res).toBeUndefined();
     });
 
-    it("should inspect models via getModel and catch model computation failures in sandbox", async () => {
+    it("inspects models via getModel and catches model computation failures in sandbox", async () => {
       const sandbox = new SandboxedModelRunner();
       sandbox.registerModel({
         compute: () =>
@@ -2538,7 +2538,7 @@ describe("Kernel-Level Comprehensive & Non-Tautological Coverage", () => {
       }
     });
 
-    it("should delete objects in SQL bitemporal store", async () => {
+    it("deletes objects in SQL bitemporal store", async () => {
       const driver = new EmbeddedSqlDriver();
       const store = new SqlBitemporalStore(driver, "sqlite");
       const typeId = "Vessel" as ObjectTypeId;
@@ -2558,7 +2558,7 @@ describe("Kernel-Level Comprehensive & Non-Tautological Coverage", () => {
       expect(remaining.length).toBe(0);
     });
 
-    it("should pass CROV verification when proposal change set is valid", async () => {
+    it("passes CROV verification when proposal change set is valid", async () => {
       const crov = new CROVEngine();
       const docType = defineObjectType({
         description: "Doc",
@@ -2607,7 +2607,7 @@ describe("Kernel-Level Comprehensive & Non-Tautological Coverage", () => {
       expect(unmappedRes._tag).toBe("Success");
     });
 
-    it("should raise FunnelIngestionError when stream record primary key is missing", async () => {
+    it("raises FunnelIngestionError when stream record primary key is missing", async () => {
       const store = new InMemoryObjectStore();
       const funnel = new FunnelService(store);
 
@@ -2635,7 +2635,7 @@ describe("Kernel-Level Comprehensive & Non-Tautological Coverage", () => {
       }
     });
 
-    it("should fail authentication with invalid base64 JWT formatting", async () => {
+    it("fails authentication with invalid base64 JWT formatting", async () => {
       const verifier = new OidcTokenVerifier({
         expectedAudience: "api://operon",
         expectedIssuer: "https://auth.operon.io",
@@ -2665,7 +2665,7 @@ describe("Kernel-Level Comprehensive & Non-Tautological Coverage", () => {
       }
     });
 
-    it("should handle OMS error branches for invalid target branch and nonexistent proposal review/merge", async () => {
+    it("handles OMS error branches for invalid target branch and nonexistent proposal review/merge", async () => {
       const oms = new OntologyMetadataService();
       const dev: Subject = {
         id: "dev-1",
@@ -2725,7 +2725,7 @@ describe("Kernel-Level Comprehensive & Non-Tautological Coverage", () => {
       }
     });
 
-    it("should instantiate ProposalExecutionStateError and SideEffectExecutionError with proper tags", () => {
+    it("instantiates ProposalExecutionStateError and SideEffectExecutionError with proper tags", () => {
       const execErr = new ProposalExecutionStateError({
         message: "State not resolved",
         proposalId: "prop-42",

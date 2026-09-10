@@ -21,7 +21,7 @@ import {
 } from "./index.js";
 
 describe("@operon/mcp", () => {
-  it("should enforce key boundaries between Consumer Key and Builder Key", () => {
+  it("enforces key boundaries between Consumer Key and Builder Key", () => {
     const consumerKey: McpKey = {
       agentId: "agent-1",
       agentTier: 2,
@@ -78,7 +78,7 @@ describe("@operon/mcp", () => {
     );
   });
 
-  it("should dynamically project Action cards and ObjectTypes into MCP schemas and groundings", () => {
+  it("dynamically projects Action cards and ObjectTypes into MCP schemas and groundings", () => {
     const TestAction = defineActionType({
       defaultExecutionMode: "proposal",
       description: "Adjust secondary clarifier return sludge valve percentage",
@@ -136,7 +136,7 @@ describe("@operon/mcp", () => {
     expect(grounding).toContain("Max staleness: 120s");
   });
 
-  it("should execute full MCP client-server protocol over InMemoryTransport with zero mocks", async () => {
+  it("executes full MCP client-server protocol over InMemoryTransport with zero mocks", async () => {
     const objectStore = new InMemoryObjectStore();
     const auditStore = new InMemoryAuditStore();
 
@@ -295,7 +295,7 @@ describe("@operon/mcp", () => {
     expect(invalidResult.isError).toBe(true);
   });
 
-  it("should enforce Builder Key on AI FDE and create branch proposals with full changesets", async () => {
+  it("enforces Builder Key on AI FDE and creates branch proposals with full changesets", async () => {
     const { OntologyMetadataService } = await import("@operon/runtime");
     const { AIFdeAgent } = await import("./ai-fde.js");
     const oms = new OntologyMetadataService();
@@ -383,7 +383,7 @@ describe("@operon/mcp", () => {
     expect(successResult.summary).toContain("AI FDE created branch");
   });
 
-  it("should use fallback default caller key when defaultCallerKey option is omitted", async () => {
+  it("uses fallback default caller key when defaultCallerKey option is omitted", async () => {
     const objectStore = new InMemoryObjectStore();
     const auditStore = new InMemoryAuditStore();
     const server = createOperonMcpServer({

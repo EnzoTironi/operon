@@ -28,7 +28,7 @@ describe("Runtime Extended: Approvals, Migration, Verification & Resilience", ()
       requireDomainSpecialistReview: true,
     });
 
-    it("should enforce multi-stakeholder approval policy and block merge until satisfied", async () => {
+    it("enforces multi-stakeholder approval policy and blocks merge until satisfied", async () => {
       const initialProposal: any = {
         id: "prop_101",
         title: "Add Telemetry Index",
@@ -93,7 +93,7 @@ describe("Runtime Extended: Approvals, Migration, Verification & Resilience", ()
   });
 
   describe("MigrationEngine (Book Chapter 15: Migration & Coexistence)", () => {
-    it("should process CDC streaming events and compute shadow consistency", async () => {
+    it("processes CDC streaming events and computes shadow consistency", async () => {
       const store = new BitemporalObjectStore();
       const migration = new MigrationEngine(store);
 
@@ -178,7 +178,7 @@ describe("Runtime Extended: Approvals, Migration, Verification & Resilience", ()
       },
     });
 
-    it("should evaluate Layer 2 Structural Readiness and detect dangling links", async () => {
+    it("evaluates Layer 2 Structural Readiness and detects dangling links", async () => {
       const invalidLink = defineLinkType({
         id: "treatedAt",
         description: "Patient treatment relation",
@@ -198,7 +198,7 @@ describe("Runtime Extended: Approvals, Migration, Verification & Resilience", ()
       expect(readiness.correctness.danglingLinkReferences.length).toBe(1);
     });
 
-    it("should collaboratively verify proposals using CROVEngine", async () => {
+    it("collaboratively verifies proposals using CROVEngine", async () => {
       const crov = new CROVEngine();
       const validProposal: any = {
         id: "prop_crov_1",
@@ -246,7 +246,7 @@ describe("Runtime Extended: Approvals, Migration, Verification & Resilience", ()
       expect(result.isReady).toBe(true);
     });
 
-    it("should verify formal mathematical and state transition invariants with VEDO", async () => {
+    it("verifies formal mathematical and state transition invariants with VEDO", async () => {
       const vedo = new VEDOVerifier();
       vedo.registerSuite({
         objectTypeId: "DosingPump",
@@ -304,7 +304,7 @@ describe("Runtime Extended: Approvals, Migration, Verification & Resilience", ()
   });
 
   describe("Resilience: Circuit Breakers, Degrade Modes & Health Map (Book Chapter 17)", () => {
-    it("should trip circuit breaker after threshold failures and protect downstream systems", async () => {
+    it("trips circuit breaker after threshold failures and protects downstream systems", async () => {
       const breaker = new CircuitBreaker("ERP_Gateway", {
         failureThreshold: 2,
         recoveryTimeoutMs: 500,
@@ -330,7 +330,7 @@ describe("Runtime Extended: Approvals, Migration, Verification & Resilience", ()
       expect(callWhileOpen).toBeInstanceOf(CircuitBreakerOpenError);
     });
 
-    it("should manage degrade modes and enforce operational constraints", async () => {
+    it("manages degrade modes and enforces operational constraints", async () => {
       const degradeManager = new DegradeModeManager();
       expect(degradeManager.getMode()).toBe("normal");
 
@@ -354,7 +354,7 @@ describe("Runtime Extended: Approvals, Migration, Verification & Resilience", ()
       );
     });
 
-    it("should generate composite System Health Map", async () => {
+    it("generates composite System Health Map", async () => {
       const degradeManager = new DegradeModeManager();
       const healthMap = new SystemHealthMap(degradeManager);
 
