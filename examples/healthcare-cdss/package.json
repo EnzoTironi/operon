@@ -1,0 +1,25 @@
+{
+  "name": "@operon/example-healthcare-cdss",
+  "version": "0.1.0",
+  "description": "Healthcare CDSS Reference Implementation based on Chapter 1 of Operational Ontology",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -b",
+    "clean": "rm -rf dist *.tsbuildinfo",
+    "test": "vitest run",
+    "demo": "node dist/demo.js"
+  },
+  "dependencies": {
+    "@operon/alchemy": "workspace:*",
+    "@operon/mcp": "workspace:*",
+    "@operon/runtime": "workspace:*",
+    "@operon/schema": "workspace:*",
+    "effect": "4.0.0-rc.112"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  }
+}

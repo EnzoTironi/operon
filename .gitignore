@@ -1,0 +1,10 @@
+node_modules
+dist
+.alchemy
+.wrangler
+*.tsbuildinfo
+.DS_Store
+*.log
+coverage
+.agents
+skills-lock.json

@@ -1,0 +1,123 @@
+import type {
+  ActionExecutionResult,
+  AuditStore,
+  DynamicSecurityEngine,
+  ObjectStore,
+  ObjectSet,
+} from "@operon/runtime";
+import { ObjectSetService, executeWritePipeline } from "@operon/runtime";
+import type {
+  ActionType,
+  ObjectInstance,
+  ObjectType,
+  SecurityContext,
+} from "@operon/schema";
+import { Effect } from "effect";
+
+export interface OperonClientConfig {
+  readonly objectStore: ObjectStore;
+  readonly auditStore: AuditStore;
+  readonly objectTypes: readonly ObjectType[];
+  readonly actionTypes: readonly ActionType<any>[];
+  readonly defaultSecurity?: SecurityContext;
+  readonly securityEngine?: DynamicSecurityEngine;
+}
+
+export interface ObjectTypeAccessor<T = Record<string, unknown>> {
+  readonly get: (id: string) => Effect.Effect<ObjectInstance<T> | undefined>;
+  readonly list: (
+    predicate?: (instance: ObjectInstance<T>) => boolean
+  ) => Effect.Effect<readonly ObjectInstance<T>[]>;
+  readonly set: () => ObjectSet;
+}
+
+export interface ActionAccessor<Params = unknown> {
+  readonly execute: (
+    params: Params,
+    security?: SecurityContext
+  ) => Effect.Effect<ActionExecutionResult, unknown>;
+}
+
+export interface OperonClient {
+  readonly objects: Record<string, ObjectTypeAccessor<any>>;
+  readonly actions: Record<string, ActionAccessor<any>>;
+  readonly oss: ObjectSetService;
+}
+
+export function createOperonClient(config: OperonClientConfig): OperonClient {
+  const oss = new ObjectSetService(config.objectStore);
+  const objects: Record<string, ObjectTypeAccessor<any>> = {};
+  const actions: Record<string, ActionAccessor<any>> = {};
+
+  for (const ot of config.objectTypes) {
+    objects[ot.id] = {
+      get: (id: string) =>
+        config.objectStore.getObject(ot.id, id).pipe(
+          Effect.map((obj) => {
+            if (!obj) return undefined;
+            if (config.securityEngine && config.defaultSecurity) {
+              const filtered = config.securityEngine.filterInstances(
+                [obj],
+                config.defaultSecurity.subject
+              );
+              if (filtered.length === 0) return undefined;
+              return config.securityEngine.projectInstance(
+                obj,
+                config.defaultSecurity.subject
+              );
+            }
+            return obj;
+          })
+        ) as Effect.Effect<ObjectInstance<any> | undefined>,
+      list: (predicate) =>
+        config.objectStore.findObjects(ot.id, predicate as any).pipe(
+          Effect.map((instances) => {
+            if (config.securityEngine && config.defaultSecurity) {
+              const filtered = config.securityEngine.filterInstances(
+                instances,
+                config.defaultSecurity.subject
+              );
+              return filtered.map((inst) =>
+                config.securityEngine!.projectInstance(
+                  inst,
+                  config.defaultSecurity!.subject
+                )
+              );
+            }
+            return instances;
+          })
+        ) as Effect.Effect<readonly ObjectInstance<any>[]>,
+      set: () => oss.getSet(ot.id),
+    };
+  }
+
+  for (const act of config.actionTypes) {
+    actions[act.id] = {
+      execute: (params: unknown, security?: SecurityContext) => {
+        const effectiveSecurity = security ??
+          config.defaultSecurity ?? {
+            correlationId: `osdk_${Date.now()}`,
+            subject: {
+              id: "osdk-client",
+              name: "OSDK Client",
+              roles: ["client"],
+              type: "agent",
+            },
+            timestamp: Date.now(),
+          };
+
+        return executeWritePipeline(
+          {
+            actionType: act,
+            rawParameters: params,
+            security: effectiveSecurity,
+          },
+          config.objectStore,
+          config.auditStore
+        );
+      },
+    };
+  }
+
+  return { actions, objects, oss };
+}

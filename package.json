@@ -1,0 +1,32 @@
+{
+  "name": "operon-monorepo",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Operon: The Type-Safe Operational Ontology & Decision Runtime for AI Agents and Enterprise Systems",
+  "type": "module",
+  "scripts": {
+    "build": "pnpm -r run build",
+    "test": "pnpm -r run test",
+    "clean": "pnpm -r run clean",
+    "check": "ultracite check",
+    "fix": "ultracite fix",
+    "lint": "oxlint --config oxlint.config.ts",
+    "format": "oxfmt --check",
+    "test:mutate": "stryker run"
+  },
+  "devDependencies": {
+    "@effect/eslint-plugin": "^0.3.2",
+    "@mpsuesser/oxlint-plugin-effect": "^0.5.0",
+    "@stryker-mutator/core": "^10.0.0",
+    "@stryker-mutator/vitest-runner": "^10.0.0",
+    "@types/node": "^22.10.2",
+    "@vitest/coverage-v8": "^2.1.9",
+    "fast-check": "^4.9.0",
+    "oxfmt": "^0.67.0",
+    "oxlint": "^1.82.0",
+    "typescript": "^5.7.2",
+    "ultracite": "7.11.1",
+    "vitest": "^2.1.8"
+  },
+  "packageManager": "pnpm@10.4.1"
+}

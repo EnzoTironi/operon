@@ -1,0 +1,24 @@
+{
+  "name": "@operon/example-sompo-rdp",
+  "version": "0.1.0",
+  "description": "SOMPO Real Data Platform (Nursing Care & Insurance Claims Triage) Reference Example for Operon",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -b",
+    "clean": "rm -rf dist *.tsbuildinfo",
+    "test": "vitest run",
+    "demo": "node dist/demo.js"
+  },
+  "dependencies": {
+    "@operon/osdk": "workspace:*",
+    "@operon/runtime": "workspace:*",
+    "@operon/schema": "workspace:*",
+    "effect": "4.0.0-rc.112"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  }
+}

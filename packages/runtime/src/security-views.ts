@@ -1,0 +1,77 @@
+import type {
+  MultiDatasetObjectMapping,
+  ObjectInstance,
+  RestrictedView,
+  Subject,
+} from "@operon/schema";
+
+/**
+ * Evaluates Dynamic Security: Restricted Views (RVs) & Multi-Dataset Objects (MDOs)
+ */
+export class DynamicSecurityEngine {
+  private readonly restrictedViews = new Map<string, RestrictedView[]>();
+  private readonly mdoMappings = new Map<string, MultiDatasetObjectMapping>();
+
+  registerRestrictedView(rv: RestrictedView): void {
+    const list = this.restrictedViews.get(rv.objectTypeId) ?? [];
+    list.push(rv);
+    this.restrictedViews.set(rv.objectTypeId, list);
+  }
+
+  registerMdoMapping(mdo: MultiDatasetObjectMapping): void {
+    this.mdoMappings.set(mdo.objectTypeId, mdo);
+  }
+
+  /**
+   * Filter objects using Restricted Views (Row-level security)
+   */
+  filterInstances(
+    instances: readonly ObjectInstance[],
+    subject: Subject
+  ): readonly ObjectInstance[] {
+    return instances.filter((inst) => {
+      const rvs = this.restrictedViews.get(inst.typeId);
+      if (!rvs || rvs.length === 0) {
+        return true;
+      }
+      // Subject must satisfy all active RVs for this object type
+      return rvs.every((rv) => rv.predicate(inst, subject));
+    });
+  }
+
+  /**
+   * Mask or redact properties based on Multi-Dataset Object (MDO) classifications (Column-level security)
+   */
+  projectInstance(instance: ObjectInstance, subject: Subject): ObjectInstance {
+    const mdo = this.mdoMappings.get(instance.typeId);
+    if (!mdo) {
+      return instance;
+    }
+
+    const projectedProps: Record<string, unknown> = {};
+    for (const [propName, val] of Object.entries(
+      instance.properties as Record<string, unknown>
+    )) {
+      const classification = mdo.propertyClassifications[propName] ?? "public";
+      const authorizedRoles =
+        mdo.authorizedRolesPerClassification[classification] ?? [];
+
+      const isAuthorized =
+        classification === "public" ||
+        subject.roles.includes("admin") ||
+        subject.roles.some((r) => authorizedRoles.includes(r));
+
+      if (isAuthorized) {
+        projectedProps[propName] = val;
+      } else {
+        // Redact
+        projectedProps[propName] = "[REDACTED_BY_SECURITY_POLICY]";
+      }
+    }
+
+    return {
+      ...instance,
+      properties: projectedProps,
+    };
+  }
+}
