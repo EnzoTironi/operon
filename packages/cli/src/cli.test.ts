@@ -247,4 +247,166 @@ describe("@operon/cli test suite", () => {
     );
     expect(listPropCode).toBe(0);
   });
+
+  it("prepares, approves, commits, checks status, and generates disposable views (Gate V0-E: V0-CH-07, V0-CH-08, V0-CH-09)", async () => {
+    const logs: string[] = [];
+    const origLog = console.log;
+    console.log = (...args: any[]) => {
+      logs.push(args.map(String).join(" "));
+      origLog(...args);
+    };
+
+    try {
+      // 1. Prepare action (zero business side effects)
+      logs.length = 0;
+      const prepCode = await Effect.runPromise(
+        runCli([
+          "action",
+          "prepare",
+          "update_vitals",
+          "--params",
+          '{"patientId":"P001","heartRate":78}',
+          "--subject-id",
+          "agent-007",
+          "--role",
+          "operator",
+          "--json",
+        ])
+      );
+      expect(prepCode).toBe(0);
+      const prepOutput = JSON.parse(logs.at(-1)!);
+      expect(prepOutput.status).toBe("PREPARED");
+      expect(prepOutput.actionId).toBe("update_vitals");
+      expect(prepOutput.canonicalDigest).toBeDefined();
+      const digest = prepOutput.canonicalDigest;
+
+      // Verify zero business mutation before commit:
+      logs.length = 0;
+      await Effect.runPromise(
+        runCli(["object", "get", "Patient", "P001", "--json"])
+      );
+      const patientBefore = JSON.parse(logs.at(-1)!);
+      expect(patientBefore.properties.heartRate).not.toBe(78);
+
+      // 2. Reject mismatched proposal approval
+      const mismatchCode = await Effect.runPromise(
+        runCli([
+          "action",
+          "approve",
+          digest,
+          "--viewed-digest",
+          "tampered_digest_12345",
+          "--reviewer-id",
+          "dr_smith",
+          "--role",
+          "clinician",
+        ])
+      );
+      expect(mismatchCode).toBe(1);
+
+      // 3. Reject self-approval (reviewer === proposer)
+      const selfApproveCode = await Effect.runPromise(
+        runCli([
+          "action",
+          "approve",
+          digest,
+          "--viewed-digest",
+          digest,
+          "--reviewer-id",
+          "agent-007",
+          "--role",
+          "clinician",
+        ])
+      );
+      expect(selfApproveCode).toBe(1);
+
+      // 4. Legitimate exact approval by human reviewer
+      logs.length = 0;
+      const approveCode = await Effect.runPromise(
+        runCli([
+          "action",
+          "approve",
+          digest,
+          "--viewed-digest",
+          digest,
+          "--reviewer-id",
+          "dr_smith",
+          "--role",
+          "physician",
+          "--json",
+        ])
+      );
+      expect(approveCode).toBe(0);
+      const approveOutput = JSON.parse(logs.at(-1)!);
+      expect(approveOutput.status).toBe("APPROVED");
+      expect(approveOutput.approvalId).toBeDefined();
+      const approvalId = approveOutput.approvalId;
+
+      // 5. Local Atomic Commit
+      logs.length = 0;
+      const idempotencyKey = `cli-v0e-commit-${Date.now()}`;
+      const commitCode = await Effect.runPromise(
+        runCli([
+          "action",
+          "commit",
+          digest,
+          "--approval-id",
+          approvalId,
+          "--idempotency-key",
+          idempotencyKey,
+          "--json",
+        ])
+      );
+      expect(commitCode).toBe(0);
+      const commitOutput = JSON.parse(logs.at(-1)!);
+      expect(commitOutput.status).toBe("COMMITTED");
+      expect(commitOutput.operationId).toBeDefined();
+      expect(commitOutput.receiptDigest).toBeDefined();
+      const operationId = commitOutput.operationId;
+
+      // Verify business mutation applied atomically after commit
+      logs.length = 0;
+      await Effect.runPromise(
+        runCli(["object", "get", "Patient", "P001", "--json"])
+      );
+      const patientAfter = JSON.parse(logs.at(-1)!);
+      expect(patientAfter.properties.heartRate).toBe(78);
+
+      // 6. Action status inspection
+      logs.length = 0;
+      const statusCode = await Effect.runPromise(
+        runCli(["action", "status", operationId, "--json"])
+      );
+      expect(statusCode).toBe(0);
+      const statusOutput = JSON.parse(logs.at(-1)!);
+      expect(statusOutput.operationId).toBe(operationId);
+      expect(statusOutput.status).toBe("COMMITTED");
+
+      // 7. Generate disposable view
+      logs.length = 0;
+      const viewCode = await Effect.runPromise(
+        runCli([
+          "view",
+          "generate",
+          "--title",
+          "Patient Vitals Clinical Overview",
+          "--state",
+          "PROPOSED",
+          "--data",
+          '{"patientId":"P001","heartRate":78,"egfr":52}',
+          "--json",
+        ])
+      );
+      expect(viewCode).toBe(0);
+      const viewOutput = JSON.parse(logs.at(-1)!);
+      expect(viewOutput.isDisposable).toBe(true);
+      expect(viewOutput.sourceOfTruth).toBe("OPERON_KERNEL");
+      expect(viewOutput.state).toBe("PROPOSED");
+      expect(viewOutput.rendered).toContain("PROPOSED");
+      expect(viewOutput.rendered).toContain("source of truth");
+      expect(viewOutput.rendered).toContain("disposable");
+    } finally {
+      console.log = origLog;
+    }
+  });
 });

@@ -4,15 +4,20 @@ import path from "node:path";
 import {
   AccountableIngestionService,
   ActionInbox,
+  AtomicCommitService,
+  AuthorityService,
   DynamicSecurityEngine,
+  GovernedActionService,
   InMemoryAuditStore,
   InMemoryObjectStore,
   NativeSqliteDriver,
   OntologyMetadataService,
+  OperonServiceImpl,
   ReconciliationService,
   SandboxedModelRunner,
   SqlBitemporalStore,
 } from "@operon/runtime";
+import type { OperonService } from "@operon/runtime";
 import type {
   ActionType,
   LinkType,
@@ -202,6 +207,10 @@ export interface OperonRuntimeContext {
   readonly linkTypes: readonly LinkType[];
   readonly ingestion: AccountableIngestionService;
   readonly reconciliation: ReconciliationService;
+  readonly authority: AuthorityService;
+  readonly governedActions: GovernedActionService;
+  readonly atomicCommit: AtomicCommitService;
+  readonly operonService: OperonService;
   readonly close: () => void;
 }
 
@@ -303,6 +312,31 @@ export async function createRuntimeContext(
   const ingestion = new AccountableIngestionService(objectStore);
   const reconciliation = ReconciliationService.make();
 
+  const authority = new AuthorityService();
+  const actionTypesMap = new Map<string, ActionType<any>>();
+  for (const a of actionTypes) {
+    actionTypesMap.set(a.id, a);
+  }
+
+  const governedActions = new GovernedActionService(
+    actionTypes,
+    objectStore,
+    authority
+  );
+  const atomicCommit = new AtomicCommitService(
+    actionTypesMap,
+    objectStore,
+    auditStore,
+    authority
+  );
+  const operonService = new OperonServiceImpl(
+    governedActions,
+    atomicCommit,
+    authority,
+    reconciliation,
+    objectStore
+  );
+
   const stateFile =
     process.env.OPERON_STATE_PATH ||
     (targetDbPath
@@ -347,6 +381,14 @@ export async function createRuntimeContext(
           });
         }
       }
+      if (
+        Array.isArray(data.objects) &&
+        objectStore instanceof InMemoryObjectStore
+      ) {
+        for (const obj of data.objects) {
+          (objectStore as any).objects.set(`${obj.typeId}:${obj.id}`, obj);
+        }
+      }
       if (data.oms) {
         oms.importSnapshot(data.oms);
       }
@@ -355,6 +397,15 @@ export async function createRuntimeContext(
       }
       if (data.reconciliation) {
         reconciliation.importSnapshot(data.reconciliation);
+      }
+      if (data.authority) {
+        authority.importSnapshot(data.authority);
+      }
+      if (data.governedActions) {
+        governedActions.importSnapshot(data.governedActions);
+      }
+      if (data.atomicCommit) {
+        atomicCommit.importSnapshot(data.atomicCommit);
       }
     } catch {
       // Ignore corrupted state file
@@ -384,8 +435,15 @@ export async function createRuntimeContext(
           : [];
 
         const payload = {
+          atomicCommit: atomicCommit.exportSnapshot(),
+          authority: authority.exportSnapshot(),
           decisions: (auditStore as any).decisions ?? [],
+          governedActions: governedActions.exportSnapshot(),
           ingestion: ingestion.exportSnapshot(),
+          objects:
+            objectStore instanceof InMemoryObjectStore
+              ? [...(objectStore as any).objects.values()]
+              : undefined,
           oms: oms.exportSnapshot(),
           overrides: (auditStore as any).overrides ?? [],
           proposals: proposalsToSave,
@@ -401,14 +459,18 @@ export async function createRuntimeContext(
 
   return {
     actionTypes,
+    atomicCommit,
     auditStore,
+    authority,
     close: enhancedClose,
+    governedActions,
     inbox,
     ingestion,
     linkTypes,
     objectStore,
     objectTypes,
     oms,
+    operonService,
     reconciliation,
     sandbox,
     securityEngine,

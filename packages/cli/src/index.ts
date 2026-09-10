@@ -16,6 +16,7 @@ import { runSandbox } from "./commands/sandbox.js";
 import { runSkill } from "./commands/skill.js";
 import { runSource } from "./commands/source.js";
 import { runTelemetry } from "./commands/telemetry.js";
+import { runView } from "./commands/view.js";
 
 export function printHelp(): void {
   console.log(`
@@ -28,7 +29,7 @@ Commands:
   doctor              Run environment, storage, and cryptographic audit health checks
   object              Get, put, list, bitemporal exact query, and SQL plan explain (S04)
   readiness           Evaluate Level-1 4C Decision Readiness (Completeness, Correctness, Currentness, Consistency)
-  action              List registered actions or submit an action through the 7-Step Write Pipeline
+  action              Prepare, approve, commit, inspect status, list, or submit governed actions (S07, S08)
   inbox               Inspect pending proposals, approve, or reject with human override dossiers
   audit               List tamper-evident DecisionRecords and cryptographically verify SHA-256 chain
   oms                 Ontology Metadata Service: branch, propose, review, and merge ontology changes
@@ -37,6 +38,7 @@ Commands:
   source              Accountable raw source inventory, mapping proposals, and admission (S03, S15)
   reconcile           Identity resolution proposals, deterministic & ML matching, reversible merge/split (S03)
   sandbox             Execute sandboxed models with fiber timeouts and verify determinism proofs
+  view                Generate disposable application views with lifecycle state badges (S13)
   mcp                 Launch Model Context Protocol (MCP) server over stdio for Claude Desktop / Cursor
   telemetry           Inspect Sentry & PostHog telemetry status, privacy scrubber, and diagnostic ping
   demo                Run end-to-end domain simulations (healthcare, aviation, wastewater, sompo, education)
@@ -125,14 +127,19 @@ Examples:
         console.log(`
 Usage:
   operon action list [--json]
+  operon action prepare <actionId> [--params '<json>' | --stdin] [--grant-id <id>] [--agent-tier <1-4>] [--json]
+  operon action approve <preparedDigest> --viewed-digest <digest> [--decision approve|reject] [--reason <text>] [--json]
+  operon action commit <preparedDigest> [--approval-id <id>] --idempotency-key <key> [--json]
+  operon action status <operationId> [--json]
   operon action submit <actionId> [--params '<json>' | --stdin] [--agent-tier <1-4>] [--dry-run] [--json]
 
 Examples:
   operon action list --json
+  operon action prepare update_vitals --params '{"patientId":"P001","heartRate":72}' --agent-tier 2 --json
+  operon action approve <preparedDigest> --viewed-digest <viewedDigest> --reason "Vitals verified" --json
+  operon action commit <preparedDigest> --approval-id <approvalId> --idempotency-key key-123 --json
+  operon action status <operationId> --json
   operon action submit update_vitals --params '{"patientId":"P001","heartRate":72}' --agent-tier 4
-  operon action submit adjust_dose --params '{"patientId":"P001","recommendedDose":12}' --agent-tier 2
-  operon action submit update_vitals --params '{"patientId":"P001","heartRate":72}' --dry-run
-  cat params.json | operon action submit update_vitals --stdin
 `);
         return Effect.succeed(0);
       }
@@ -330,10 +337,25 @@ Examples:
       return runReconcile(args.slice(1));
     }
 
+    case "view": {
+      if (args.includes("--help") || args.includes("-h") || args.length === 1) {
+        console.log(`
+Usage:
+  operon view generate --title <title> --state <state> [--data '<json>' | --stdin] [--grant-id <id>] [--audience <aud>] [--format <format>] [--json]
+
+Examples:
+  operon view generate --title "Patient Vitals" --state PROPOSED --data '{"patientId":"P001","heartRate":72}'
+  operon view generate --title "Patient Overview" --state CONFIRMED --data '{"patientId":"P001"}' --json
+`);
+        return Effect.succeed(0);
+      }
+      return runView(args.slice(1));
+    }
+
     default: {
       console.error(`Error: Unknown command '${command}'\n`);
       console.error(
-        "  Available commands: doctor, object, readiness, action, inbox, audit, oms, skill, recipe, source, reconcile, sandbox, mcp, telemetry, demo"
+        "  Available commands: doctor, object, readiness, action, inbox, audit, oms, skill, recipe, source, reconcile, sandbox, view, mcp, telemetry, demo"
       );
       console.error("  Run 'operon --help' to see usage and examples.");
       return Effect.succeed(1);
@@ -411,3 +433,4 @@ export * from "./commands/telemetry.js";
 export * from "./commands/skill.js";
 export * from "./commands/recipe.js";
 export * from "./commands/source.js";
+export * from "./commands/view.js";

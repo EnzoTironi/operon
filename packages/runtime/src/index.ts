@@ -24,3 +24,8 @@ export * from "./services.js";
 export * from "./ingestion-errors.js";
 export * from "./reconciliation-errors.js";
 export * from "./reconciliation.js";
+export * from "./actions-errors.js";
+export * from "./policy/authority.js";
+export * from "./actions/governed-action-service.js";
+export * from "./transactions/atomic-commit-service.js";
+export * from "./operon-service.js";

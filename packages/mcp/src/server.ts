@@ -5,6 +5,7 @@ import {
   ListToolsRequestSchema,
   ReadResourceRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
+import { generateDisposableAppView } from "@operon/generated-ui";
 import { BUILTIN_RECIPES, RecipeService } from "@operon/recipes";
 import type { RecipePack, RecipeRegistryService } from "@operon/recipes";
 import type {
@@ -12,13 +13,18 @@ import type {
   DynamicSecurityEngine,
   ObjectStore,
   OntologyMetadataService,
+  OperonService,
   OverrideCategory,
 } from "@operon/runtime";
 import {
   AccountableIngestionService,
   ActionInbox,
+  AtomicCommitService,
+  AuthorityService,
   evaluateDecisionReadiness,
   executeWritePipeline,
+  GovernedActionService,
+  OperonServiceImpl,
   ReconciliationService,
 } from "@operon/runtime";
 import { createWorldView } from "@operon/schema";
@@ -55,6 +61,10 @@ export interface OperonMcpServerOptions {
   readonly recipeService?: RecipeRegistryService;
   readonly ingestionService?: AccountableIngestionService;
   readonly reconciliationService?: ReconciliationService;
+  readonly authorityService?: AuthorityService;
+  readonly governedActionService?: GovernedActionService;
+  readonly atomicCommitService?: AtomicCommitService;
+  readonly operonService?: OperonService;
 }
 
 export function createOperonMcpServer(options: OperonMcpServerOptions) {
@@ -95,6 +105,36 @@ export function createOperonMcpServer(options: OperonMcpServerOptions) {
 
   const reconciliationService =
     options.reconciliationService ?? ReconciliationService.make();
+
+  const authorityService = options.authorityService ?? new AuthorityService();
+
+  const actionTypesMap = new Map<string, ActionType<any>>();
+  for (const act of actionTypes) {
+    actionTypesMap.set(act.id, act);
+  }
+
+  const governedActionService =
+    options.governedActionService ??
+    new GovernedActionService(actionTypes, objectStore, authorityService);
+
+  const atomicCommitService =
+    options.atomicCommitService ??
+    new AtomicCommitService(
+      actionTypesMap,
+      objectStore,
+      auditStore,
+      authorityService
+    );
+
+  const _operonService =
+    options.operonService ??
+    new OperonServiceImpl(
+      governedActionService,
+      atomicCommitService,
+      authorityService,
+      reconciliationService,
+      objectStore
+    );
 
   const server = new Server(
     {
@@ -596,6 +636,128 @@ export function createOperonMcpServer(options: OperonMcpServerOptions) {
           type: "object",
         },
         name: "operon_list_identity_proposals",
+      },
+      {
+        description:
+          "Prepare an action with policy/criteria verification, object revision recording, and exact canonical proposal digest calculation. Dry-run invariant: leaves canonical business state untouched (S07).",
+        inputSchema: {
+          properties: {
+            actionId: {
+              description: "Registered ActionType ID",
+              type: "string",
+            },
+            environmentId: { type: "string" },
+            grantId: { description: "Optional IntentGrant ID", type: "string" },
+            parameters: {
+              description: "Parameters for the action",
+              type: "object",
+            },
+            proposerId: { type: "string" },
+            proposerRoles: { items: { type: "string" }, type: "array" },
+            proposerTier: { type: "number" },
+            proposerType: { enum: ["user", "agent", "system"], type: "string" },
+            tenantId: { type: "string" },
+            ttlMs: { type: "number" },
+          },
+          required: ["actionId", "parameters"],
+          type: "object",
+        },
+        name: "operon_prepare_action",
+      },
+      {
+        description:
+          "Approve or reject a prepared action proposal. Enforces exact digest binding (viewedDigest === preparedDigest), human reviewer requirements, no self-approval, and non-staleness (S07).",
+        inputSchema: {
+          properties: {
+            assurance: {
+              enum: ["human_verified", "delegated_service"],
+              type: "string",
+            },
+            decision: { enum: ["approved", "rejected"], type: "string" },
+            environmentId: { type: "string" },
+            preparedDigest: {
+              description: "Digest of prepared action",
+              type: "string",
+            },
+            reason: { type: "string" },
+            reviewerId: { type: "string" },
+            reviewerRoles: { items: { type: "string" }, type: "array" },
+            tenantId: { type: "string" },
+            viewedDigest: {
+              description: "Digest viewed by reviewer",
+              type: "string",
+            },
+          },
+          required: ["preparedDigest", "viewedDigest"],
+          type: "object",
+        },
+        name: "operon_approve_prepared_action",
+      },
+      {
+        description:
+          "Atomically commit an approved action, updating business state, consuming approval, creating outbox entries, and recording idempotency (S08).",
+        inputSchema: {
+          properties: {
+            approvalId: {
+              description: "Optional approval record ID",
+              type: "string",
+            },
+            environmentId: { type: "string" },
+            idempotencyKey: {
+              description: "Scoped idempotency key",
+              type: "string",
+            },
+            preparedDigest: {
+              description: "Canonical digest of prepared action",
+              type: "string",
+            },
+            tenantId: { type: "string" },
+          },
+          required: ["preparedDigest", "idempotencyKey"],
+          type: "object",
+        },
+        name: "operon_commit_action",
+      },
+      {
+        description:
+          "Get status and receipt of a committed operation by operationId (S08).",
+        inputSchema: {
+          properties: {
+            operationId: { type: "string" },
+            tenantId: { type: "string" },
+          },
+          required: ["operationId"],
+          type: "object",
+        },
+        name: "operon_get_action_status",
+      },
+      {
+        description:
+          "Generate a disposable, grant-bounded application view (table, markdown card, or JSON) with lifecycle state labels (S13).",
+        inputSchema: {
+          properties: {
+            audience: { type: "string" },
+            data: { type: "object" },
+            format: {
+              enum: ["markdown", "table", "card", "json"],
+              type: "string",
+            },
+            state: {
+              enum: [
+                "ACCEPTED",
+                "PROPOSED",
+                "RUNNING",
+                "CONFIRMED",
+                "HYPOTHETICAL",
+              ],
+              type: "string",
+            },
+            title: { type: "string" },
+          },
+          required: ["title", "state", "data"],
+          type: "object",
+        },
+        name: "operon_generate_view",
       },
     ];
 
@@ -1259,6 +1421,151 @@ export function createOperonMcpServer(options: OperonMcpServerOptions) {
         );
         return {
           content: [{ text: JSON.stringify(proposals, null, 2), type: "text" }],
+        };
+      }
+
+      if (name === "operon_prepare_action") {
+        assertMcpKeyPermission(callerKey, "execute_action");
+        const proposer: Subject = {
+          agentTier: args.proposerTier
+            ? (Number(args.proposerTier) as 1 | 2 | 3 | 4)
+            : callerKey.agentTier,
+          id: args.proposerId ? String(args.proposerId) : callerKey.agentId,
+          name: callerKey.name,
+          roles: Array.isArray(args.proposerRoles)
+            ? (args.proposerRoles as string[])
+            : ["ai_agent"],
+          type: (args.proposerType as "user" | "agent" | "system") || "agent",
+        };
+
+        const prepared = await Effect.runPromise(
+          governedActionService.prepareAction({
+            actionId: String(args.actionId),
+            environmentId: args.environmentId
+              ? String(args.environmentId)
+              : "default",
+            grantId: args.grantId ? String(args.grantId) : undefined,
+            proposer,
+            rawParameters: args.parameters ?? {},
+            tenantId: args.tenantId ? String(args.tenantId) : "default",
+            ttlMs: args.ttlMs ? Number(args.ttlMs) : undefined,
+          })
+        );
+
+        return {
+          content: [{ text: JSON.stringify(prepared, null, 2), type: "text" }],
+        };
+      }
+
+      if (name === "operon_approve_prepared_action") {
+        assertMcpKeyPermission(callerKey, "execute_action");
+        const reviewer: Subject = {
+          agentTier: 4,
+          id: args.reviewerId ? String(args.reviewerId) : callerKey.agentId,
+          name: callerKey.name,
+          roles: Array.isArray(args.reviewerRoles)
+            ? (args.reviewerRoles as string[])
+            : ["approver"],
+          type: (args.reviewerType as "user" | "agent" | "system") || "user",
+        };
+
+        const approval = await Effect.runPromise(
+          governedActionService.approvePreparedAction({
+            decision: (args.decision as "approved" | "rejected") || "approved",
+            preparedDigest: String(args.preparedDigest),
+            reason: args.reason ? String(args.reason) : undefined,
+            reviewerContext: {
+              assurance:
+                (args.assurance as "human_verified" | "delegated_service") ||
+                "human_verified",
+              environmentId: args.environmentId
+                ? String(args.environmentId)
+                : "default",
+              reviewer,
+              tenantId: args.tenantId ? String(args.tenantId) : "default",
+            },
+            viewedDigest: String(args.viewedDigest),
+          })
+        );
+
+        return {
+          content: [{ text: JSON.stringify(approval, null, 2), type: "text" }],
+        };
+      }
+
+      if (name === "operon_commit_action") {
+        assertMcpKeyPermission(callerKey, "execute_action");
+        const tenantId = args.tenantId ? String(args.tenantId) : "default";
+        const environmentId = args.environmentId
+          ? String(args.environmentId)
+          : "default";
+        const preparedDigest = String(args.preparedDigest);
+        const idempotencyKey = String(args.idempotencyKey);
+
+        const prepared = await Effect.runPromise(
+          governedActionService.getPreparedAction(preparedDigest, tenantId)
+        );
+
+        let approval = undefined;
+        if (args.approvalId) {
+          approval = await Effect.runPromise(
+            governedActionService.getApprovalRecord(
+              String(args.approvalId),
+              tenantId
+            )
+          );
+        }
+
+        const receipt = await Effect.runPromise(
+          atomicCommitService.commit({
+            approval,
+            environmentId,
+            idempotencyKey,
+            prepared,
+            tenantId,
+          })
+        );
+
+        return {
+          content: [{ text: JSON.stringify(receipt, null, 2), type: "text" }],
+        };
+      }
+
+      if (name === "operon_get_action_status") {
+        assertMcpKeyPermission(callerKey, "query_runtime");
+        const tenantId = args.tenantId ? String(args.tenantId) : "default";
+        const operationId = String(args.operationId);
+
+        const operation = await Effect.runPromise(
+          atomicCommitService.getOperation(operationId, tenantId)
+        );
+
+        if (!operation) {
+          return {
+            content: [
+              { text: `Operation '${operationId}' not found`, type: "text" },
+            ],
+            isError: true,
+          };
+        }
+
+        return {
+          content: [{ text: JSON.stringify(operation, null, 2), type: "text" }],
+        };
+      }
+
+      if (name === "operon_generate_view") {
+        assertMcpKeyPermission(callerKey, "query_runtime");
+        const view = generateDisposableAppView({
+          audience: args.audience ? String(args.audience) : undefined,
+          data: args.data as any,
+          format: args.format as any,
+          state: (args.state as any) ?? "CONFIRMED",
+          title: String(args.title),
+        });
+
+        return {
+          content: [{ text: JSON.stringify(view, null, 2), type: "text" }],
         };
       }
 

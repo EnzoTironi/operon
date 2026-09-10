@@ -1,0 +1,162 @@
+import { Data } from "effect";
+
+/**
+ * SelfApprovalDeniedError (S07):
+ * Proposer cannot self-approve a prepared action proposal.
+ */
+export class SelfApprovalDeniedError extends Data.TaggedError(
+  "SelfApprovalDeniedError"
+)<{
+  readonly message: string;
+  readonly proposerId: string;
+  readonly reviewerId: string;
+}> {}
+
+/**
+ * ApprovalDigestMismatchError (S07):
+ * Viewed digest must strictly match the prepared action digest.
+ */
+export class ApprovalDigestMismatchError extends Data.TaggedError(
+  "ApprovalDigestMismatchError"
+)<{
+  readonly message: string;
+  readonly preparedDigest: string;
+  readonly viewedDigest: string;
+}> {}
+
+/**
+ * StaleApprovalError (S07):
+ * Prepared proposal or approval has expired, or underlying revisions have drifted.
+ */
+export class StaleApprovalError extends Data.TaggedError("StaleApprovalError")<{
+  readonly message: string;
+  readonly preparedDigest: string;
+  readonly reason: string;
+}> {}
+
+/**
+ * FabricatedApprovalError (S07):
+ * Approval attempt was fabricated, forged, or attempted by an AI agent/sentinel
+ * when human approval is strictly required.
+ */
+export class FabricatedApprovalError extends Data.TaggedError(
+  "FabricatedApprovalError"
+)<{
+  readonly message: string;
+  readonly reason: string;
+}> {}
+
+/**
+ * UnauthorizedReviewerError (S06 / S07):
+ * Reviewer lacks the authority, roles, or tenant scope to approve.
+ */
+export class UnauthorizedReviewerError extends Data.TaggedError(
+  "UnauthorizedReviewerError"
+)<{
+  readonly message: string;
+  readonly reviewerId: string;
+  readonly requiredRole?: string;
+  readonly reason?: string;
+}> {}
+
+/**
+ * FreshnessOrPolicyDeniedError (S06 / S07):
+ * Preparation or evaluation failed policy readiness, freshness budgets, or guards.
+ */
+export class FreshnessOrPolicyDeniedError extends Data.TaggedError(
+  "FreshnessOrPolicyDeniedError"
+)<{
+  readonly message: string;
+  readonly actionId: string;
+  readonly reasons: readonly string[];
+}> {}
+
+/**
+ * PreparedActionNotFoundError:
+ * Pinned proposal not found or does not exist under tenant non-disclosure.
+ */
+export class PreparedActionNotFoundError extends Data.TaggedError(
+  "PreparedActionNotFoundError"
+)<{
+  readonly message: string;
+  readonly preparedDigest?: string;
+  readonly preparedId?: string;
+}> {}
+
+/**
+ * ApprovalRecordNotFoundError:
+ * Approval record not found or does not exist under tenant non-disclosure.
+ */
+export class ApprovalRecordNotFoundError extends Data.TaggedError(
+  "ApprovalRecordNotFoundError"
+)<{
+  readonly message: string;
+  readonly approvalId: string;
+}> {}
+
+/**
+ * GrantNotFoundError (S06):
+ * Delegated IntentGrant does not exist or tenant mismatch.
+ */
+export class GrantNotFoundError extends Data.TaggedError("GrantNotFoundError")<{
+  readonly message: string;
+  readonly grantId: string;
+}> {}
+
+/**
+ * GrantExceededError (S06):
+ * IntentGrant budget, expiry, revocation epoch, or scope exceeded.
+ */
+export class GrantExceededError extends Data.TaggedError("GrantExceededError")<{
+  readonly message: string;
+  readonly grantId: string;
+  readonly reason: string;
+}> {}
+
+/**
+ * TenantMismatchError (Tenant Non-Disclosure):
+ * Tenant or environment boundary mismatch; caller cannot observe resource existence.
+ */
+export class TenantMismatchError extends Data.TaggedError(
+  "TenantMismatchError"
+)<{
+  readonly message: string;
+  readonly tenantId: string;
+}> {}
+
+/**
+ * EnvironmentMismatchError:
+ * Environment boundary mismatch.
+ */
+export class EnvironmentMismatchError extends Data.TaggedError(
+  "EnvironmentMismatchError"
+)<{
+  readonly message: string;
+  readonly environmentId: string;
+}> {}
+
+/**
+ * CommitConcurrencyError (S08):
+ * Pinned object revision during prepare does not match current revision during commit.
+ */
+export class CommitConcurrencyError extends Data.TaggedError(
+  "CommitConcurrencyError"
+)<{
+  readonly message: string;
+  readonly objectId: string;
+  readonly expectedRevision: number;
+  readonly actualRevision: number;
+}> {}
+
+/**
+ * OutboxDeliveryError (S08):
+ * Durable side effect delivery encountered failure or external unknown timeout.
+ */
+export class OutboxDeliveryError extends Data.TaggedError(
+  "OutboxDeliveryError"
+)<{
+  readonly message: string;
+  readonly outboxId: string;
+  readonly status: string;
+  readonly cause?: unknown;
+}> {}

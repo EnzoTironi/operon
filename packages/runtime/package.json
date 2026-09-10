@@ -17,6 +17,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@operon/generated-ui": "workspace:*",
     "@operon/schema": "workspace:*",
     "@operon/telemetry": "workspace:*",
     "effect": "4.0.0-rc.112"

@@ -177,7 +177,7 @@ importers:
         version: link:../schema
       alchemy:
         specifier: 2.0.0-beta.76
-        version: 2.0.0-beta.76(@types/node@22.20.2)(effect@4.0.0-rc.112)(typescript@5.9.3)(vitest@2.1.9(@types/node@22.20.2))(ws@8.21.3)
+        version: 2.0.0-beta.76(@types/node@22.20.2)(effect@4.0.0-rc.112)(typescript@5.9.3)(vite@5.4.21(@types/node@22.20.2))(vitest@2.1.9(@types/node@22.20.2))(ws@8.21.3)
       effect:
         specifier: 4.0.0-rc.112
         version: 4.0.0-rc.112
@@ -197,6 +197,9 @@ importers:
       '@operon/alchemy':
         specifier: workspace:*
         version: link:../alchemy
+      '@operon/generated-ui':
+        specifier: workspace:*
+        version: link:../generated-ui
       '@operon/mcp':
         specifier: workspace:*
         version: link:../mcp
@@ -229,11 +232,30 @@ importers:
         specifier: ^2.1.8
         version: 2.1.9(@types/node@22.20.2)
 
+  packages/generated-ui:
+    dependencies:
+      '@operon/schema':
+        specifier: workspace:*
+        version: link:../schema
+      effect:
+        specifier: 4.0.0-rc.112
+        version: 4.0.0-rc.112
+    devDependencies:
+      typescript:
+        specifier: ^5.7.2
+        version: 5.9.3
+      vitest:
+        specifier: ^2.1.8
+        version: 2.1.9(@types/node@22.20.2)
+
   packages/mcp:
     dependencies:
       '@modelcontextprotocol/sdk':
         specifier: ^1.30.0
         version: 1.30.0(zod@4.6.0)
+      '@operon/generated-ui':
+        specifier: workspace:*
+        version: link:../generated-ui
       '@operon/recipes':
         specifier: workspace:*
         version: link:../recipes
@@ -297,6 +319,9 @@ importers:
 
   packages/runtime:
     dependencies:
+      '@operon/generated-ui':
+        specifier: workspace:*
+        version: link:../generated-ui
       '@operon/schema':
         specifier: workspace:*
         version: link:../schema
@@ -4288,7 +4313,7 @@ snapshots:
       ansi-styles: 6.2.3
       is-fullwidth-code-point: 5.1.0
 
-  '@alchemy.run/cloudflare-runtime@2.0.0-beta.76(@distilled.cloud/cloudflare@1.0.0-rc.8(effect@4.0.0-rc.112))(@types/node@22.20.2)(effect@4.0.0-rc.112)(rolldown@1.2.5)(typescript@5.9.3)':
+  '@alchemy.run/cloudflare-runtime@2.0.0-beta.76(@distilled.cloud/cloudflare@1.0.0-rc.8(effect@4.0.0-rc.112))(@types/node@22.20.2)(effect@4.0.0-rc.112)(rolldown@1.2.5)(typescript@5.9.3)(vite@5.4.21(@types/node@22.20.2))':
     dependencies:
       '@alchemy.run/node-utils': 2.0.0-beta.76
       '@cloudflare/unenv-preset': 2.16.1(unenv@2.0.0-rc.24)(workerd@1.20260704.1)
@@ -4303,6 +4328,7 @@ snapshots:
       yauzl: 3.4.0
     optionalDependencies:
       rolldown: 1.2.5
+      vite: 5.4.21(@types/node@22.20.2)
     transitivePeerDependencies:
       - '@types/node'
       - proxy-agent
@@ -6369,9 +6395,9 @@ snapshots:
       json-schema-traverse: 1.0.0
       require-from-string: 2.0.2
 
-  alchemy@2.0.0-beta.76(@types/node@22.20.2)(effect@4.0.0-rc.112)(typescript@5.9.3)(vitest@2.1.9(@types/node@22.20.2))(ws@8.21.3):
+  alchemy@2.0.0-beta.76(@types/node@22.20.2)(effect@4.0.0-rc.112)(typescript@5.9.3)(vite@5.4.21(@types/node@22.20.2))(vitest@2.1.9(@types/node@22.20.2))(ws@8.21.3):
     dependencies:
-      '@alchemy.run/cloudflare-runtime': 2.0.0-beta.76(@distilled.cloud/cloudflare@1.0.0-rc.8(effect@4.0.0-rc.112))(@types/node@22.20.2)(effect@4.0.0-rc.112)(rolldown@1.2.5)(typescript@5.9.3)
+      '@alchemy.run/cloudflare-runtime': 2.0.0-beta.76(@distilled.cloud/cloudflare@1.0.0-rc.8(effect@4.0.0-rc.112))(@types/node@22.20.2)(effect@4.0.0-rc.112)(rolldown@1.2.5)(typescript@5.9.3)(vite@5.4.21(@types/node@22.20.2))
       '@alchemy.run/floci': 2.0.0-beta.76(effect@4.0.0-rc.112)
       '@alchemy.run/node-utils': 2.0.0-beta.76
       '@aws-sdk/credential-providers': 3.1129.0
@@ -6411,6 +6437,7 @@ snapshots:
       undici: 7.29.1
       yaml: 2.9.0
     optionalDependencies:
+      vite: 5.4.21(@types/node@22.20.2)
       ws: 8.21.3
     transitivePeerDependencies:
       - '@types/node'

@@ -1,4 +1,4 @@
-import type { Schema } from "effect";
+import { Schema } from "effect";
 
 import type {
   DataClassification,
@@ -87,3 +87,14 @@ export interface ObjectInstance<T = Record<string, unknown>> {
   readonly validTo?: number; // bitemporal valid time end
   readonly version: number; // optimistic concurrency version
 }
+
+export const ObjectInstanceSchema = Schema.Struct({
+  id: Schema.String,
+  typeId: Schema.String,
+  properties: Schema.Record(Schema.String, Schema.Unknown),
+  provenance: Schema.optional(Schema.Unknown),
+  lastModifiedAt: Schema.Number,
+  validFrom: Schema.optional(Schema.Number),
+  validTo: Schema.optional(Schema.Number),
+  version: Schema.Number,
+});

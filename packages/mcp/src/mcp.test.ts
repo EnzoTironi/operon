@@ -860,4 +860,178 @@ describe("@operon/mcp", () => {
     expect(list).toHaveLength(1);
     expect(list[0].proposalId).toBe(proposal.proposalId);
   });
+
+  it("handles Gate V0-E Safe Operation (prepare, approve, commit, status, generate_view) through MCP tools", async () => {
+    const objectStore = new InMemoryObjectStore();
+    const auditStore = new InMemoryAuditStore();
+
+    // Register a test action
+    const updateVitalsAction = defineActionType({
+      defaultExecutionMode: "proposal",
+      description: "Update patient heart rate and vitals",
+      id: "update_vitals",
+      minimumAgentTier: 3,
+      mutation: (params, ctx) =>
+        Effect.gen(function* () {
+          const obj = yield* ctx.getObject("Patient" as any, params.patientId);
+          if (!obj) return [];
+          return [
+            {
+              ...obj,
+              properties: {
+                ...(obj.properties as Record<string, unknown>),
+                heartRate: params.heartRate,
+              },
+            },
+          ];
+        }),
+      name: "Update Vitals",
+      parametersSchema: Schema.Struct({
+        heartRate: Schema.Number,
+        patientId: Schema.String,
+      }),
+      riskTier: "high",
+      submissionCriteria: [
+        {
+          description: "Heart rate must be positive",
+          evaluate: (params) =>
+            Effect.succeed(
+              params.heartRate > 0
+                ? { passed: true as const }
+                : {
+                    failureReason: "Heart rate must be positive",
+                    passed: false as const,
+                    verdict: "deny" as const,
+                  }
+            ),
+          id: "positive_hr",
+        },
+      ],
+      targetObjectTypeId: "Patient",
+    });
+
+    const server = createOperonMcpServer({
+      actionTypes: [updateVitalsAction],
+      auditStore,
+      objectStore,
+      objectTypes: [],
+      oms: new OntologyMetadataService(),
+    });
+    const [cTransport, sTransport] = InMemoryTransport.createLinkedPair();
+    await server.connect(sTransport);
+    const client = new Client(
+      { name: "test-v0-e-mcp-client", version: "1.0.0" },
+      { capabilities: {} }
+    );
+    await client.connect(cTransport);
+
+    // Seed target object
+    await Effect.runPromise(
+      objectStore.putObject({
+        id: "PAT-001",
+        lastModifiedAt: Date.now(),
+        properties: { heartRate: 70 },
+        typeId: "Patient" as any,
+        version: 1,
+      })
+    );
+
+    // 1. Verify tools list includes the 5 new tools
+    const tools = await client.listTools();
+    const toolNames = tools.tools.map((t) => t.name);
+    expect(toolNames).toContain("operon_prepare_action");
+    expect(toolNames).toContain("operon_approve_prepared_action");
+    expect(toolNames).toContain("operon_commit_action");
+    expect(toolNames).toContain("operon_get_action_status");
+    expect(toolNames).toContain("operon_generate_view");
+
+    // 2. Prepare action via MCP (Dry-run: no business writes)
+    const prepRes = (await client.callTool({
+      arguments: {
+        actionId: "update_vitals",
+        parameters: { heartRate: 85, patientId: "PAT-001" },
+        proposerId: "agent-doc",
+        proposerTier: 3,
+        proposerType: "agent",
+      },
+      name: "operon_prepare_action",
+    })) as any;
+    expect(prepRes.isError).toBeFalsy();
+    const prepared = JSON.parse(prepRes.content[0].text);
+    expect(prepared.canonicalDigest).toBeDefined();
+    expect(prepared.verdict).toBe("review");
+
+    // Verify dry-run invariant: object still has version 1 and old heartRate
+    const unmodObj = await Effect.runPromise(
+      objectStore.getObject("Patient" as any, "PAT-001")
+    );
+    expect(unmodObj).toBeDefined();
+    expect((unmodObj!.properties as any).heartRate).toBe(70);
+
+    // 3. Approve prepared action via MCP
+    const appRes = (await client.callTool({
+      arguments: {
+        decision: "approved",
+        preparedDigest: prepared.canonicalDigest,
+        reviewerId: "human-physician",
+        reviewerRoles: ["physician", "approver"],
+        viewedDigest: prepared.canonicalDigest,
+      },
+      name: "operon_approve_prepared_action",
+    })) as any;
+    expect(appRes.isError).toBeFalsy();
+    const approval = JSON.parse(appRes.content[0].text);
+    expect(approval.id).toBeDefined();
+    expect(approval.recordHash).toBeDefined();
+
+    // 4. Commit action via MCP
+    const commitRes = (await client.callTool({
+      arguments: {
+        approvalId: approval.id,
+        idempotencyKey: "mcp-idem-commit-1",
+        preparedDigest: prepared.canonicalDigest,
+      },
+      name: "operon_commit_action",
+    })) as any;
+    expect(commitRes.isError).toBeFalsy();
+    const receipt = JSON.parse(commitRes.content[0].text);
+    expect(receipt.status).toBe("COMMITTED");
+    expect(receipt.receiptDigest).toBeDefined();
+
+    // Verify business state changed
+    const modObj = await Effect.runPromise(
+      objectStore.getObject("Patient" as any, "PAT-001")
+    );
+    expect(modObj).toBeDefined();
+    expect((modObj!.properties as any).heartRate).toBe(85);
+    expect(modObj!.version).toBe(2);
+
+    // 5. Get action status via MCP
+    const statusRes = (await client.callTool({
+      arguments: {
+        operationId: receipt.operationId,
+      },
+      name: "operon_get_action_status",
+    })) as any;
+    expect(statusRes.isError).toBeFalsy();
+    const statusObj = JSON.parse(statusRes.content[0].text);
+    expect(statusObj.operationId).toBe(receipt.operationId);
+    expect(statusObj.status).toBe("COMMITTED");
+
+    // 6. Generate disposable view via MCP
+    const viewRes = (await client.callTool({
+      arguments: {
+        data: { heartRate: 85, patientId: "PAT-001", status: "STABLE" },
+        format: "card",
+        state: "CONFIRMED",
+        title: "Patient Vitals Summary",
+      },
+      name: "operon_generate_view",
+    })) as any;
+    expect(viewRes.isError).toBeFalsy();
+    const viewObj = JSON.parse(viewRes.content[0].text);
+    expect(viewObj.rendered).toContain("[STATE: CONFIRMED]");
+    expect(viewObj.isDisposable).toBe(true);
+    expect(viewObj.sourceOfTruth).toBe("OPERON_KERNEL");
+  });
 });

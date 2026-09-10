@@ -4,20 +4,28 @@ import type {
   DynamicSecurityEngine,
   ObjectSet,
   ObjectStore,
+  OperonService,
   QueryOptions,
   StaleDependencyError,
 } from "@operon/runtime";
 import {
+  AtomicCommitService,
+  AuthorityService,
   AuthorizationError,
   executeWritePipeline,
+  GovernedActionService,
   ObjectSetService,
+  OperonServiceImpl,
   ReconciliationService,
 } from "@operon/runtime";
 import type {
   ActionType,
+  ApprovalRecord,
   ExactQueryRequest,
   ObjectInstance,
   ObjectType,
+  OperationReceipt,
+  PreparedAction,
   QueryCoverage,
   SecurityContext,
   WorldView,
@@ -32,6 +40,12 @@ export interface OperonClientConfig {
   readonly defaultSecurity?: SecurityContext;
   readonly securityEngine?: DynamicSecurityEngine;
   readonly reconciliationService?: ReconciliationService;
+  readonly authorityService?: AuthorityService;
+  readonly governedActionService?: GovernedActionService;
+  readonly atomicCommitService?: AtomicCommitService;
+  readonly operonService?: OperonService;
+  readonly tenantId?: string;
+  readonly environmentId?: string;
 }
 
 export interface ObjectTypeAccessor<T = Record<string, unknown>> {
@@ -66,6 +80,31 @@ export interface OperonClient {
     StaleDependencyError
   >;
   readonly reconciliation: ReconciliationService;
+  readonly authority: AuthorityService;
+  readonly governedActions: GovernedActionService;
+  readonly atomicCommit: AtomicCommitService;
+  readonly operonService: OperonService;
+  readonly prepareAction: (
+    actionId: string,
+    params: unknown,
+    options?: {
+      grantId?: string;
+      ttlMs?: number;
+      tenantId?: string;
+      environmentId?: string;
+    }
+  ) => Effect.Effect<PreparedAction, unknown>;
+  readonly approveAction: (input: {
+    preparedDigest: string;
+    viewedDigest: string;
+    decision?: "approved" | "rejected";
+    reason?: string;
+  }) => Effect.Effect<ApprovalRecord, unknown>;
+  readonly commitAction: (input: {
+    preparedDigest: string;
+    approvalId?: string;
+    idempotencyKey: string;
+  }) => Effect.Effect<OperationReceipt, unknown>;
 }
 
 export function createOperonClient(config: OperonClientConfig): OperonClient {
@@ -151,5 +190,144 @@ export function createOperonClient(config: OperonClientConfig): OperonClient {
   const query = (request: ExactQueryRequest, options?: QueryOptions) =>
     reconciliation.query(request, config.objectStore, options);
 
-  return { actions, objects, oss, query, reconciliation };
+  const authority = config.authorityService ?? new AuthorityService();
+  const actionTypesMap = new Map<string, ActionType<any>>();
+  for (const act of config.actionTypes) {
+    actionTypesMap.set(act.id, act);
+  }
+
+  const governedActions =
+    config.governedActionService ??
+    new GovernedActionService(
+      config.actionTypes,
+      config.objectStore,
+      authority
+    );
+
+  const atomicCommit =
+    config.atomicCommitService ??
+    new AtomicCommitService(
+      actionTypesMap,
+      config.objectStore,
+      config.auditStore,
+      authority
+    );
+
+  const defaultTenantId = config.tenantId ?? "default";
+  const defaultEnvironmentId = config.environmentId ?? "default";
+
+  const operonService =
+    config.operonService ??
+    new OperonServiceImpl(
+      governedActions,
+      atomicCommit,
+      authority,
+      reconciliation,
+      config.objectStore
+    );
+
+  const prepareAction = (
+    actionId: string,
+    params: unknown,
+    options?: {
+      grantId?: string;
+      ttlMs?: number;
+      tenantId?: string;
+      environmentId?: string;
+    }
+  ) => {
+    const effectiveSecurity = config.defaultSecurity;
+    if (!effectiveSecurity) {
+      return Effect.fail(
+        new AuthorizationError({
+          reason: "SecurityContext required: defaultSecurity is not configured",
+        })
+      );
+    }
+    return governedActions.prepareAction({
+      actionId,
+      environmentId: options?.environmentId ?? defaultEnvironmentId,
+      grantId: options?.grantId,
+      proposer: effectiveSecurity.subject,
+      rawParameters: params,
+      tenantId: options?.tenantId ?? defaultTenantId,
+      ttlMs: options?.ttlMs,
+    });
+  };
+
+  const approveAction = (input: {
+    preparedDigest: string;
+    viewedDigest: string;
+    decision?: "approved" | "rejected";
+    reason?: string;
+  }) => {
+    const effectiveSecurity = config.defaultSecurity;
+    if (!effectiveSecurity) {
+      return Effect.fail(
+        new AuthorizationError({
+          reason: "SecurityContext required: defaultSecurity is not configured",
+        })
+      );
+    }
+    return governedActions.approvePreparedAction({
+      decision: input.decision ?? "approved",
+      preparedDigest: input.preparedDigest,
+      reason: input.reason,
+      reviewerContext: {
+        assurance: "human_verified",
+        environmentId: defaultEnvironmentId,
+        reviewer: effectiveSecurity.subject,
+        tenantId: defaultTenantId,
+      },
+      viewedDigest: input.viewedDigest,
+    });
+  };
+
+  const commitAction = (input: {
+    preparedDigest: string;
+    approvalId?: string;
+    idempotencyKey: string;
+  }) =>
+    governedActions
+      .getPreparedAction(input.preparedDigest, defaultTenantId)
+      .pipe(
+        Effect.flatMap((prepared) => {
+          if (input.approvalId) {
+            return governedActions
+              .getApprovalRecord(input.approvalId, defaultTenantId)
+              .pipe(
+                Effect.flatMap((approval) =>
+                  atomicCommit.commit({
+                    approval,
+                    environmentId: defaultEnvironmentId,
+                    idempotencyKey: input.idempotencyKey,
+                    prepared,
+                    tenantId: defaultTenantId,
+                  })
+                )
+              );
+          }
+          return atomicCommit.commit({
+            environmentId: defaultEnvironmentId,
+            idempotencyKey: input.idempotencyKey,
+            prepared,
+            tenantId: defaultTenantId,
+          });
+        })
+      );
+
+  return {
+    actions,
+    approveAction,
+    atomicCommit,
+    authority,
+    commitAction,
+    governedActions,
+    objects,
+    operonService,
+    oss,
+    prepareAction,
+    query,
+    reconciliation,
+  };
 }

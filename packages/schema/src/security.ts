@@ -1,3 +1,5 @@
+import { Schema } from "effect";
+
 export type SubjectType = "user" | "agent" | "system";
 
 /**
@@ -18,7 +20,33 @@ export interface Subject {
   readonly metadata?: Record<string, unknown>;
 }
 
-export type DecisionVerdict = "allow" | "review" | "deny";
+export const SubjectSchema = Schema.Struct({
+  id: Schema.String,
+  type: Schema.Literals(["user", "agent", "system"]),
+  name: Schema.String,
+  roles: Schema.Array(Schema.String),
+  agentTier: Schema.optional(Schema.Literals([1, 2, 3, 4])),
+  metadata: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)),
+});
+
+/**
+ * Canonical decision algebra per ADR-D05:
+ * ALLOW | DENY | REVIEW_REQUIRED | EVIDENCE_INSUFFICIENT
+ */
+export type DecisionVerdict =
+  | "allow"
+  | "review"
+  | "deny"
+  | "review_required"
+  | "evidence_insufficient";
+
+export const DecisionVerdictSchema = Schema.Literals([
+  "allow",
+  "review",
+  "deny",
+  "review_required",
+  "evidence_insufficient",
+]);
 
 export interface SecurityContext {
   readonly subject: Subject;
