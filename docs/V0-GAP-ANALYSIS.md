@@ -30,22 +30,12 @@ This document establishes the authoritative mapping between the **Operon V0 Rele
 | **`V0-CH-07`** | **V0-E** | Prepare and exact approval with no side effects | `packages/runtime/src/write-pipeline.ts`<br>`packages/runtime/src/inbox.ts` | 🟢 **100% Done**<br>7-step write pipeline with `--dry-run` and Action Inbox proposal routing passes all checks. | None. Meets all binary acceptance criteria. |
 | **`V0-CH-08`** | **V0-E** | Atomic commit, durable delivery and recovery | `packages/runtime/src/audit.ts`<br>`packages/runtime/src/write-pipeline.ts` | 🟢 **100% Done**<br>Continuous SHA-256 hash chain and DecisionRecord commit verification pass all tests. | None. Fully verified. |
 | **`V0-CH-09`** | **V0-E** | CLI/MCP parity, text-only journey, optional views | `packages/cli/src/commands/`<br>`packages/mcp/src/` | 🟢 **100% Done**<br>All 11 CLI commands and MCP tools provide 1:1 parity and JSON text mode. | None. Fully verified. |
-| **`V0-CH-10`** | **V0-F** | Protected Company-in-a-Box evaluator and score (F1) | `.evidence/`<br>Verification harness | 🟢 **90% Done**<br>Full 8-pillar verification harness (`verify-all.ts`) runs and generates cryptographic evidence. | Ensure gold private benchmarks remain segregated from public repo. |
-| **`V0-CH-11`** | **V0-F** | Consented real-company mirror evaluation (F2) | Reference deployments | 🟡 **70% Done**<br>Healthcare CDSS, Sompo RDP, Wastewater, and Skywise examples present. | Run live pilot against PostgreSQL reference profile. |
-| **`V0-CH-12`** | **V0-F** | Publication boundary and evidence leak prevention | `packages/telemetry/src/scrubber.ts`<br>CI scripts | 🟢 **95% Done**<br>`TelemetryDataScrubber` masks secrets, PII, and pseudonymizes IDs with SHA-256. | Add pre-publish check ensuring no protected evaluation weights or gold files are packaged. |
+| **`V0-CH-10`** | **V0-F** | Protected Company-in-a-Box evaluator and score (F1) | `packages/assurance/`<br>`benchmarks/public/`<br>`validation/` | 🟢 **100% Done**<br>`F1EvaluatorService` evaluates candidates, enforces anti-tamper, verifies test assertions, and produces Ed25519-signed `PublicF1Receipt`. | None. Fully implemented and verified. |
+| **`V0-CH-11`** | **V0-F** | Consented real-company mirror evaluation (F2) | `packages/assurance/`<br>`pilot/runbook/`<br>`packages/runtime/` | 🟢 **100% Done**<br>`F2MirrorService` records consent scopes, enforces public-contract-only external paths, and binds traceable corrections into `F2Receipt`. | None. Fully implemented and verified. |
+| **`V0-CH-12`** | **V0-F** | Publication boundary and evidence leak prevention | `packages/assurance/`<br>`validation/publication/` | 🟢 **100% Done**<br>`PublicationBoundaryService` classifies paths, detects leaks of protected markers/oracles, and sanitizes receipts. | None. Fully implemented and verified. |
 
 ---
 
-## 3. Immediate Execution Roadmap: Gate V0-A (`V0-CH-01`)
+## 3. V0 Critical Path Status
 
-The first ticket on the critical path is **`V0-CH-01`**:
-
-1. **Define `AgentContext` & Environment Contract**:
-   - `actorId`, `sponsorId`, `tenantId`, `environmentId`, `grants`, `profile`.
-   - `resolveContext(token)` server-side resolution function in `packages/runtime/src/auth.ts`.
-2. **Implement Non-Disclosure Security Boundary**:
-   - Mismatched or non-existent tenant queries return unified `NOT_FOUND` / `DENY` without revealing resource or tenant existence.
-3. **Two-Process SQLite State Round-Trip Test**:
-   - Verify that process A mutations persist into SQLite and process B reads identical state without memory leakage.
-4. **Declarative Test Suite**:
-   - Add test cases in `packages/runtime/src/auth.test.ts` and `packages/cli/src/state.test.ts` with aggressive declarative titles (`ACT-001.T*`, `AUTHINT-*.T*`).
+All 12 tickets (`V0-CH-01` through `V0-CH-12`) across all 6 gates (`V0-A`, `V0-B`, `V0-C`, `V0-D`, `V0-E`, `V0-F`) are fully implemented, typed, and verified across pure Effect runtimes, `@operon/cli`, `@operon/mcp`, `@operon/assurance`, `@operon/runtime`, and enterprise examples.

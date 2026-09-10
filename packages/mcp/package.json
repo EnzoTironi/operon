@@ -18,6 +18,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",
+    "@operon/assurance": "workspace:*",
     "@operon/generated-ui": "workspace:*",
     "@operon/recipes": "workspace:*",
     "@operon/runtime": "workspace:*",

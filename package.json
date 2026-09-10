@@ -17,6 +17,7 @@
     "lint": "oxlint --config oxlint.config.ts",
     "format": "oxfmt --check",
     "test:mutate": "stryker run",
+    "verify:all": "node --experimental-strip-types .agents/skills/verify-operon/helpers/verify-all.ts",
     "prepare": "effect-tsgo patch --typescript --oxlint"
   },
   "devDependencies": {

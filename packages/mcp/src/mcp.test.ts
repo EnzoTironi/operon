@@ -1034,4 +1034,120 @@ describe("@operon/mcp", () => {
     expect(viewObj.isDisposable).toBe(true);
     expect(viewObj.sourceOfTruth).toBe("OPERON_KERNEL");
   });
+
+  it("evaluates F1, verifies receipt, evaluates F2 mirror, and scans publication boundary via MCP (Gate V0-F: V0-CH-10, V0-CH-11, V0-CH-12)", async () => {
+    const objectStore = new InMemoryObjectStore();
+    const auditStore = new InMemoryAuditStore();
+
+    const server = createOperonMcpServer({
+      actionTypes: [],
+      auditStore,
+      defaultCallerKey: {
+        agentId: "agent-evaluator",
+        agentTier: 4,
+        keyId: "key-evaluator",
+        name: "EvaluatorAgent",
+        role: "consumer",
+      },
+      objectStore,
+      objectTypes: [],
+      oms: new OntologyMetadataService(),
+    });
+
+    const [clientTransport, serverTransport] =
+      InMemoryTransport.createLinkedPair();
+    await server.connect(serverTransport);
+
+    const client = new Client(
+      { name: "test-mcp-evaluator", version: "1.0.0" },
+      { capabilities: {} }
+    );
+    await client.connect(clientTransport);
+
+    // 1. Evaluate F1 Company-in-a-Box via MCP
+    const f1Res = (await client.callTool({
+      arguments: {
+        candidateDigest: "cand_mcp_sha256_12345",
+        candidateId: "candidate-v0-mcp",
+        catalogDigest: "cat_mcp_sha256_67890",
+        catalogId: "catalog-v0-mcp",
+        profile: "local",
+        testCases: [
+          {
+            assertions: 6,
+            executionTimeMs: 50,
+            id: "MCP-TC-01",
+            name: "Kernel Concurrency Safety",
+            status: "PASS",
+          },
+        ],
+      },
+      name: "operon_assurance_evaluate_f1",
+    })) as any;
+    expect(f1Res.isError).toBeFalsy();
+    const f1Receipt = JSON.parse(f1Res.content[0].text);
+    expect(f1Receipt.outcome).toBe("PASS");
+    expect(f1Receipt.signature).toBeDefined();
+    expect(f1Receipt.signerPublicKey).toBeDefined();
+
+    // 2. Verify F1 Receipt via MCP
+    const verifyF1Res = (await client.callTool({
+      arguments: {
+        receipt: f1Receipt,
+      },
+      name: "operon_assurance_verify_receipt",
+    })) as any;
+    expect(verifyF1Res.isError).toBeFalsy();
+    const verifyF1Obj = JSON.parse(verifyF1Res.content[0].text);
+    expect(verifyF1Obj.isValid).toBe(true);
+
+    // 3. Evaluate F2 Consented Mirror via MCP
+    const f2Res = (await client.callTool({
+      arguments: {
+        candidateDigest: "cand_mcp_sha256_12345",
+        claim: "observed-action",
+        companyEvidenceRef: "evidence://metro_hospital/mcp_mirror_run_1",
+        consentScope: {
+          consentGrantId: "consent_mcp_001",
+          createdAt: Date.now() - 500,
+          dataScope: ["patients", "prescriptions"],
+          expiresAt: Date.now() + 86400000,
+          participantId: "hospital_corp_alpha",
+          purpose: "clinical mirror validation",
+        },
+        corrections: [
+          {
+            correctedAt: Date.now(),
+            correctedBy: "specialist_physician",
+            correctedValue: 12,
+            correctionId: "corr_mcp_01",
+            observedTarget: "Patient/P001/currentDose",
+            priorValue: 15,
+            reason: "Adjustment for low eGFR",
+          },
+        ],
+        participantId: "hospital_corp_alpha",
+        profileDigest: "prof_postgres_mirror_ref",
+        rubricDigest: "rubric_mcp_eval_v0",
+      },
+      name: "operon_assurance_mirror_f2",
+    })) as any;
+    expect(f2Res.isError).toBeFalsy();
+    const f2Receipt = JSON.parse(f2Res.content[0].text);
+    expect(f2Receipt.claim).toBe("observed-action");
+    expect(f2Receipt.correctionRefs).toEqual(["corr_mcp_01"]);
+    expect(f2Receipt.signature).toBeDefined();
+
+    // 4. Scan publication boundary via MCP
+    const scanRes = (await client.callTool({
+      arguments: {
+        allowedPublicOnly: true,
+        targetDirectory: `${process.cwd()}/benchmarks/public`,
+      },
+      name: "operon_assurance_scan_publication",
+    })) as any;
+    expect(scanRes.isError).toBeFalsy();
+    const scanObj = JSON.parse(scanRes.content[0].text);
+    expect(scanObj.isClean).toBe(true);
+  });
 });

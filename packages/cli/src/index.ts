@@ -2,6 +2,7 @@ import { OperonTelemetryService } from "@operon/telemetry";
 import { Effect } from "effect";
 
 import { runAction } from "./commands/action.js";
+import { runAssurance } from "./commands/assurance.js";
 import { runAudit } from "./commands/audit.js";
 import { runDemo } from "./commands/demo.js";
 import { runDoctor } from "./commands/doctor.js";
@@ -39,6 +40,7 @@ Commands:
   reconcile           Identity resolution proposals, deterministic & ML matching, reversible merge/split (S03)
   sandbox             Execute sandboxed models with fiber timeouts and verify determinism proofs
   view                Generate disposable application views with lifecycle state badges (S13)
+  assurance           Dual F1/F2 release evaluation, mirror verification, and publication boundary check
   mcp                 Launch Model Context Protocol (MCP) server over stdio for Claude Desktop / Cursor
   telemetry           Inspect Sentry & PostHog telemetry status, privacy scrubber, and diagnostic ping
   demo                Run end-to-end domain simulations (healthcare, aviation, wastewater, sompo, education)
@@ -352,10 +354,32 @@ Examples:
       return runView(args.slice(1));
     }
 
+    case "assurance": {
+      if (args.includes("--help") || args.includes("-h") || args.length === 1) {
+        console.log(`
+Operon Assurance & Release Evaluation (Gate V0-F)
+
+Usage:
+  operon assurance evaluate [flags]         Run Company-in-a-Box evaluator (F1)
+  operon assurance mirror [flags]           Run consented real-company mirror (F2)
+  operon assurance scan [path] [flags]      Scan publication boundary for leaks
+  operon assurance verify-receipt <file>    Verify Ed25519 signature on receipt
+
+Examples:
+  operon assurance evaluate --candidate cand_v0 --profile local --json
+  operon assurance mirror --participant metro_health --claim observed-action --json
+  operon assurance scan packages --public-only --json
+  operon assurance verify-receipt receipt.json --json
+`);
+        return Effect.succeed(0);
+      }
+      return runAssurance(args.slice(1));
+    }
+
     default: {
       console.error(`Error: Unknown command '${command}'\n`);
       console.error(
-        "  Available commands: doctor, object, readiness, action, inbox, audit, oms, skill, recipe, source, reconcile, sandbox, view, mcp, telemetry, demo"
+        "  Available commands: doctor, object, readiness, action, inbox, audit, oms, skill, recipe, source, reconcile, sandbox, view, assurance, mcp, telemetry, demo"
       );
       console.error("  Run 'operon --help' to see usage and examples.");
       return Effect.succeed(1);

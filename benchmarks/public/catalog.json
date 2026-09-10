@@ -1,0 +1,69 @@
+{
+  "catalogId": "public_benchmark_catalog_v0",
+  "name": "Operon V0 Public Benchmark Catalog",
+  "version": "1.0.0",
+  "description": "Public benchmark suite defining evaluation case shapes, assertions, and verification criteria without disclosing private gold oracles.",
+  "classification": "PUBLIC",
+  "categories": [
+    {
+      "id": "entity-resolution",
+      "name": "Deterministic Entity Resolution",
+      "cases": [
+        {
+          "id": "ER-01",
+          "name": "Deterministic Exact Key Matching",
+          "description": "Resolves patient record across disparate source streams without creating duplicate entity identity.",
+          "assertionsExpected": 4,
+          "targetType": "Patient"
+        },
+        {
+          "id": "ER-02",
+          "name": "Conflict Detection on Immutable Key",
+          "description": "Flags conflicting primary key mutations as identity conflicts instead of silent overwrite.",
+          "assertionsExpected": 3,
+          "targetType": "Patient"
+        }
+      ]
+    },
+    {
+      "id": "decision-readiness",
+      "name": "4C Decision Readiness Gates",
+      "cases": [
+        {
+          "id": "DR-01",
+          "name": "Completeness Gate Enforcement",
+          "description": "Intercepts action proposal when required clinical observation is ungrounded or absent.",
+          "assertionsExpected": 5,
+          "targetType": "Observation"
+        },
+        {
+          "id": "DR-02",
+          "name": "Consistency Gate Cross-Validation",
+          "description": "Ensures temporal consistency across bitemporal valid-time and transaction-time.",
+          "assertionsExpected": 4,
+          "targetType": "Observation"
+        }
+      ]
+    },
+    {
+      "id": "governed-action-safety",
+      "name": "Action Boundary and Exact Approval",
+      "cases": [
+        {
+          "id": "AS-01",
+          "name": "Dry-Run Zero Mutation",
+          "description": "Verifies that dry-run action preparation causes zero persistent database mutations.",
+          "assertionsExpected": 6,
+          "targetType": "Action"
+        },
+        {
+          "id": "AS-02",
+          "name": "Anti-Tamper Proposal Binding",
+          "description": "Rejects approval when viewed proposal digest differs from prepared digest.",
+          "assertionsExpected": 5,
+          "targetType": "Proposal"
+        }
+      ]
+    }
+  ]
+}

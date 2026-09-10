@@ -29,3 +29,4 @@ export * from "./policy/authority.js";
 export * from "./actions/governed-action-service.js";
 export * from "./transactions/atomic-commit-service.js";
 export * from "./operon-service.js";
+export * from "@operon/assurance";

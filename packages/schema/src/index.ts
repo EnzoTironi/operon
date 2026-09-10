@@ -14,3 +14,4 @@ export * from "./definition.js";
 export * from "./ingestion.js";
 export * from "./reconciliation.js";
 export * from "./actions.js";
+export * from "./assurance.js";

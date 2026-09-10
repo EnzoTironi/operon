@@ -1,7 +1,7 @@
 {
-  "name": "@operon/runtime",
+  "name": "@operon/assurance",
   "version": "0.1.0",
-  "description": "Decision Runtime and 7-Step Write Engine for Operon",
+  "description": "Assurance, Dual F1/F2 Evaluation, and Publication Boundary Protection for Operon",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -17,14 +17,10 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@operon/assurance": "workspace:*",
-    "@operon/generated-ui": "workspace:*",
     "@operon/schema": "workspace:*",
-    "@operon/telemetry": "workspace:*",
     "effect": "4.0.0-rc.112"
   },
   "devDependencies": {
-    "fast-check": "^4.9.0",
     "typescript": "^5.7.2",
     "vitest": "^2.1.8"
   }

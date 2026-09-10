@@ -1,12 +1,23 @@
+import {
+  F1EvaluatorService,
+  F2MirrorService,
+  PublicationBoundaryService,
+} from "@operon/assurance";
 import { generateDisposableAppView } from "@operon/generated-ui";
 import type {
   ApprovalRecord,
+  ConsentScope,
   ExactQueryRequest,
+  F1TestCase,
+  F2Claim,
+  F2Receipt,
   IdentityResolutionProposal,
   IntentGrant,
   PreparedAction,
+  PublicF1Receipt,
   Subject,
   TaskMandate,
+  TraceableCorrection,
 } from "@operon/schema";
 import { Effect } from "effect";
 
@@ -77,7 +88,10 @@ export class OperonServiceImpl implements OperonService {
     private readonly atomicCommitService: AtomicCommitService,
     private readonly authorityService: AuthorityService,
     private readonly reconciliationService: ReconciliationService,
-    private readonly objectStore: ObjectStore
+    private readonly objectStore: ObjectStore,
+    private readonly f1Evaluator: F1EvaluatorService = new F1EvaluatorService(),
+    private readonly f2Mirror: F2MirrorService = new F2MirrorService(),
+    private readonly publicationBoundary: PublicationBoundaryService = new PublicationBoundaryService()
   ) {}
 
   invokeEffect(
@@ -88,8 +102,11 @@ export class OperonServiceImpl implements OperonService {
     const {
       atomicCommitService,
       authorityService,
+      f1Evaluator,
+      f2Mirror,
       governedActionService,
       objectStore,
+      publicationBoundary,
       reconciliationService,
     } = this;
 
@@ -397,6 +414,119 @@ export class OperonServiceImpl implements OperonService {
             title: vInput.title ?? "Operon View",
           });
           return wrapSuccess(view);
+        }
+
+        case "assurance.evaluateF1": {
+          const fInput = input as {
+            candidateId: string;
+            candidateDigest: string;
+            profile: "local" | "production" | "external-agent";
+            catalogId: string;
+            catalogDigest: string;
+            testCases: readonly F1TestCase[];
+            candidateAttemptedOracleOverride?: boolean;
+            idempotencyKey?: string;
+          };
+          const evalExit = yield* Effect.exit(
+            f1Evaluator.evaluate({
+              ...fInput,
+              environmentId: ctx.environmentId,
+              tenantId: ctx.tenantId,
+            })
+          );
+          if (evalExit._tag === "Failure") {
+            const errInfo = extractError(evalExit.cause);
+            return wrapError(
+              errInfo.code,
+              errInfo.message,
+              errInfo.code === "NonDisclosureError" ? "DENIED" : "ERROR"
+            );
+          }
+          const receipt = evalExit.value;
+          return wrapSuccess(
+            receipt,
+            receipt.outcome === "PASS"
+              ? "SUCCESS"
+              : receipt.outcome === "FAIL"
+                ? "DENIED"
+                : "EVIDENCE_INSUFFICIENT"
+          );
+        }
+
+        case "assurance.verifyF1Receipt": {
+          const receipt = input as PublicF1Receipt;
+          const vExit = yield* Effect.exit(f1Evaluator.verifyReceipt(receipt));
+          if (vExit._tag === "Failure") {
+            const errInfo = extractError(vExit.cause);
+            return wrapError(errInfo.code, errInfo.message, "DENIED");
+          }
+          return wrapSuccess(vExit.value);
+        }
+
+        case "assurance.mirrorF2": {
+          const mInput = input as {
+            candidateDigest: string;
+            profileDigest: string;
+            rubricDigest: string;
+            companyEvidenceRef: string;
+            participantId: string;
+            consentScope: ConsentScope;
+            corrections: readonly TraceableCorrection[];
+            claim: F2Claim;
+            attemptedKernelBypass?: boolean;
+            attemptedBypassPath?: string;
+            idempotencyKey?: string;
+          };
+          const mExit = yield* Effect.exit(
+            f2Mirror.evaluateMirror({
+              ...mInput,
+              actorId: ctx.actor.id,
+              environmentId: ctx.environmentId,
+              tenantId: ctx.tenantId,
+            })
+          );
+          if (mExit._tag === "Failure") {
+            const errInfo = extractError(mExit.cause);
+            return wrapError(
+              errInfo.code,
+              errInfo.message,
+              errInfo.code === "F2InternalBypassError" ||
+                errInfo.code === "NonDisclosureError"
+                ? "DENIED"
+                : "ERROR"
+            );
+          }
+          return wrapSuccess(mExit.value);
+        }
+
+        case "assurance.verifyF2Receipt": {
+          const receipt = input as F2Receipt;
+          const vExit = yield* Effect.exit(f2Mirror.verifyReceipt(receipt));
+          if (vExit._tag === "Failure") {
+            const errInfo = extractError(vExit.cause);
+            return wrapError(errInfo.code, errInfo.message, "DENIED");
+          }
+          return wrapSuccess(vExit.value);
+        }
+
+        case "assurance.scanPublication": {
+          const sInput =
+            (input as {
+              targetDirectory?: string;
+              allowedPublicOnly?: boolean;
+            }) ?? {};
+          const targetDir = sInput.targetDirectory ?? process.cwd();
+          const scanExit = yield* Effect.exit(
+            publicationBoundary.scanDirectory(targetDir, {
+              allowedPublicOnly: sInput.allowedPublicOnly ?? true,
+            })
+          );
+          if (scanExit._tag === "Failure") {
+            const errInfo = extractError(scanExit.cause);
+            return wrapError(errInfo.code, errInfo.message, "DENIED");
+          }
+          const res = scanExit.value;
+          return wrapSuccess(res, res.isClean ? "SUCCESS" : "DENIED");
         }
 
         default: {

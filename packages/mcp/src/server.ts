@@ -5,6 +5,11 @@ import {
   ListToolsRequestSchema,
   ReadResourceRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
+import {
+  F1EvaluatorService,
+  F2MirrorService,
+  PublicationBoundaryService,
+} from "@operon/assurance";
 import { generateDisposableAppView } from "@operon/generated-ui";
 import { BUILTIN_RECIPES, RecipeService } from "@operon/recipes";
 import type { RecipePack, RecipeRegistryService } from "@operon/recipes";
@@ -65,6 +70,9 @@ export interface OperonMcpServerOptions {
   readonly governedActionService?: GovernedActionService;
   readonly atomicCommitService?: AtomicCommitService;
   readonly operonService?: OperonService;
+  readonly f1Evaluator?: F1EvaluatorService;
+  readonly f2Mirror?: F2MirrorService;
+  readonly publicationBoundary?: PublicationBoundaryService;
 }
 
 export function createOperonMcpServer(options: OperonMcpServerOptions) {
@@ -126,6 +134,11 @@ export function createOperonMcpServer(options: OperonMcpServerOptions) {
       authorityService
     );
 
+  const f1Evaluator = options.f1Evaluator ?? new F1EvaluatorService();
+  const f2Mirror = options.f2Mirror ?? new F2MirrorService();
+  const publicationBoundary =
+    options.publicationBoundary ?? new PublicationBoundaryService();
+
   const _operonService =
     options.operonService ??
     new OperonServiceImpl(
@@ -133,7 +146,10 @@ export function createOperonMcpServer(options: OperonMcpServerOptions) {
       atomicCommitService,
       authorityService,
       reconciliationService,
-      objectStore
+      objectStore,
+      f1Evaluator,
+      f2Mirror,
+      publicationBoundary
     );
 
   const server = new Server(
@@ -758,6 +774,142 @@ export function createOperonMcpServer(options: OperonMcpServerOptions) {
           type: "object",
         },
         name: "operon_generate_view",
+      },
+      {
+        description:
+          "Run Protected Company-in-a-Box evaluator and generate Ed25519-signed PublicF1Receipt (V0-CH-10 / S17)",
+        inputSchema: {
+          properties: {
+            candidateDigest: { type: "string" },
+            candidateId: { type: "string" },
+            catalogDigest: { type: "string" },
+            catalogId: { type: "string" },
+            idempotencyKey: { type: "string" },
+            profile: {
+              enum: ["local", "production", "external-agent"],
+              type: "string",
+            },
+            testCases: {
+              items: {
+                properties: {
+                  assertions: { type: "number" },
+                  errorMessage: { type: "string" },
+                  executionTimeMs: { type: "number" },
+                  id: { type: "string" },
+                  name: { type: "string" },
+                  status: {
+                    enum: ["PASS", "FAIL", "INCONCLUSIVE"],
+                    type: "string",
+                  },
+                },
+                required: ["id", "name", "status", "assertions"],
+                type: "object",
+              },
+              type: "array",
+            },
+          },
+          required: [
+            "candidateId",
+            "candidateDigest",
+            "catalogId",
+            "catalogDigest",
+            "testCases",
+          ],
+          type: "object",
+        },
+        name: "operon_assurance_evaluate_f1",
+      },
+      {
+        description:
+          "Run consented real-company mirror evaluation and generate Ed25519-signed F2Receipt (V0-CH-11 / S17)",
+        inputSchema: {
+          properties: {
+            candidateDigest: { type: "string" },
+            claim: {
+              enum: ["model-and-query-only", "observed-action"],
+              type: "string",
+            },
+            companyEvidenceRef: { type: "string" },
+            consentScope: {
+              properties: {
+                consentGrantId: { type: "string" },
+                dataScope: { items: { type: "string" }, type: "array" },
+                expiresAt: { type: "number" },
+                participantId: { type: "string" },
+                purpose: { type: "string" },
+              },
+              required: [
+                "consentGrantId",
+                "participantId",
+                "dataScope",
+                "purpose",
+                "expiresAt",
+              ],
+              type: "object",
+            },
+            corrections: {
+              items: {
+                properties: {
+                  correctedAt: { type: "number" },
+                  correctedBy: { type: "string" },
+                  correctedValue: {},
+                  correctionId: { type: "string" },
+                  observedTarget: { type: "string" },
+                  priorValue: {},
+                  reason: { type: "string" },
+                },
+                required: [
+                  "correctionId",
+                  "observedTarget",
+                  "correctedBy",
+                  "reason",
+                ],
+                type: "object",
+              },
+              type: "array",
+            },
+            idempotencyKey: { type: "string" },
+            participantId: { type: "string" },
+            profileDigest: { type: "string" },
+            rubricDigest: { type: "string" },
+          },
+          required: [
+            "candidateDigest",
+            "profileDigest",
+            "rubricDigest",
+            "companyEvidenceRef",
+            "participantId",
+            "consentScope",
+            "corrections",
+            "claim",
+          ],
+          type: "object",
+        },
+        name: "operon_assurance_mirror_f2",
+      },
+      {
+        description:
+          "Scan directory/files for protected benchmark material, private oracles, and gold leaks (V0-CH-12 / S17)",
+        inputSchema: {
+          properties: {
+            allowedPublicOnly: { type: "boolean" },
+            targetDirectory: { type: "string" },
+          },
+          type: "object",
+        },
+        name: "operon_assurance_scan_publication",
+      },
+      {
+        description:
+          "Cryptographically verify Ed25519 signature on an F1 or F2 receipt (S17)",
+        inputSchema: {
+          properties: {
+            receipt: { type: "object" },
+          },
+          required: ["receipt"],
+          type: "object",
+        },
+        name: "operon_assurance_verify_receipt",
       },
     ];
 
@@ -1566,6 +1718,79 @@ export function createOperonMcpServer(options: OperonMcpServerOptions) {
 
         return {
           content: [{ text: JSON.stringify(view, null, 2), type: "text" }],
+        };
+      }
+
+      if (name === "operon_assurance_evaluate_f1") {
+        assertMcpKeyPermission(callerKey, "query_runtime");
+        const receipt = await Effect.runPromise(
+          f1Evaluator.evaluate({
+            candidateDigest: String(args.candidateDigest),
+            candidateId: String(args.candidateId),
+            catalogDigest: String(args.catalogDigest),
+            catalogId: String(args.catalogId),
+            idempotencyKey: args.idempotencyKey
+              ? String(args.idempotencyKey)
+              : undefined,
+            profile: (args.profile as any) ?? "local",
+            testCases: (args.testCases as any) ?? [],
+          })
+        );
+        return {
+          content: [{ text: JSON.stringify(receipt, null, 2), type: "text" }],
+        };
+      }
+
+      if (name === "operon_assurance_mirror_f2") {
+        assertMcpKeyPermission(callerKey, "query_runtime");
+        const receipt = await Effect.runPromise(
+          f2Mirror.evaluateMirror({
+            candidateDigest: String(args.candidateDigest),
+            claim: (args.claim as any) ?? "observed-action",
+            companyEvidenceRef: String(args.companyEvidenceRef),
+            consentScope: args.consentScope as any,
+            corrections: (args.corrections as any) ?? [],
+            idempotencyKey: args.idempotencyKey
+              ? String(args.idempotencyKey)
+              : undefined,
+            participantId: String(args.participantId),
+            profileDigest: String(args.profileDigest),
+            rubricDigest: String(args.rubricDigest),
+          })
+        );
+        return {
+          content: [{ text: JSON.stringify(receipt, null, 2), type: "text" }],
+        };
+      }
+
+      if (name === "operon_assurance_scan_publication") {
+        assertMcpKeyPermission(callerKey, "query_runtime");
+        const targetDir = args.targetDirectory
+          ? String(args.targetDirectory)
+          : process.cwd();
+        const scanRes = await Effect.runPromise(
+          publicationBoundary.scanDirectory(targetDir, {
+            allowedPublicOnly: args.allowedPublicOnly === true,
+          })
+        );
+        return {
+          content: [{ text: JSON.stringify(scanRes, null, 2), type: "text" }],
+        };
+      }
+
+      if (name === "operon_assurance_verify_receipt") {
+        assertMcpKeyPermission(callerKey, "query_runtime");
+        const rcpt = args.receipt as any;
+        let isValid = false;
+        if (rcpt.outcome) {
+          isValid = await Effect.runPromise(f1Evaluator.verifyReceipt(rcpt));
+        } else if (rcpt.claim) {
+          isValid = await Effect.runPromise(f2Mirror.verifyReceipt(rcpt));
+        }
+        return {
+          content: [
+            { text: JSON.stringify({ isValid }, null, 2), type: "text" },
+          ],
         };
       }
 

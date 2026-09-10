@@ -1,3 +1,6 @@
+import * as fs from "node:fs";
+import path from "node:path";
+
 import { Effect } from "effect";
 import { describe, expect, it } from "vitest";
 
@@ -405,6 +408,131 @@ describe("@operon/cli test suite", () => {
       expect(viewOutput.rendered).toContain("PROPOSED");
       expect(viewOutput.rendered).toContain("source of truth");
       expect(viewOutput.rendered).toContain("disposable");
+    } finally {
+      console.log = origLog;
+    }
+  });
+
+  it("drives assurance F1 evaluation, receipt verification, F2 mirror, and publication boundary scan (Gate V0-F: V0-CH-10, V0-CH-11, V0-CH-12)", async () => {
+    const logs: string[] = [];
+    const origLog = console.log;
+    console.log = (msg: string) => {
+      logs.push(msg);
+      origLog(msg);
+    };
+
+    try {
+      // 1. Evaluate F1 Company-in-a-Box via CLI
+      logs.length = 0;
+      const casesJson = JSON.stringify([
+        {
+          assertions: 8,
+          executionTimeMs: 40,
+          id: "CLI-TC-01",
+          name: "Kernel Determinism Under Load",
+          status: "PASS",
+        },
+      ]);
+
+      const evalCode = await Effect.runPromise(
+        runCli([
+          "assurance",
+          "evaluate",
+          "--candidate",
+          "cand_v0_cli_candidate",
+          "--profile",
+          "local",
+          "--catalog",
+          "cat_v0_cli_catalog",
+          "--cases",
+          casesJson,
+          "--json",
+        ])
+      );
+      expect(evalCode).toBe(0);
+      const f1Receipt = JSON.parse(logs.at(-1)!);
+      expect(f1Receipt.outcome).toBe("PASS");
+      expect(f1Receipt.assertionsCount).toBe(8);
+      expect(f1Receipt.signature).toBeDefined();
+      expect(f1Receipt.signerPublicKey).toBeDefined();
+
+      // 2. Verify F1 Receipt via CLI
+      const tempReceiptPath = path.join(
+        process.cwd(),
+        `.tmp-test-receipt-${Date.now()}.json`
+      );
+      fs.writeFileSync(tempReceiptPath, JSON.stringify(f1Receipt), "utf-8");
+
+      logs.length = 0;
+      const verifyCode = await Effect.runPromise(
+        runCli(["assurance", "verify-receipt", tempReceiptPath, "--json"])
+      );
+      expect(verifyCode).toBe(0);
+      const verifyOutput = JSON.parse(logs.at(-1)!);
+      expect(verifyOutput.isValid).toBe(true);
+
+      fs.unlinkSync(tempReceiptPath);
+
+      // 3. Evaluate F2 Consented Mirror via CLI
+      logs.length = 0;
+      const consentJson = JSON.stringify({
+        consentGrantId: "consent_cli_001",
+        createdAt: Date.now() - 500,
+        dataScope: ["patient_records", "vitals"],
+        expiresAt: Date.now() + 86400000,
+        participantId: "regional_hospital_group",
+        purpose: "safe dosage clinical mirror",
+      });
+
+      const correctionsJson = JSON.stringify([
+        {
+          correctedAt: Date.now(),
+          correctedBy: "dr_turner",
+          correctedValue: 8,
+          correctionId: "corr_cli_01",
+          observedTarget: "Patient/P001/currentDose",
+          priorValue: 12,
+          reason: "Renal clearance reduction confirmed",
+        },
+      ]);
+
+      const mirrorCode = await Effect.runPromise(
+        runCli([
+          "assurance",
+          "mirror",
+          "--participant",
+          "regional_hospital_group",
+          "--consent",
+          consentJson,
+          "--corrections",
+          correctionsJson,
+          "--claim",
+          "observed-action",
+          "--json",
+        ])
+      );
+      expect(mirrorCode).toBe(0);
+      const f2Receipt = JSON.parse(logs.at(-1)!);
+      expect(f2Receipt.participantId).toBe("regional_hospital_group");
+      expect(f2Receipt.claim).toBe("observed-action");
+      expect(f2Receipt.correctionRefs).toEqual(["corr_cli_01"]);
+      expect(f2Receipt.signature).toBeDefined();
+
+      // 4. Scan publication boundary via CLI
+      logs.length = 0;
+      const scanCode = await Effect.runPromise(
+        runCli([
+          "assurance",
+          "scan",
+          path.resolve(process.cwd(), "benchmarks/public"),
+          "--public-only",
+          "--json",
+        ])
+      );
+      expect(scanCode).toBe(0);
+      const scanOutput = JSON.parse(logs.at(-1)!);
+      expect(scanOutput.isClean).toBe(true);
+      expect(scanOutput.violations.length).toBe(0);
     } finally {
       console.log = origLog;
     }

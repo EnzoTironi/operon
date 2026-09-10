@@ -7,9 +7,5 @@
   },
   "include": ["src/**/*"],
   "exclude": ["node_modules", "dist", "**/*.test.ts"],
-  "references": [
-    { "path": "../assurance" },
-    { "path": "../schema" },
-    { "path": "../telemetry" }
-  ]
+  "references": [{ "path": "../schema" }]
 }

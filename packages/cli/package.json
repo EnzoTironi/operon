@@ -22,6 +22,7 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",
     "@operon/alchemy": "workspace:*",
+    "@operon/assurance": "workspace:*",
     "@operon/generated-ui": "workspace:*",
     "@operon/mcp": "workspace:*",
     "@operon/osdk": "workspace:*",
