@@ -21,3 +21,4 @@ export * from "./sandbox.js";
 export * from "./cluster.js";
 export * from "./native-sqlite.js";
 export * from "./services.js";
+export * from "./ingestion-errors.js";

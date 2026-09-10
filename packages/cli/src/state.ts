@@ -2,6 +2,7 @@ import * as fs from "node:fs";
 import path from "node:path";
 
 import {
+  AccountableIngestionService,
   ActionInbox,
   DynamicSecurityEngine,
   InMemoryAuditStore,
@@ -198,6 +199,7 @@ export interface OperonRuntimeContext {
   readonly objectTypes: readonly ObjectType<any>[];
   readonly actionTypes: readonly ActionType[];
   readonly linkTypes: readonly LinkType[];
+  readonly ingestion: AccountableIngestionService;
   readonly close: () => void;
 }
 
@@ -296,6 +298,7 @@ export async function createRuntimeContext(
   }
 
   const inbox = new ActionInbox(auditStore, objectStore);
+  const ingestion = new AccountableIngestionService(objectStore);
 
   const stateFile =
     process.env.OPERON_STATE_PATH ||
@@ -344,6 +347,9 @@ export async function createRuntimeContext(
       if (data.oms) {
         oms.importSnapshot(data.oms);
       }
+      if (data.ingestion) {
+        ingestion.importSnapshot(data.ingestion);
+      }
     } catch {
       // Ignore corrupted state file
     }
@@ -373,6 +379,7 @@ export async function createRuntimeContext(
 
         const payload = {
           decisions: (auditStore as any).decisions ?? [],
+          ingestion: ingestion.exportSnapshot(),
           oms: oms.exportSnapshot(),
           overrides: (auditStore as any).overrides ?? [],
           proposals: proposalsToSave,
@@ -390,6 +397,7 @@ export async function createRuntimeContext(
     auditStore,
     close: enhancedClose,
     inbox,
+    ingestion,
     linkTypes,
     objectStore,
     objectTypes,

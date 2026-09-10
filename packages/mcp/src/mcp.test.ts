@@ -537,4 +537,202 @@ describe("@operon/mcp", () => {
     const getPubBody = JSON.parse(getPubRes.content[0].text);
     expect(getPubBody.publicationId).toBe(pubId);
   });
+
+  it("supports versioned skills and recipes discovery, MCP resources, and authority boundary enforcement (V0-CH-04)", async () => {
+    const objectStore = new InMemoryObjectStore();
+    const auditStore = new InMemoryAuditStore();
+    const oms = new OntologyMetadataService();
+
+    const server = createOperonMcpServer({
+      actionTypes: [],
+      auditStore,
+      defaultCallerKey: {
+        agentId: "test-builder-agent",
+        agentTier: 4,
+        keyId: "bk-test",
+        name: "Test Builder",
+        role: "builder",
+      },
+      objectStore,
+      objectTypes: [],
+      oms,
+    });
+
+    const [clientTransport, serverTransport] =
+      InMemoryTransport.createLinkedPair();
+    await server.connect(serverTransport);
+    const client = new Client(
+      { name: "test-client", version: "1.0.0" },
+      { capabilities: {} }
+    );
+    await client.connect(clientTransport);
+
+    // 1. List skills via MCP tool
+    const listSkillsRes = (await client.callTool({
+      arguments: {},
+      name: "operon_list_skills",
+    })) as any;
+    expect(listSkillsRes.isError).toBeFalsy();
+    const skills = JSON.parse(listSkillsRes.content[0].text);
+    expect(skills.length).toBeGreaterThanOrEqual(3);
+    const auditSkill = skills.find(
+      (s: any) => s.id === "operon.skill.audit-investigation"
+    );
+    expect(auditSkill).toBeDefined();
+    expect(auditSkill.minContract).toBe("operon.kernel/v0");
+    expect(auditSkill.requiredTools).toContain("operon_verify_audit_ledger");
+    expect(auditSkill.digest).toBeDefined();
+
+    // 2. Get specific skill
+    const getSkillRes = (await client.callTool({
+      arguments: { skillId: "operon.skill.audit-investigation" },
+      name: "operon_get_skill",
+    })) as any;
+    expect(getSkillRes.isError).toBeFalsy();
+    const skillDetail = JSON.parse(getSkillRes.content[0].text);
+    expect(skillDetail.id).toBe("operon.skill.audit-investigation");
+    expect(skillDetail.authorityPrerequisites).toContain("auditor");
+
+    // 3. List and read MCP resources
+    const resourcesRes = await client.listResources();
+    expect(resourcesRes.resources.length).toBeGreaterThanOrEqual(4);
+    const skillResource = resourcesRes.resources.find(
+      (r) => r.uri === "operon://skills/operon.skill.audit-investigation"
+    );
+    expect(skillResource).toBeDefined();
+
+    const readRes = await client.readResource({
+      uri: "operon://skills/operon.skill.audit-investigation",
+    });
+    expect(readRes.contents).toHaveLength(1);
+    const readSkill = JSON.parse((readRes.contents[0] as any).text);
+    expect(readSkill.id).toBe("operon.skill.audit-investigation");
+
+    // 4. List recipes via MCP tool
+    const listRecipesRes = (await client.callTool({
+      arguments: {},
+      name: "operon_list_recipes",
+    })) as any;
+    expect(listRecipesRes.isError).toBeFalsy();
+    const recipes = JSON.parse(listRecipesRes.content[0].text);
+    expect(recipes.length).toBeGreaterThanOrEqual(1);
+    expect(recipes[0].id).toBe("operon.recipe.aviation-skywise");
+
+    // 5. Import recipe pack via MCP tool and verify S14: recipe import grants no authority
+    const { AviationSkywisePack } = await import("@operon/recipes");
+    const importRes = (await client.callTool({
+      arguments: { pack: AviationSkywisePack },
+      name: "operon_import_recipe",
+    })) as any;
+    expect(importRes.isError).toBeFalsy();
+    const receipt = JSON.parse(importRes.content[0].text);
+    expect(receipt.imported).toBe(true);
+    expect(receipt.recipeId).toBe("operon.recipe.aviation-skywise");
+    // S14 Contract Invariant
+    expect(receipt.grantedAuthorityCount).toBe(0);
+  });
+
+  it("supports accountable source ingestion, mapping proposals, provenance, and admission (V0-CH-05)", async () => {
+    const objectStore = new InMemoryObjectStore();
+    const auditStore = new InMemoryAuditStore();
+    const oms = new OntologyMetadataService();
+
+    const server = createOperonMcpServer({
+      actionTypes: [],
+      auditStore,
+      defaultCallerKey: {
+        agentId: "fde-builder-agent",
+        agentTier: 4,
+        keyId: "bk-fde-1",
+        name: "FDE Builder",
+        role: "builder",
+      },
+      objectStore,
+      objectTypes: [],
+      oms,
+    });
+
+    const [clientTransport, serverTransport] =
+      InMemoryTransport.createLinkedPair();
+    await server.connect(serverTransport);
+    const client = new Client(
+      { name: "test-client-ingest", version: "1.0.0" },
+      { capabilities: {} }
+    );
+    await client.connect(clientTransport);
+
+    // 1. Ingest raw source via MCP
+    const ingestRes = (await client.callTool({
+      arguments: {
+        idempotencyKey: "mcp-ingest-1",
+        locator: "s3://raw-lake/tanks/batch1.json",
+        mediaType: "application/json",
+        payload: [{ tankId: "T-900", volumeLiters: 15000 }],
+        tenantId: "tenant_ops",
+      },
+      name: "operon_ingest_source",
+    })) as any;
+    expect(ingestRes.isError).toBeFalsy();
+    const receipt = JSON.parse(ingestRes.content[0].text);
+    expect(receipt.status).toBe("ingested");
+    const sourceId = receipt.sourceArtifact.sourceId;
+
+    // 2. Replay same source with same idempotency key returns replayed
+    const replayRes = (await client.callTool({
+      arguments: {
+        idempotencyKey: "mcp-ingest-1",
+        locator: "s3://raw-lake/tanks/batch1.json",
+        mediaType: "application/json",
+        payload: [{ tankId: "T-900", volumeLiters: 15000 }],
+        tenantId: "tenant_ops",
+      },
+      name: "operon_ingest_source",
+    })) as any;
+    expect(replayRes.isError).toBeFalsy();
+    const replayReceipt = JSON.parse(replayRes.content[0].text);
+    expect(replayReceipt.status).toBe("replayed");
+
+    // 3. Propose mapping from raw source to candidate record
+    const proposeRes = (await client.callTool({
+      arguments: {
+        definitionDigest: "def_release_123",
+        primaryKeyField: "tankId",
+        propertyMappings: [
+          { sourceField: "volumeLiters", targetPropertyName: "volume" },
+        ],
+        sourceIds: [sourceId],
+        targetObjectTypeId: "StorageTank",
+      },
+      name: "operon_propose_mapping",
+    })) as any;
+    expect(proposeRes.isError).toBeFalsy();
+    const proposal = JSON.parse(proposeRes.content[0].text);
+    expect(proposal.records).toHaveLength(1);
+    expect(proposal.records[0].rawRecordId).toBe("T-900");
+    expect(
+      proposal.records[0].provenance.fieldProvenances["volume"]
+    ).toBeDefined();
+
+    // 4. Verify S03 invariant: store is NOT mutated before proposal admission
+    const beforeAdmit = await Effect.runPromise(
+      objectStore.getObject("StorageTank" as any, "T-900")
+    );
+    expect(beforeAdmit).toBeUndefined();
+
+    // 5. Admit proposal via MCP
+    const admitRes = (await client.callTool({
+      arguments: { proposalId: proposal.proposalId },
+      name: "operon_admit_mapping_proposal",
+    })) as any;
+    expect(admitRes.isError).toBeFalsy();
+    const admitted = JSON.parse(admitRes.content[0].text);
+    expect(admitted.status).toBe("approved");
+
+    // 6. Canonical store now contains admitted object instance
+    const afterAdmit = await Effect.runPromise(
+      objectStore.getObject("StorageTank" as any, "T-900")
+    );
+    expect(afterAdmit).toBeDefined();
+    expect(afterAdmit?.properties["volume"]).toBe(15000);
+  });
 });

@@ -24,8 +24,10 @@
     "@operon/alchemy": "workspace:*",
     "@operon/mcp": "workspace:*",
     "@operon/osdk": "workspace:*",
+    "@operon/recipes": "workspace:*",
     "@operon/runtime": "workspace:*",
     "@operon/schema": "workspace:*",
+    "@operon/skills": "workspace:*",
     "@operon/telemetry": "workspace:*",
     "effect": "4.0.0-rc.112"
   },

@@ -1,8 +1,12 @@
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import {
   CallToolRequestSchema,
+  ListResourcesRequestSchema,
   ListToolsRequestSchema,
+  ReadResourceRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
+import { BUILTIN_RECIPES, RecipeService } from "@operon/recipes";
+import type { RecipePack, RecipeRegistryService } from "@operon/recipes";
 import type {
   AuditStore,
   DynamicSecurityEngine,
@@ -11,6 +15,7 @@ import type {
   OverrideCategory,
 } from "@operon/runtime";
 import {
+  AccountableIngestionService,
   ActionInbox,
   evaluateDecisionReadiness,
   executeWritePipeline,
@@ -21,11 +26,19 @@ import type {
   ObjectTypeId,
   Subject,
 } from "@operon/schema";
-import { Effect } from "effect";
+import { BUILTIN_SKILLS, SkillService } from "@operon/skills";
+import type { SkillRegistryService } from "@operon/skills";
+import { Data, Effect } from "effect";
 
 import type { McpKey } from "./keys.js";
 import { assertMcpKeyPermission } from "./keys.js";
 import { projectActionToTool } from "./projection.js";
+
+export class McpResourceNotFoundError extends Data.TaggedError(
+  "McpResourceNotFoundError"
+)<{
+  readonly uri: string;
+}> {}
 
 export interface OperonMcpServerOptions {
   readonly objectTypes: readonly ObjectType[];
@@ -36,6 +49,9 @@ export interface OperonMcpServerOptions {
   readonly inbox?: ActionInbox;
   readonly securityEngine?: DynamicSecurityEngine;
   readonly defaultCallerKey?: McpKey;
+  readonly skillService?: SkillRegistryService;
+  readonly recipeService?: RecipeRegistryService;
+  readonly ingestionService?: AccountableIngestionService;
 }
 
 export function createOperonMcpServer(options: OperonMcpServerOptions) {
@@ -51,6 +67,29 @@ export function createOperonMcpServer(options: OperonMcpServerOptions) {
 
   const inbox = options.inbox ?? new ActionInbox(auditStore, objectStore);
 
+  const skillService =
+    options.skillService ??
+    (() => {
+      const s = SkillService.make();
+      for (const skill of BUILTIN_SKILLS) {
+        Effect.runSync(s.registerSkill(skill));
+      }
+      return s;
+    })();
+
+  const recipeService =
+    options.recipeService ??
+    (() => {
+      const r = RecipeService.make();
+      for (const recipe of BUILTIN_RECIPES) {
+        Effect.runSync(r.registerRecipe(recipe));
+      }
+      return r;
+    })();
+
+  const ingestionService =
+    options.ingestionService ?? new AccountableIngestionService(objectStore);
+
   const server = new Server(
     {
       name: "operon-mcp-server",
@@ -58,6 +97,7 @@ export function createOperonMcpServer(options: OperonMcpServerOptions) {
     },
     {
       capabilities: {
+        resources: {},
         tools: {},
       },
     }
@@ -304,6 +344,163 @@ export function createOperonMcpServer(options: OperonMcpServerOptions) {
         },
         name: "operon_get_active_release",
       },
+      {
+        description:
+          "List all registered versioned agent skills with contract version and prerequisites",
+        inputSchema: {
+          properties: {},
+          type: "object",
+        },
+        name: "operon_list_skills",
+      },
+      {
+        description:
+          "Get complete definition, schemas, and digest of a versioned agent skill",
+        inputSchema: {
+          properties: {
+            skillId: {
+              description: "The unique identifier of the skill",
+              type: "string",
+            },
+          },
+          required: ["skillId"],
+          type: "object",
+        },
+        name: "operon_get_skill",
+      },
+      {
+        description: "List all registered versioned recipe packs",
+        inputSchema: {
+          properties: {},
+          type: "object",
+        },
+        name: "operon_list_recipes",
+      },
+      {
+        description:
+          "Get complete definition, ontologies, and skills of a versioned recipe pack",
+        inputSchema: {
+          properties: {
+            recipeId: {
+              description: "The unique identifier of the recipe",
+              type: "string",
+            },
+          },
+          required: ["recipeId"],
+          type: "object",
+        },
+        name: "operon_get_recipe",
+      },
+      {
+        description:
+          "Import a declarative recipe pack (enforces S14: recipe import grants no authority)",
+        inputSchema: {
+          properties: {
+            pack: {
+              description: "The complete recipe pack with manifest and skills",
+              type: "object",
+            },
+          },
+          required: ["pack"],
+          type: "object",
+        },
+        name: "operon_import_recipe",
+      },
+      {
+        description:
+          "Ingest a raw source artifact into inventory before mapping or admission (V0-CH-05)",
+        inputSchema: {
+          properties: {
+            environmentId: { type: "string" },
+            idempotencyKey: { type: "string" },
+            locator: {
+              description: "Source locator (e.g. URI, topic)",
+              type: "string",
+            },
+            mediaType: {
+              description: "MIME type (e.g. application/json)",
+              type: "string",
+            },
+            payload: { description: "Raw payload data or JSON string" },
+            permittedUses: { items: { type: "string" }, type: "array" },
+            sensitivity: {
+              enum: ["public", "internal", "confidential", "restricted"],
+              type: "string",
+            },
+            tenantId: { type: "string" },
+          },
+          required: ["locator", "mediaType", "payload"],
+          type: "object",
+        },
+        name: "operon_ingest_source",
+      },
+      {
+        description: "Get a raw source artifact by ID (V0-CH-05)",
+        inputSchema: {
+          properties: {
+            sourceId: { type: "string" },
+            tenantId: { type: "string" },
+          },
+          required: ["sourceId"],
+          type: "object",
+        },
+        name: "operon_get_source",
+      },
+      {
+        description: "List raw source artifacts in inventory (V0-CH-05)",
+        inputSchema: {
+          properties: {
+            tenantId: { type: "string" },
+          },
+          type: "object",
+        },
+        name: "operon_list_sources",
+      },
+      {
+        description:
+          "Propose an accountable mapping from raw sources to candidate records with full provenance (V0-CH-05)",
+        inputSchema: {
+          properties: {
+            definitionDigest: { type: "string" },
+            primaryKeyField: { type: "string" },
+            propertyMappings: {
+              items: {
+                properties: {
+                  sourceField: { type: "string" },
+                  targetPropertyName: { type: "string" },
+                },
+                required: ["sourceField", "targetPropertyName"],
+                type: "object",
+              },
+              type: "array",
+            },
+            sourceIds: { items: { type: "string" }, type: "array" },
+            targetObjectTypeId: { type: "string" },
+            tenantId: { type: "string" },
+          },
+          required: [
+            "sourceIds",
+            "definitionDigest",
+            "targetObjectTypeId",
+            "primaryKeyField",
+            "propertyMappings",
+          ],
+          type: "object",
+        },
+        name: "operon_propose_mapping",
+      },
+      {
+        description:
+          "Admit candidate records from an approved mapping proposal into the Object Store (V0-CH-05)",
+        inputSchema: {
+          properties: {
+            proposalId: { type: "string" },
+          },
+          required: ["proposalId"],
+          type: "object",
+        },
+        name: "operon_admit_mapping_proposal",
+      },
     ];
 
     // Project all Action cards into MCP tool schemas
@@ -316,6 +513,63 @@ export function createOperonMcpServer(options: OperonMcpServerOptions) {
     return Promise.resolve({
       tools: [...standardTools, ...actionTools],
     });
+  });
+
+  // Handler: List Resources
+  server.setRequestHandler(ListResourcesRequestSchema, async (_request) => {
+    const skills = await Effect.runPromise(skillService.listSkills());
+    const recipes = await Effect.runPromise(recipeService.listRecipes());
+
+    const skillResources = skills.map((s) => ({
+      description: s.description,
+      mimeType: "application/json",
+      name: s.name,
+      uri: `operon://skills/${s.id}`,
+    }));
+
+    const recipeResources = recipes.map((r) => ({
+      description: r.description,
+      mimeType: "application/json",
+      name: r.name,
+      uri: `operon://recipes/${r.id}`,
+    }));
+
+    return {
+      resources: [...skillResources, ...recipeResources],
+    };
+  });
+
+  // Handler: Read Resource
+  server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
+    const { uri } = request.params;
+    if (uri.startsWith("operon://skills/")) {
+      const skillId = uri.slice("operon://skills/".length);
+      const skill = await Effect.runPromise(skillService.getSkill(skillId));
+      return {
+        contents: [
+          {
+            mimeType: "application/json",
+            text: JSON.stringify(skill, null, 2),
+            uri,
+          },
+        ],
+      };
+    }
+    if (uri.startsWith("operon://recipes/")) {
+      const recipeId = uri.slice("operon://recipes/".length);
+      const recipe = await Effect.runPromise(recipeService.getRecipe(recipeId));
+      return {
+        contents: [
+          {
+            mimeType: "application/json",
+            text: JSON.stringify(recipe, null, 2),
+            uri,
+          },
+        ],
+      };
+    }
+
+    throw new McpResourceNotFoundError({ uri });
   });
 
   // Handler: Call Tool
@@ -340,8 +594,6 @@ export function createOperonMcpServer(options: OperonMcpServerOptions) {
     };
 
     try {
-      assertMcpKeyPermission(callerKey, "execute_action");
-
       if (name === "operon_query_objects") {
         const typeId = String(args.typeId) as ObjectTypeId;
         let objects = await Effect.runPromise(objectStore.findObjects(typeId));
@@ -664,6 +916,128 @@ export function createOperonMcpServer(options: OperonMcpServerOptions) {
         };
       }
 
+      if (name === "operon_list_skills") {
+        assertMcpKeyPermission(callerKey, "query_runtime");
+        const skills = await Effect.runPromise(skillService.listSkills());
+        return {
+          content: [{ text: JSON.stringify(skills, null, 2), type: "text" }],
+        };
+      }
+
+      if (name === "operon_get_skill") {
+        assertMcpKeyPermission(callerKey, "query_runtime");
+        const skill = await Effect.runPromise(
+          skillService.getSkill(String(args.skillId))
+        );
+        return {
+          content: [{ text: JSON.stringify(skill, null, 2), type: "text" }],
+        };
+      }
+
+      if (name === "operon_list_recipes") {
+        assertMcpKeyPermission(callerKey, "query_runtime");
+        const recipes = await Effect.runPromise(recipeService.listRecipes());
+        return {
+          content: [{ text: JSON.stringify(recipes, null, 2), type: "text" }],
+        };
+      }
+
+      if (name === "operon_get_recipe") {
+        assertMcpKeyPermission(callerKey, "query_runtime");
+        const recipe = await Effect.runPromise(
+          recipeService.getRecipe(String(args.recipeId))
+        );
+        return {
+          content: [{ text: JSON.stringify(recipe, null, 2), type: "text" }],
+        };
+      }
+
+      if (name === "operon_import_recipe") {
+        assertMcpKeyPermission(callerKey, "modify_schema");
+        const receipt = await Effect.runPromise(
+          recipeService.importRecipe(args.pack as RecipePack, skillService)
+        );
+        return {
+          content: [{ text: JSON.stringify(receipt, null, 2), type: "text" }],
+        };
+      }
+
+      if (name === "operon_ingest_source") {
+        assertMcpKeyPermission(callerKey, "modify_pipeline");
+        const receipt = await Effect.runPromise(
+          ingestionService.ingestRawSource({
+            environmentId: args.environmentId
+              ? String(args.environmentId)
+              : undefined,
+            idempotencyKey: args.idempotencyKey
+              ? String(args.idempotencyKey)
+              : undefined,
+            locator: String(args.locator),
+            mediaType: String(args.mediaType),
+            permittedUses: args.permittedUses as string[] | undefined,
+            rawPayload: args.payload,
+            sensitivity: args.sensitivity as any,
+            tenantId: args.tenantId ? String(args.tenantId) : undefined,
+          })
+        );
+        return {
+          content: [{ text: JSON.stringify(receipt, null, 2), type: "text" }],
+        };
+      }
+
+      if (name === "operon_get_source") {
+        assertMcpKeyPermission(callerKey, "query_runtime");
+        const source = await Effect.runPromise(
+          ingestionService.getSource(
+            String(args.sourceId),
+            args.tenantId ? String(args.tenantId) : undefined
+          )
+        );
+        return {
+          content: [{ text: JSON.stringify(source, null, 2), type: "text" }],
+        };
+      }
+
+      if (name === "operon_list_sources") {
+        assertMcpKeyPermission(callerKey, "query_runtime");
+        const sources = await Effect.runPromise(
+          ingestionService.listSources(
+            args.tenantId ? String(args.tenantId) : undefined
+          )
+        );
+        return {
+          content: [{ text: JSON.stringify(sources, null, 2), type: "text" }],
+        };
+      }
+
+      if (name === "operon_propose_mapping") {
+        assertMcpKeyPermission(callerKey, "modify_schema");
+        const proposal = await Effect.runPromise(
+          ingestionService.proposeMapping({
+            author: callerSubject,
+            definitionDigest: String(args.definitionDigest),
+            primaryKeyField: String(args.primaryKeyField),
+            propertyMappings: args.propertyMappings as any,
+            sourceIds: args.sourceIds as string[],
+            targetObjectTypeId: String(args.targetObjectTypeId) as ObjectTypeId,
+            tenantId: args.tenantId ? String(args.tenantId) : undefined,
+          })
+        );
+        return {
+          content: [{ text: JSON.stringify(proposal, null, 2), type: "text" }],
+        };
+      }
+
+      if (name === "operon_admit_mapping_proposal") {
+        assertMcpKeyPermission(callerKey, "modify_schema");
+        const admitted = await Effect.runPromise(
+          ingestionService.admitProposal(String(args.proposalId), callerSubject)
+        );
+        return {
+          content: [{ text: JSON.stringify(admitted, null, 2), type: "text" }],
+        };
+      }
+
       // Check if it's an action tool (starts with operon_)
       const actionId = name.startsWith("operon_")
         ? name.replace("operon_", "")
@@ -671,6 +1045,7 @@ export function createOperonMcpServer(options: OperonMcpServerOptions) {
       const action = actionMap.get(actionId);
 
       if (action) {
+        assertMcpKeyPermission(callerKey, "execute_action");
         const agentSubject: Subject = {
           agentTier: callerKey.agentTier,
           id: callerKey.agentId,

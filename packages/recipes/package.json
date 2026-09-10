@@ -1,7 +1,7 @@
 {
-  "name": "@operon/mcp",
+  "name": "@operon/recipes",
   "version": "0.1.0",
-  "description": "Model Context Protocol (MCP) Server for Operon Operational Ontologies",
+  "description": "Versioned Recipe Packs and Composition for Operon",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -17,9 +17,6 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.30.0",
-    "@operon/recipes": "workspace:*",
-    "@operon/runtime": "workspace:*",
     "@operon/schema": "workspace:*",
     "@operon/skills": "workspace:*",
     "effect": "4.0.0-rc.112"

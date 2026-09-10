@@ -1,7 +1,7 @@
 {
-  "name": "@operon/mcp",
+  "name": "@operon/skills",
   "version": "0.1.0",
-  "description": "Model Context Protocol (MCP) Server for Operon Operational Ontologies",
+  "description": "Versioned Agent Skills as Public Product Artifacts for Operon",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -17,11 +17,7 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.30.0",
-    "@operon/recipes": "workspace:*",
-    "@operon/runtime": "workspace:*",
     "@operon/schema": "workspace:*",
-    "@operon/skills": "workspace:*",
     "effect": "4.0.0-rc.112"
   },
   "devDependencies": {

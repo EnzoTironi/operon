@@ -7,10 +7,5 @@
   },
   "include": ["src/**/*"],
   "exclude": ["node_modules", "dist", "**/*.test.ts"],
-  "references": [
-    { "path": "../schema" },
-    { "path": "../runtime" },
-    { "path": "../skills" },
-    { "path": "../recipes" }
-  ]
+  "references": [{ "path": "../schema" }]
 }

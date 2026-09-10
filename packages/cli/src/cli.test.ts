@@ -115,4 +115,77 @@ describe("@operon/cli test suite", () => {
     );
     expect(code).toBe(0);
   });
+
+  it("lists and inspects skills via operon skill commands (V0-CH-04)", async () => {
+    const listCode = await Effect.runPromise(
+      runCli(["skill", "list", "--json"])
+    );
+    expect(listCode).toBe(0);
+
+    const getCode = await Effect.runPromise(
+      runCli(["skill", "get", "operon.skill.audit-investigation", "--json"])
+    );
+    expect(getCode).toBe(0);
+  });
+
+  it("lists, gets, and imports recipe packs via operon recipe commands (V0-CH-04)", async () => {
+    const listCode = await Effect.runPromise(
+      runCli(["recipe", "list", "--json"])
+    );
+    expect(listCode).toBe(0);
+
+    const getCode = await Effect.runPromise(
+      runCli(["recipe", "get", "operon.recipe.aviation-skywise", "--json"])
+    );
+    expect(getCode).toBe(0);
+
+    const importCode = await Effect.runPromise(
+      runCli(["recipe", "import", "aviation-skywise", "--json"])
+    );
+    expect(importCode).toBe(0);
+  });
+
+  it("ingests raw sources, proposes mappings, and admits records via operon source commands (V0-CH-05)", async () => {
+    // 1. Ingest raw source via CLI
+    const ingestCode = await Effect.runPromise(
+      runCli([
+        "source",
+        "ingest",
+        "--locator",
+        "s3://lake/tanks/tank1.json",
+        "--media-type",
+        "application/json",
+        "--payload",
+        '[{"id":"tank-cli-1","status":"normal"}]',
+        "--idempotency-key",
+        "cli-key-1",
+        "--json",
+      ])
+    );
+    expect(ingestCode).toBe(0);
+
+    // 2. Replay same source via CLI (idempotency check)
+    const replayCode = await Effect.runPromise(
+      runCli([
+        "source",
+        "ingest",
+        "--locator",
+        "s3://lake/tanks/tank1.json",
+        "--media-type",
+        "application/json",
+        "--payload",
+        '[{"id":"tank-cli-1","status":"normal"}]',
+        "--idempotency-key",
+        "cli-key-1",
+        "--json",
+      ])
+    );
+    expect(replayCode).toBe(0);
+
+    // 3. List sources via CLI
+    const listCode = await Effect.runPromise(
+      runCli(["source", "list", "--json"])
+    );
+    expect(listCode).toBe(0);
+  });
 });

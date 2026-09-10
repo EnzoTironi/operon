@@ -10,7 +10,10 @@ import { runMcp } from "./commands/mcp.js";
 import { runObject } from "./commands/object.js";
 import { runOms } from "./commands/oms.js";
 import { runReadiness } from "./commands/readiness.js";
+import { runRecipe } from "./commands/recipe.js";
 import { runSandbox } from "./commands/sandbox.js";
+import { runSkill } from "./commands/skill.js";
+import { runSource } from "./commands/source.js";
 import { runTelemetry } from "./commands/telemetry.js";
 
 export function printHelp(): void {
@@ -28,6 +31,9 @@ Commands:
   inbox               Inspect pending proposals, approve, or reject with human override dossiers
   audit               List tamper-evident DecisionRecords and cryptographically verify SHA-256 chain
   oms                 Ontology Metadata Service: branch, propose, review, and merge ontology changes
+  skill               List registered versioned skills or inspect schemas and digests
+  recipe              List, get, or import declarative recipe packs (S14: grants no authority)
+  source              Accountable raw source inventory, mapping proposals, and admission (S03, S15)
   sandbox             Execute sandboxed models with fiber timeouts and verify determinism proofs
   mcp                 Launch Model Context Protocol (MCP) server over stdio for Claude Desktop / Cursor
   telemetry           Inspect Sentry & PostHog telemetry status, privacy scrubber, and diagnostic ping
@@ -248,10 +254,63 @@ Examples:
       return runTelemetry(args.slice(1));
     }
 
+    case "skill": {
+      if (args.includes("--help") || args.includes("-h")) {
+        console.log(`
+Usage:
+  operon skill list [--json]
+  operon skill get <skillId> [--json]
+
+Examples:
+  operon skill list --json
+  operon skill get operon.skill.audit-investigation
+`);
+        return Effect.succeed(0);
+      }
+      return runSkill(args.slice(1));
+    }
+
+    case "recipe": {
+      if (args.includes("--help") || args.includes("-h")) {
+        console.log(`
+Usage:
+  operon recipe list [--json]
+  operon recipe get <recipeId> [--json]
+  operon recipe import <path-or-builtin> [--json]
+
+Examples:
+  operon recipe list --json
+  operon recipe get operon.recipe.aviation-skywise
+  operon recipe import aviation-skywise --json
+`);
+        return Effect.succeed(0);
+      }
+      return runRecipe(args.slice(1));
+    }
+
+    case "source": {
+      if (args.includes("--help") || args.includes("-h")) {
+        console.log(`
+Usage:
+  operon source ingest --locator <loc> --media-type <mime> --payload '<json>' [--idempotency-key <k>] [--tenant <t>] [--json]
+  operon source list [--tenant <t>] [--json]
+  operon source get <sourceId> [--tenant <t>] [--json]
+  operon source propose-mapping --sources <s1,s2> --target-type <t> --pk <f> --mappings '<json>' --definition <d> [--json]
+  operon source admit-mapping <proposalId> [--json]
+
+Examples:
+  operon source ingest --locator s3://lake/data.json --media-type application/json --payload '[{"id":"1"}]' --json
+  operon source list --json
+`);
+        return Effect.succeed(0);
+      }
+      return runSource(args.slice(1));
+    }
+
     default: {
       console.error(`Error: Unknown command '${command}'\n`);
       console.error(
-        "  Available commands: doctor, object, readiness, action, inbox, audit, oms, sandbox, mcp, telemetry, demo"
+        "  Available commands: doctor, object, readiness, action, inbox, audit, oms, skill, recipe, source, sandbox, mcp, telemetry, demo"
       );
       console.error("  Run 'operon --help' to see usage and examples.");
       return Effect.succeed(1);
@@ -326,3 +385,6 @@ export * from "./commands/sandbox.js";
 export * from "./commands/mcp.js";
 export * from "./commands/demo.js";
 export * from "./commands/telemetry.js";
+export * from "./commands/skill.js";
+export * from "./commands/recipe.js";
+export * from "./commands/source.js";
