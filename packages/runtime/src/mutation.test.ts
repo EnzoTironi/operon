@@ -223,4 +223,78 @@ describe("Kernel-Level Mutation Testing: 7-Step Pipeline Fault Injection & Rollb
 
     expect(validateRes._tag).toBe("Failure");
   });
+
+  it("Idempotency Fault: Same idempotency key with different input conflicts and aborts", async () => {
+    const store = new InMemoryObjectStore();
+    const auditStore = new InMemoryAuditStore();
+    const typeId = "Vessel" as ObjectTypeId;
+
+    const action: ActionType<{ targetPsi: number }> = {
+      defaultExecutionMode: "automated",
+      description: "Pressurize vessel",
+      id: "pressurize_idempotent" as ActionTypeId,
+      minimumAgentTier: 1,
+      mutations: [],
+      name: "Pressurize Idempotent",
+      parametersSchema: Schema.Struct({
+        targetPsi: Schema.Number,
+      }),
+      preconditions: [],
+      sideEffects: [],
+      submissionCriteria: [],
+      targetObjectTypeId: typeId,
+    };
+
+    // First call with key-123 and targetPsi 100
+    const firstRes = await Effect.runPromise(
+      executeWritePipeline(
+        {
+          actionType: action,
+          idempotencyKey: "idem-key-v0-001",
+          rawParameters: { targetPsi: 100 },
+          security,
+        },
+        store,
+        auditStore
+      )
+    );
+    expect(firstRes.status).toBe("executed");
+
+    // Second call with same key and same parameters -> returns cached result idempotently
+    const replayRes = await Effect.runPromise(
+      executeWritePipeline(
+        {
+          actionType: action,
+          idempotencyKey: "idem-key-v0-001",
+          rawParameters: { targetPsi: 100 },
+          security,
+        },
+        store,
+        auditStore
+      )
+    );
+    expect(replayRes.status).toBe("executed");
+    expect(replayRes.decisionRecord.id).toBe(firstRes.decisionRecord.id);
+
+    // Third call with same key but DIFFERENT parameters -> fails with IdempotencyConflictError
+    const conflictRes = await Effect.runPromise(
+      executeWritePipeline(
+        {
+          actionType: action,
+          idempotencyKey: "idem-key-v0-001",
+          rawParameters: { targetPsi: 200 }, // Changed input!
+          security,
+        },
+        store,
+        auditStore
+      ).pipe(Effect.result)
+    );
+
+    expect(conflictRes._tag).toBe("Failure");
+    if (conflictRes._tag === "Failure") {
+      expect((conflictRes.failure as any)._tag).toBe(
+        "IdempotencyConflictError"
+      );
+    }
+  });
 });

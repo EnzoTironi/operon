@@ -34,7 +34,7 @@ Run BAI-055..059 with real application/identity profiles; define latency, comple
 
 ## Ticket-specific decisions
 
-- D-BAI-04 [PROPOSED_NOT_APPROVED]: 
+- D-BAI-04 [PROPOSED_NOT_APPROVED]:
 
 ## Exact implementation locations
 

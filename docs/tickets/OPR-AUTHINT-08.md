@@ -34,7 +34,7 @@ Resolve issuer authority/standing policies; persist lineage, approved bounds and
 
 ## Ticket-specific decisions
 
-- D-BAI-04 [PROPOSED_NOT_APPROVED]: 
+- D-BAI-04 [PROPOSED_NOT_APPROVED]:
 
 ## Exact implementation locations
 

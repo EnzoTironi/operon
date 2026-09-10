@@ -34,7 +34,7 @@ Turn BAI-025..054 into state-machine, concurrency, crash and egress tests; compa
 
 ## Ticket-specific decisions
 
-- D-BAI-04 [PROPOSED_NOT_APPROVED]: 
+- D-BAI-04 [PROPOSED_NOT_APPROVED]:
 
 ## Exact implementation locations
 

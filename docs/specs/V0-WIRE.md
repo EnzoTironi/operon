@@ -28,7 +28,6 @@ Acceptance requires the V0 A-E/F1/F2 issue gates on the same pinned candidate an
 
 ## Normative specification
 
-
 **Status:** candidate contract for review before implementation. It closes the shape of the V0 public path but does not claim implementation, production authentication or release approval.
 
 ## Contract families

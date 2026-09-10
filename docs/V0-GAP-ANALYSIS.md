@@ -20,7 +20,7 @@ This document establishes the authoritative mapping between the **Operon V0 Rele
 ## 2. V0 Critical Path Gap Analysis Matrix
 
 | Ticket | Gate | Title | Target Paths | Current Monorepo Status | Gap to Close |
-| :--- | :--- | :--- | :--- | :--- | :--- |
+| :-- | :-- | :-- | :-- | :-- | :-- |
 | **`V0-CH-01`** | **V0-A** | External-agent identity, discovery and durable profile | `packages/runtime/src/auth.ts`<br>`packages/cli/src/state.ts`<br>`packages/mcp/src/` | 🟡 **80% Done**<br>`OidcTokenVerifier` implemented with RSA/HMAC, clock tolerance, and claim validation; state persistence implemented. | Implement `AgentContext` and `resolveContext` in `auth.ts`; enforce tenant isolation (non-disclosure of mismatched tenants); verify two-process SQLite state round-trip test. |
 | **`V0-CH-02`** | **V0-B** | Definition artifact, branch and atomic ChangeSet | `packages/schema/src/`<br>`packages/runtime/src/oms.ts`<br>`packages/cli/src/commands/oms.ts` | 🟢 **90% Done**<br>OMS supports branch creation, commit history, and schema validation. | Add canonical JSON byte digest calculation for `DefinitionArtifact` and validate atomic ChangeSet apply with revision check. |
 | **`V0-CH-03`** | **V0-B** | Validate, inspect, diff, review and publish | `packages/runtime/src/oms.ts`<br>`packages/cli/src/commands/oms.ts` | 🟢 **95% Done**<br>Multi-stakeholder merge proposals, safety reviews, and branch comparison complete. | Ensure release tags freeze immutable DefinitionReleases. |

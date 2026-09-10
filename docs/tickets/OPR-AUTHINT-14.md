@@ -34,7 +34,7 @@ Protect role/provider/client/key configuration and grant mutations; builder cann
 
 ## Ticket-specific decisions
 
-- D-BAI-04 [PROPOSED_NOT_APPROVED]: 
+- D-BAI-04 [PROPOSED_NOT_APPROVED]:
 
 ## Exact implementation locations
 

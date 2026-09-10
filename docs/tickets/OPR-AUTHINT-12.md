@@ -34,7 +34,7 @@ Recheck current epochs before external issue; preserve unknown outcomes, reconci
 
 ## Ticket-specific decisions
 
-- D-BAI-04 [PROPOSED_NOT_APPROVED]: 
+- D-BAI-04 [PROPOSED_NOT_APPROVED]:
 
 ## Exact implementation locations
 

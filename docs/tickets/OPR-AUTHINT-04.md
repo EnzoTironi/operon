@@ -34,7 +34,7 @@ Map stable membership/SSO/SCIM identities; reconcile events and authorization ep
 
 ## Ticket-specific decisions
 
-- D-BAI-01 [PROPOSED_NOT_APPROVED]: 
+- D-BAI-01 [PROPOSED_NOT_APPROVED]:
 
 ## Exact implementation locations
 

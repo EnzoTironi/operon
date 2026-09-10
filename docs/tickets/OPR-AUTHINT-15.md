@@ -34,7 +34,7 @@ Turn BAI-001..024 into real dependency/transport tests; include legitimate flows
 
 ## Ticket-specific decisions
 
-- D-BAI-04 [PROPOSED_NOT_APPROVED]: 
+- D-BAI-04 [PROPOSED_NOT_APPROVED]:
 
 ## Exact implementation locations
 

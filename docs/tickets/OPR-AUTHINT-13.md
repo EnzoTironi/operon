@@ -34,7 +34,7 @@ Show desired outcome, scope, limits, recipients and stop conditions; support sta
 
 ## Ticket-specific decisions
 
-- D-BAI-04 [PROPOSED_NOT_APPROVED]: 
+- D-BAI-04 [PROPOSED_NOT_APPROVED]:
 
 ## Exact implementation locations
 

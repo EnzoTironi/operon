@@ -1,5 +1,4 @@
 import * as fs from "node:fs";
-import { createRequire } from "node:module";
 import path from "node:path";
 
 import {
@@ -7,10 +6,10 @@ import {
   DynamicSecurityEngine,
   InMemoryAuditStore,
   InMemoryObjectStore,
+  NativeSqliteDriver,
   OntologyMetadataService,
   SandboxedModelRunner,
   SqlBitemporalStore,
-  SqlSchemaGenerator,
 } from "@operon/runtime";
 import type {
   ActionType,
@@ -25,8 +24,6 @@ import {
   defineObjectType,
 } from "@operon/schema";
 import { Effect, Schema } from "effect";
-
-const nodeRequire = createRequire(import.meta.url);
 
 export const PatientType = defineObjectType({
   description: "Hospital patient undergoing medical treatment",
@@ -238,18 +235,13 @@ export async function createRuntimeContext(
 
   let objectStore: InMemoryObjectStore | SqlBitemporalStore;
   let close = noopClose;
+  const targetDbPath = dbPath || process.env.OPERON_DATABASE_URL;
 
-  if (dbPath) {
-    const { DatabaseSync } = nodeRequire("node:sqlite") as {
-      DatabaseSync: new (path: string) => any;
-    };
-    const db = new DatabaseSync(dbPath);
-    for (const ddl of SqlSchemaGenerator.generateDDL("sqlite")) {
-      db.exec(ddl);
-    }
-    objectStore = new SqlBitemporalStore(db, "sqlite");
+  if (targetDbPath) {
+    const driver = new NativeSqliteDriver(targetDbPath);
+    objectStore = new SqlBitemporalStore(driver, "sqlite");
     close = () => {
-      db.close();
+      driver.close();
     };
   } else {
     objectStore = new InMemoryObjectStore();
@@ -307,8 +299,8 @@ export async function createRuntimeContext(
 
   const stateFile =
     process.env.OPERON_STATE_PATH ||
-    (dbPath
-      ? `${dbPath}.state.json`
+    (targetDbPath
+      ? `${targetDbPath}.state.json`
       : path.join(process.cwd(), ".operon-cli-state.json"));
 
   const isPersisted = process.env.OPERON_IN_MEMORY !== "true";

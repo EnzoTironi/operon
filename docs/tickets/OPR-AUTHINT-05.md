@@ -34,7 +34,7 @@ Migrate or isolate old MCP SDK profile; compose one OAuth provider, audience ver
 
 ## Ticket-specific decisions
 
-- D-BAI-01 [PROPOSED_NOT_APPROVED]: 
+- D-BAI-01 [PROPOSED_NOT_APPROVED]:
 
 ## Exact implementation locations
 

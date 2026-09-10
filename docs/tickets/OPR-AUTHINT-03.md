@@ -34,7 +34,7 @@ Mount Better Auth sessions/passkeys/SSO with database sessions, business CSRF an
 
 ## Ticket-specific decisions
 
-- D-BAI-01 [PROPOSED_NOT_APPROVED]: 
+- D-BAI-01 [PROPOSED_NOT_APPROVED]:
 
 ## Exact implementation locations
 

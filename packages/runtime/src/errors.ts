@@ -166,6 +166,20 @@ export class AuthorizationError extends Data.TaggedError("AuthorizationError")<{
   }
 }
 
+export class IdempotencyConflictError extends Data.TaggedError(
+  "IdempotencyConflictError"
+)<{
+  readonly idempotencyKey: string;
+  readonly message: string;
+}> {
+  constructor(args: {
+    readonly idempotencyKey: string;
+    readonly message: string;
+  }) {
+    super(args as any);
+  }
+}
+
 export class StorageError extends Data.TaggedError("StorageError")<{
   readonly message: string;
   readonly cause?: unknown;

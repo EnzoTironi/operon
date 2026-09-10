@@ -34,7 +34,7 @@ Replace generic claim casts with explicit profiles and issuer-specific mapping; 
 
 ## Ticket-specific decisions
 
-- D-BAI-01 [PROPOSED_NOT_APPROVED]: 
+- D-BAI-01 [PROPOSED_NOT_APPROVED]:
 
 ## Exact implementation locations
 

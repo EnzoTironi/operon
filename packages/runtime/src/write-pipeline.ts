@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import type {
   ActionEvaluationContext,
   ActionType,
@@ -13,6 +15,7 @@ import { Effect, Schema } from "effect";
 import type { AuditStore, DecisionRecord } from "./audit.js";
 import {
   FreshnessBudgetExceededError,
+  IdempotencyConflictError,
   ParameterValidationError,
   PermissionDeniedError,
   SideEffectExecutionError,
@@ -35,6 +38,7 @@ export interface ActionSubmission<Params = unknown> {
   readonly ruleVersion?: string;
   readonly isApprovedProposal?: boolean;
   readonly approvalToken?: ApprovalToken;
+  readonly idempotencyKey?: string;
   readonly stagedLogic?: (
     params: Params,
     context: ActionEvaluationContext
@@ -53,6 +57,18 @@ export type ActionExecutionResult =
       readonly decisionRecord: DecisionRecord;
     };
 
+interface IdempotencyRecord {
+  readonly actionTypeId: string;
+  readonly paramsHash: string;
+  readonly result: ActionExecutionResult;
+}
+
+const idempotencyRegistry = new Map<string, IdempotencyRecord>();
+
+export function clearIdempotencyRegistry(): void {
+  idempotencyRegistry.clear();
+}
+
 /**
  * The 7-Step Governed Write Pipeline (Chapter 3 & 9)
  */
@@ -68,6 +84,7 @@ export function executeWritePipeline<Params = any>(
   | FreshnessBudgetExceededError
   | SideEffectExecutionError
   | StorageError
+  | IdempotencyConflictError
 > {
   const telemetry = OperonTelemetryService.getInstance();
   const startTime = Date.now();
@@ -88,8 +105,31 @@ export function executeWritePipeline<Params = any>(
         rawParameters,
         security,
         ruleVersion = "1.0.0",
+        idempotencyKey,
       } = submission;
       const now = security.timestamp;
+
+      const paramsHash = createHash("sha256")
+        .update(JSON.stringify(rawParameters))
+        .digest("hex");
+
+      if (idempotencyKey) {
+        const existing = idempotencyRegistry.get(idempotencyKey);
+        if (existing) {
+          if (
+            existing.actionTypeId !== actionType.id ||
+            existing.paramsHash !== paramsHash
+          ) {
+            return yield* Effect.fail(
+              new IdempotencyConflictError({
+                idempotencyKey,
+                message: `Idempotency key '${idempotencyKey}' was already submitted with different parameters or action type`,
+              })
+            );
+          }
+          return existing.result;
+        }
+      }
 
       // STEP 1: Validate Parameters
       const params = yield* Schema.decodeUnknownEffect(
@@ -342,11 +382,21 @@ export function executeWritePipeline<Params = any>(
           subject: security.subject,
         });
 
-        return {
+        const proposalResult: ActionExecutionResult = {
           decisionRecord: proposalRecord,
           proposalId: proposalRecord.id,
           status: "proposed" as const,
         };
+
+        if (idempotencyKey) {
+          idempotencyRegistry.set(idempotencyKey, {
+            actionTypeId: actionType.id,
+            paramsHash,
+            result: proposalResult,
+          });
+        }
+
+        return proposalResult;
       }
 
       // STEP 4: Execute Staged Logic or Action Mutation Handler
@@ -611,11 +661,21 @@ export function executeWritePipeline<Params = any>(
         subject: security.subject,
       });
 
-      return {
+      const executedResult: ActionExecutionResult = {
         decisionRecord,
         status: "executed" as const,
         updatedObjects,
       };
+
+      if (idempotencyKey) {
+        idempotencyRegistry.set(idempotencyKey, {
+          actionTypeId: actionType.id,
+          paramsHash,
+          result: executedResult,
+        });
+      }
+
+      return executedResult;
     })
   );
 }

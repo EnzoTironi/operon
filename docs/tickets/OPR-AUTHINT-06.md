@@ -34,7 +34,7 @@ Preserve agent actor; project canonical grants into plugin grants and intersect 
 
 ## Ticket-specific decisions
 
-- D-BAI-01 [PROPOSED_NOT_APPROVED]: 
+- D-BAI-01 [PROPOSED_NOT_APPROVED]:
 
 ## Exact implementation locations
 

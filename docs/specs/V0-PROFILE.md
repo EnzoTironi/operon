@@ -28,7 +28,6 @@ Acceptance requires the V0 A-E/F1/F2 issue gates on the same pinned candidate an
 
 ## Normative specification
 
-
 **Status:** approved product direction for the initial release profile; implementation contracts still require bounded engineering approval before production claims.
 
 ## Product definition

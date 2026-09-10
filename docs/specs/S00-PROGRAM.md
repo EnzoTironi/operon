@@ -22,7 +22,7 @@ Current status is `SPEC_CONSISTENT_NOT_PRODUCT_PASS`: no runtime case has been e
 ## Dependency spine
 
 | Workstream | Release | Owns | Depends on | Exit artifact |
-|---|---|---|---|---|
+| --- | --- | --- | --- | --- |
 | WS01 | V1 | Contract and build spine (S01, S02) | none | verified contract and build spine contract |
 | WS02 | V1 | Canonical knowledge and time (S03, S04) | WS01 | verified canonical knowledge and time contract |
 | WS03 | V1 | Identity, grants and authority (S05, S06) | WS01 | verified identity, grants and authority contract |

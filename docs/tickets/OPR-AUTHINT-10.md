@@ -34,7 +34,7 @@ Mandatory shared query/explain/readiness/inbox/search/export checks, push-down f
 
 ## Ticket-specific decisions
 
-- D-BAI-04 [PROPOSED_NOT_APPROVED]: 
+- D-BAI-04 [PROPOSED_NOT_APPROVED]:
 
 ## Exact implementation locations
 

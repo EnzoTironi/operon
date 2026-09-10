@@ -34,7 +34,7 @@ Publish minimal IR, authority/scope lattice, exact units, outcome predicates, am
 
 ## Ticket-specific decisions
 
-- D-BAI-04 [PROPOSED_NOT_APPROVED]: 
+- D-BAI-04 [PROPOSED_NOT_APPROVED]:
 
 ## Exact implementation locations
 

@@ -34,7 +34,7 @@ Apply processor/purpose restrictions before retrieval or model transmission; con
 
 ## Ticket-specific decisions
 
-- D-BAI-04 [PROPOSED_NOT_APPROVED]: 
+- D-BAI-04 [PROPOSED_NOT_APPROVED]:
 
 ## Exact implementation locations
 

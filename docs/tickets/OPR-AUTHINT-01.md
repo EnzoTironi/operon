@@ -34,7 +34,7 @@ Record core 1.7.4 candidate; resolve actual separately published plugin artifact
 
 ## Ticket-specific decisions
 
-- D-BAI-01 [PROPOSED_NOT_APPROVED]: 
+- D-BAI-01 [PROPOSED_NOT_APPROVED]:
 
 ## Exact implementation locations
 
