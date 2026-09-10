@@ -12,7 +12,6 @@
     "demo": "node dist/demo.js"
   },
   "dependencies": {
-    "@operon/osdk": "workspace:*",
     "@operon/runtime": "workspace:*",
     "@operon/schema": "workspace:*",
     "effect": "4.0.0-rc.112"

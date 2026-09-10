@@ -12,8 +12,6 @@
     "demo": "node dist/demo.js"
   },
   "dependencies": {
-    "@operon/alchemy": "workspace:*",
-    "@operon/mcp": "workspace:*",
     "@operon/runtime": "workspace:*",
     "@operon/schema": "workspace:*",
     "effect": "4.0.0-rc.112"
