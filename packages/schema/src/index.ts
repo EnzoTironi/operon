@@ -15,3 +15,5 @@ export * from "./ingestion.js";
 export * from "./reconciliation.js";
 export * from "./actions.js";
 export * from "./assurance.js";
+export * from "./candidate.js";
+export * from "./compiler.js";
