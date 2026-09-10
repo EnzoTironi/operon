@@ -13,6 +13,12 @@ export class TelemetryLogCapturedError extends Data.TaggedError(
   readonly level: string;
 }> {}
 
+export class TelemetryDiagnosticError extends Data.TaggedError(
+  "TelemetryDiagnosticError"
+)<{
+  readonly message: string;
+}> {}
+
 export class OperonTelemetryService {
   private static instance: OperonTelemetryService | null = null;
 
@@ -163,6 +169,22 @@ export class OperonTelemetryService {
     }
   }
 
+  captureMessage(
+    message: string,
+    level: "info" | "warning" | "error" = "info",
+    context?: Record<string, unknown>
+  ): void {
+    if (!this.isEnabled()) return;
+
+    const scrubbed = context ? this.scrubber.scrub(context) : undefined;
+    if (this.sentryInitialized) {
+      Sentry.captureMessage(message, {
+        extra: scrubbed,
+        level,
+      });
+    }
+  }
+
   trackEvent(eventPayload: OperonTelemetryEvent): void {
     // Keep in-memory ring buffer (up to 100 items for dogfooding / verification checks)
     this.capturedEvents.push(eventPayload);
@@ -176,6 +198,15 @@ export class OperonTelemetryService {
     const distinctId = eventPayload.subject
       ? eventPayload.subject.id
       : "operon_system";
+
+    if (this.sentryInitialized) {
+      Sentry.addBreadcrumb({
+        category: "operon.telemetry",
+        data: scrubbedProps,
+        level: "info",
+        message: eventPayload.event,
+      });
+    }
 
     if (this.posthogClient) {
       try {

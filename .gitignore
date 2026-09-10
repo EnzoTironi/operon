@@ -10,3 +10,6 @@ coverage
 skills-lock.json
 .evidence
 .operon-cli-state.json
+.env
+.env.local
+.env.*.local

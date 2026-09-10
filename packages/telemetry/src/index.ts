@@ -1,5 +1,9 @@
 export { TelemetryDataScrubber } from "./scrubber.js";
-export { OperonTelemetryService } from "./service.js";
+export {
+  OperonTelemetryService,
+  TelemetryDiagnosticError,
+  TelemetryLogCapturedError,
+} from "./service.js";
 export type {
   ActionExecutedPayload,
   ActionSubmittedPayload,
