@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 
 import type { Subject } from "@operon/schema";
+import { OperonTelemetryService } from "@operon/telemetry";
 import { Effect } from "effect";
 
 import type {
@@ -226,6 +227,18 @@ export class ActionInbox {
       Effect.flatMap((result) => {
         if (result.status === "executed") {
           this.proposals.set(proposalId, { ...proposal, status: "approved" });
+          OperonTelemetryService.getInstance().trackEvent({
+            event: "operon_proposal_reviewed",
+            properties: {
+              actionId: proposal.submission.actionType.id,
+              proposalId,
+              reviewDurationMs: Date.now() - proposal.createdAt,
+              reviewerId: approverSubject.id,
+              reviewerRole: approverSubject.roles[0] ?? "reviewer",
+              verdict: "approved",
+            },
+            subject: approverSubject,
+          });
           return Effect.succeed(result.decisionRecord);
         }
         this.proposals.set(proposalId, { ...proposal, status: "pending" });
@@ -289,6 +302,20 @@ export class ActionInbox {
       Effect.tap(() =>
         Effect.sync(() => {
           this.proposals.set(proposalId, { ...proposal, status: "rejected" });
+          OperonTelemetryService.getInstance().trackEvent({
+            event: "operon_proposal_reviewed",
+            properties: {
+              actionId: proposal.submission.actionType.id,
+              overrideCategory: category,
+              overrideReason: structuredReason,
+              proposalId,
+              reviewDurationMs: Date.now() - proposal.createdAt,
+              reviewerId: humanSubject.id,
+              reviewerRole: humanSubject.roles[0] ?? "reviewer",
+              verdict: "rejected",
+            },
+            subject: humanSubject,
+          });
         })
       )
     );

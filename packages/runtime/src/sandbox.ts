@@ -1,3 +1,4 @@
+import { OperonTelemetryService } from "@operon/telemetry";
 import { Effect } from "effect";
 
 import { SandboxExecutionError, ValidationError } from "./errors.js";
@@ -113,7 +114,21 @@ export class SandboxedModelRunner {
             outputs,
             version: model.version,
           }),
-        })
+        }),
+        Effect.tap((report) =>
+          Effect.sync(() => {
+            OperonTelemetryService.getInstance().trackEvent({
+              event: "operon_model_executed",
+              properties: {
+                durationMs: report.durationMs,
+                isDeterministic: report.isDeterministic,
+                modelId: report.modelId,
+                timedOut: false,
+                version: report.version,
+              },
+            });
+          })
+        )
       );
     });
   }

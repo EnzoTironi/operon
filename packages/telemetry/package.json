@@ -1,10 +1,7 @@
 {
-  "name": "@operon/cli",
+  "name": "@operon/telemetry",
   "version": "0.1.0",
-  "description": "Agent-first and human-friendly CLI for Operon Operational Ontologies",
-  "bin": {
-    "operon": "./dist/bin.js"
-  },
+  "description": "Production observability, Sentry exception forensics, and PostHog analytics for Operon",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -20,14 +17,10 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.30.0",
-    "@operon/alchemy": "workspace:*",
-    "@operon/mcp": "workspace:*",
-    "@operon/osdk": "workspace:*",
-    "@operon/runtime": "workspace:*",
     "@operon/schema": "workspace:*",
-    "@operon/telemetry": "workspace:*",
-    "effect": "4.0.0-rc.112"
+    "@sentry/node": "^9.1.0",
+    "effect": "4.0.0-rc.112",
+    "posthog-node": "^4.5.0"
   },
   "devDependencies": {
     "typescript": "^5.7.2",

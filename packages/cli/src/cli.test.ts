@@ -99,4 +99,9 @@ describe("@operon/cli test suite", () => {
     ]);
     expect(code).toBe(0);
   });
+
+  it("should inspect telemetry status via operon telemetry status", async () => {
+    const code = await runCli(["telemetry", "status", "--ping", "--json"]);
+    expect(code).toBe(0);
+  });
 });

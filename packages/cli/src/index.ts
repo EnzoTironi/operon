@@ -1,3 +1,5 @@
+import { OperonTelemetryService } from "@operon/telemetry";
+
 import { runAction } from "./commands/action.js";
 import { runAudit } from "./commands/audit.js";
 import { runDemo } from "./commands/demo.js";
@@ -8,6 +10,7 @@ import { runObject } from "./commands/object.js";
 import { runOms } from "./commands/oms.js";
 import { runReadiness } from "./commands/readiness.js";
 import { runSandbox } from "./commands/sandbox.js";
+import { runTelemetry } from "./commands/telemetry.js";
 
 export function printHelp(): void {
   console.log(`
@@ -26,6 +29,7 @@ Commands:
   oms                 Ontology Metadata Service: branch, propose, review, and merge ontology changes
   sandbox             Execute sandboxed models with fiber timeouts and verify determinism proofs
   mcp                 Launch Model Context Protocol (MCP) server over stdio for Claude Desktop / Cursor
+  telemetry           Inspect Sentry & PostHog telemetry status, privacy scrubber, and diagnostic ping
   demo                Run end-to-end domain simulations (healthcare, aviation, wastewater, sompo, education)
 
 Global Flags:
@@ -47,25 +51,10 @@ Examples:
 `);
 }
 
-export async function runCli(
-  argv: string[] = process.argv.slice(2)
+async function dispatchCommand(
+  command: string,
+  args: string[]
 ): Promise<number> {
-  const args = [...argv];
-  const isHelp =
-    args.includes("--help") || args.includes("-h") || args.length === 0;
-
-  if (args.includes("--version") || args.includes("-v")) {
-    console.log("operon 0.1.0");
-    return 0;
-  }
-
-  const command = args[0];
-
-  if (isHelp && !command) {
-    printHelp();
-    return 0;
-  }
-
   switch (command) {
     case "doctor": {
       if (args.includes("--help") || args.includes("-h")) {
@@ -243,14 +232,72 @@ Examples:
       return await runDemo(args.slice(1));
     }
 
+    case "telemetry": {
+      if (args.includes("--help") || args.includes("-h")) {
+        console.log(`
+Usage:
+  operon telemetry status [--ping] [--json]
+
+Examples:
+  operon telemetry status
+  operon telemetry status --ping --json
+`);
+        return 0;
+      }
+      return await runTelemetry(args.slice(1));
+    }
+
     default: {
       console.error(`Error: Unknown command '${command}'\n`);
       console.error(
-        "  Available commands: doctor, object, readiness, action, inbox, audit, oms, sandbox, mcp, demo"
+        "  Available commands: doctor, object, readiness, action, inbox, audit, oms, sandbox, mcp, telemetry, demo"
       );
       console.error("  Run 'operon --help' to see usage and examples.");
       return 1;
     }
+  }
+}
+
+export async function runCli(
+  argv: string[] = process.argv.slice(2)
+): Promise<number> {
+  const args = [...argv];
+  const startTime = Date.now();
+  const telemetry = OperonTelemetryService.getInstance();
+
+  const isHelp =
+    args.includes("--help") || args.includes("-h") || args.length === 0;
+
+  if (args.includes("--version") || args.includes("-v")) {
+    console.log("operon 0.1.0");
+    return 0;
+  }
+
+  const command = args[0];
+
+  if (isHelp && !command) {
+    printHelp();
+    return 0;
+  }
+
+  let exitCode = 0;
+  try {
+    exitCode = await dispatchCommand(command, args);
+    return exitCode;
+  } catch (error: unknown) {
+    telemetry.captureError(error, { args, command });
+    exitCode = 1;
+    throw error;
+  } finally {
+    telemetry.trackEvent({
+      event: "operon_cli_command",
+      properties: {
+        command: command || "help",
+        durationMs: Date.now() - startTime,
+        exitCode,
+      },
+    });
+    await telemetry.flushAndClose();
   }
 }
 
@@ -265,3 +312,4 @@ export * from "./commands/oms.js";
 export * from "./commands/sandbox.js";
 export * from "./commands/mcp.js";
 export * from "./commands/demo.js";
+export * from "./commands/telemetry.js";

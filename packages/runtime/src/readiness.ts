@@ -3,6 +3,7 @@ import type {
   ObjectType,
   PropertyDefinition,
 } from "@operon/schema";
+import { OperonTelemetryService } from "@operon/telemetry";
 import { Schema } from "effect";
 
 export interface ReadinessCheckResult {
@@ -110,6 +111,23 @@ export function evaluateDecisionReadiness(
   const isConsistent = contradictions.length === 0;
 
   const isReady = isCorrect && isComplete && isCurrent && isConsistent;
+
+  OperonTelemetryService.getInstance().trackEvent({
+    event: "operon_readiness_evaluated",
+    properties: {
+      c1CompletenessPassed: isComplete,
+      c2CorrectnessPassed: isCorrect,
+      c3CurrentnessPassed: isCurrent,
+      c4ConsistencyPassed: isConsistent,
+      id: instance.id,
+      isReady,
+      missingPropertiesCount: missingProperties.length,
+      stalePropertiesCount: staleProperties.length,
+      typeId: objectType.id,
+      typology: objectType.typology,
+      violationsCount: correctViolations.length,
+    },
+  });
 
   return {
     complete: {
