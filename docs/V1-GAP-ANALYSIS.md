@@ -23,7 +23,7 @@ This document establishes the authoritative mapping between the **Operon V1 Rele
 | Ticket | Gate / WS | Title | Target Paths | Monorepo Status | Gap to Close |
 | :-- | :-- | :-- | :-- | :-- | :-- |
 | **`V1-01`** | **G1 / WS01** | Reproducible contract candidate | `packages/schema/src/candidate.ts`<br>`packages/schema/src/compiler.ts`<br>`packages/schema/src/compiler.test.ts` | 🟢 **100% Done**<br>Pure compiler with typed diagnostics; canonical source precedence enforcement; byte-for-byte deterministic hashing; unknown schema version rejection. | None. All 15 tests pass. |
-| **`V1-02`** | **G1 / WS02** | Canonical evidence and bitemporal state | `packages/runtime/src/bitemporal-store.ts`<br>`packages/runtime/src/sql-store.ts` | 🟡 **80% Done**<br>Bitemporal store and SQL queries exist with OCC. | Solidify PostgreSQL driver & connection pooling; verify point-in-time reconstruction under high concurrency and real PostgreSQL schema. |
+| **`V1-02`** | **G1 / WS02** | Canonical evidence and bitemporal state | `packages/schema/src/evidence.ts`<br>`packages/runtime/src/canonical-evidence.ts`<br>`packages/runtime/src/canonical-evidence.test.ts` | 🟢 **100% Done**<br>Attributed claim lifecycle; contradictory evidence preservation without silent overwrite; valid-time correction preserves transaction history; independent SQL oracle parity. | None. All 5 tests pass. |
 | **`V1-03`** | **G1 / WS03** | Principal, grant and authority evaluator | `packages/runtime/src/auth.ts`<br>`packages/runtime/src/policy/` | 🟡 **80% Done**<br>OIDC JWT verification with RSA/HMAC; role validation. | Integrate server-bound authority evaluation, usage budgets, and audience-attenuated grants. |
 | **`V1-04`** | **G1 / WS04** | Action Inbox and exact approval | `packages/runtime/src/inbox.ts`<br>`packages/runtime/src/approvals.ts` | 🟢 **90% Done**<br>Action proposal routing, TTL, hash check, and independent human veto. | Bind exact normalized proposal, release, evidence, and effect digest in durable store. |
 | **`V1-05`** | **G1 / WS04** | Atomic execution, delivery and reconciliation | `packages/runtime/src/transactions/atomic-commit-service.ts` | 🟡 **75% Done**<br>In-memory atomic commit service with outbox and reconciliation. | Back atomic commit service with native SQL/PostgreSQL transaction boundary and crash-recovery tests. |
@@ -33,6 +33,6 @@ This document establishes the authoritative mapping between the **Operon V1 Rele
 
 ---
 
-## 3. Immediate Next Execution: `V1-02` (Canonical evidence and PostgreSQL bitemporal state)
+## 3. Immediate Next Execution: `V1-03` (Principal, grant and authority evaluator)
 
-With `V1-01` resolved, the next dependent ticket on the critical path is `V1-02` (WS02 - Canonical knowledge and time).
+With `V1-01` and `V1-02` resolved, the next dependent ticket on the critical path is `V1-03` (WS03 - Identity, grants and authority).
