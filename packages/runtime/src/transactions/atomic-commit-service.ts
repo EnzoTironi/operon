@@ -57,6 +57,7 @@ export class AtomicCommitService {
   private readonly outbox = new Map<string, OutboxItem>();
   private readonly consumedApprovals = new Set<string>();
   private readonly idempotencyRegistry = new Map<string, IdempotencyEntry>();
+  private readonly preparedActions = new Map<string, PreparedAction>();
 
   constructor(
     private readonly actionTypes: Map<string, ActionType<any>>,
@@ -81,6 +82,11 @@ export class AtomicCommitService {
         this.consumedApprovals.add(id);
       }
     }
+  }
+
+  registerPreparedAction(prepared: PreparedAction): void {
+    this.preparedActions.set(prepared.canonicalDigest, prepared);
+    this.preparedActions.set(prepared.id, prepared);
   }
 
   /**
@@ -285,12 +291,16 @@ export class AtomicCommitService {
         Effect.gen(function* () {
           for (const [key, orig] of originalSnapshots) {
             const [typeId, id] = key.split(":");
-            if (orig) {
-              yield* objectStore.putObject(orig).pipe(Effect.ignore);
-            } else if (typeId && id) {
-              yield* objectStore
-                .deleteObject(typeId as any, id)
-                .pipe(Effect.ignore);
+            if (typeId && id) {
+              if (objectStore.revertObject) {
+                yield* objectStore.revertObject(typeId as any, id, orig);
+              } else if (orig) {
+                yield* objectStore.putObject(orig).pipe(Effect.ignore);
+              } else {
+                yield* objectStore
+                  .deleteObject(typeId as any, id)
+                  .pipe(Effect.ignore);
+              }
             }
           }
         });
@@ -430,8 +440,65 @@ export class AtomicCommitService {
   }
 
   /**
+   * execute (S08 / V1-05 Contract Sketch):
+   * execute(approval, key): Promise<OperationReceipt> (or Effect)
+   */
+  execute(
+    approval: ApprovalRecord,
+    idempotencyKey: string,
+    preparedAction?: PreparedAction
+  ): Effect.Effect<
+    OperationReceipt,
+    | IdempotencyConflictError
+    | TenantMismatchError
+    | ApprovalDigestMismatchError
+    | StaleApprovalError
+    | CommitConcurrencyError
+    | FreshnessOrPolicyDeniedError
+    | GrantNotFoundError
+    | GrantExceededError
+    | StorageError
+    | OutboxDeliveryError
+  > {
+    const prepared =
+      preparedAction ??
+      this.preparedActions.get(approval.preparedDigest) ??
+      this.preparedActions.get(approval.preparedId);
+
+    if (!prepared) {
+      return Effect.fail(
+        new TenantMismatchError({
+          message: `Prepared action '${approval.preparedDigest}' not found for execution`,
+          tenantId: approval.reviewerContext.tenantId,
+        })
+      );
+    }
+
+    return this.commit({
+      approval,
+      environmentId: approval.reviewerContext.environmentId,
+      idempotencyKey,
+      prepared,
+      tenantId: approval.reviewerContext.tenantId,
+    });
+  }
+
+  /**
+   * reconcile (S08 / V1-05 Contract Sketch):
+   * reconcile(operationId): Promise<OperationReceipt> (or Effect)
+   */
+  reconcile(
+    operationId: string,
+    tenantId = "default",
+    resolvedStatus: "SUCCEEDED" | "FAILED" | "COMPENSATED" = "SUCCEEDED"
+  ): Effect.Effect<OperationReceipt, TenantMismatchError> {
+    return this.reconcileExternalUnknown(operationId, tenantId, resolvedStatus);
+  }
+
+  /**
    * Reconcile EXTERNAL_UNKNOWN operation outcome honestly (S08)
    */
+
   reconcileExternalUnknown(
     operationId: string,
     tenantId: string,
