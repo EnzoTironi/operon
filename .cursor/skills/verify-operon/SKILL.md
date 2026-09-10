@@ -124,6 +124,7 @@ Operon features are driven using the `@operon/cli` command suite. Every command 
 | **Audit Verification** | `operon audit verify --json` | Cryptographically verifies SHA-256 chain of custody |
 | **Sandbox Proof** | `operon sandbox verify predictive_vibration_model --input '{"value":12}' --iterations 3 --json` | Proves fiber determinism across repeated executions |
 | **OMS Branching** | `operon oms branch create feature/clinician-ai --author lead_arch --json` | Creates isolated ontology branch for schema evolution |
+| **Telemetry Status** | `operon telemetry status --ping --json` | Inspects Sentry/PostHog connection and sends diagnostic ping |
 
 See [features/README.md](features/README.md) for detailed step-by-step feature drives.
 
@@ -191,5 +192,5 @@ ls -la .evidence/verify-operon/
 
 Ready-to-run verification scripts located in `helpers/`:
 
-- `helpers/verify-all.ts`: Executes end-to-end verification across all 7 features, validates cryptographic chains, and writes complete evidence dossiers.
+- `helpers/verify-all.ts`: Executes end-to-end verification across all 8 features, validates cryptographic chains, and writes complete evidence dossiers.
 - `helpers/cleanup.ts`: Safe cleanup runner.

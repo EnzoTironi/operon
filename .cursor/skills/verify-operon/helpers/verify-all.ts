@@ -34,14 +34,14 @@ console.log("");
 const evidenceManifest: Record<string, any> = {};
 
 // 1. Doctor Preflight
-console.log("[1/7] Running Doctor Preflight...");
+console.log("[1/8] Running Doctor Preflight...");
 const doctor = runCli("doctor");
 fs.writeFileSync(path.join(evidenceDir, "doctor.json"), doctor.raw, "utf-8");
 evidenceManifest.doctor = doctor.output;
 console.log(`  -> Status: ${doctor.output?.overallStatus}`);
 
 // 2. Decision Readiness Check (4C Gates)
-console.log("[2/7] Driving 4C Decision Readiness...");
+console.log("[2/8] Driving 4C Decision Readiness...");
 const readiness = runCli("readiness check Patient P001");
 fs.writeFileSync(
   path.join(evidenceDir, "readiness.json"),
@@ -52,7 +52,7 @@ evidenceManifest.readiness = readiness.output;
 console.log(`  -> Patient P001 Ready: ${readiness.output?.readiness?.isReady}`);
 
 // 3. Governed Write Pipeline (Dry Run Preview & Tier 4 Execution)
-console.log("[3/7] Driving Governed Write Pipeline...");
+console.log("[3/8] Driving Governed Write Pipeline...");
 const dryRun = runCli(
   `action submit update_vitals --params '{"patientId":"P001","heartRate":78}' --dry-run`
 );
@@ -78,7 +78,7 @@ console.log(
 );
 
 // 4. Action Inbox & Safety Veto
-console.log("[4/7] Driving Action Inbox & Safety Veto...");
+console.log("[4/8] Driving Action Inbox & Safety Veto...");
 const proposal = runCli(
   `action submit adjust_dose --params '{"patientId":"P001","recommendedDose":18}' --agent-tier 2`
 );
@@ -100,7 +100,7 @@ console.log(
 );
 
 // 5. Cryptographic Audit Chain Verification
-console.log("[5/7] Verifying Tamper-Evident Audit Ledger...");
+console.log("[5/8] Verifying Tamper-Evident Audit Ledger...");
 const audit = runCli("audit verify");
 fs.writeFileSync(
   path.join(evidenceDir, "audit-proof.json"),
@@ -111,7 +111,7 @@ evidenceManifest.audit = audit.output;
 console.log(`  -> SHA-256 Chain Valid: ${audit.output?.chainValid}`);
 
 // 6. Model Execution Sandbox Determinism Proof
-console.log("[6/7] Driving Model Execution Sandbox...");
+console.log("[6/8] Driving Model Execution Sandbox...");
 const sandbox = runCli(
   `sandbox verify predictive_vibration_model --input '{"value":12}' --iterations 3`
 );
@@ -126,11 +126,24 @@ console.log(
 );
 
 // 7. OMS Branching Governance
-console.log("[7/7] Driving OMS Branching Governance...");
+console.log("[7/8] Driving OMS Branching Governance...");
 const oms = runCli(`oms branch create feature/clinician-ai --author lead_arch`);
 fs.writeFileSync(path.join(evidenceDir, "oms-branch.json"), oms.raw, "utf-8");
 evidenceManifest.omsBranch = oms.output;
 console.log(`  -> Ontology Branch Created: ${oms.output?.id}`);
+
+// 8. Production Telemetry & Diagnostics
+console.log("[8/8] Inspecting Production Telemetry & Diagnostics...");
+const telemetry = runCli("telemetry status --ping");
+fs.writeFileSync(
+  path.join(evidenceDir, "telemetry.json"),
+  telemetry.raw,
+  "utf-8"
+);
+evidenceManifest.telemetry = telemetry.output;
+console.log(
+  `  -> Diagnostic Ping Sent: ${telemetry.output?.diagnosticPingSent}`
+);
 
 // Write summary manifest
 fs.writeFileSync(
@@ -147,7 +160,7 @@ fs.cpSync(evidenceDir, latestDir, { recursive: true });
 
 console.log("");
 console.log("=================================================");
-console.log("     ALL 7 FEATURES SUCCESSFULLY VERIFIED!       ");
+console.log("     ALL 8 FEATURES SUCCESSFULLY VERIFIED!       ");
 console.log("=================================================");
 console.log(`Permanent Evidence Captured in: ${evidenceDir}`);
 console.log(`Latest Evidence Pointer: ${latestDir}`);

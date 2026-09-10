@@ -13,6 +13,7 @@ This index maps all primary capability surfaces of Operon to their respective ve
 | **F-05** | **Model Execution Sandbox** | `operon sandbox verify` | Pure Effect fiber isolation, execution timeouts, deterministic replayability proofs | [model-sandbox.md](model-sandbox.md) |
 | **F-06** | **Stdio MCP Server** | `operon mcp start` | Dynamic schema & tool projection over JSON-RPC stdio, governance guard enforcement | [mcp-server.md](mcp-server.md) |
 | **F-07** | **OMS Ontology Governance** | `operon oms branch` / `proposal` | Multi-branch schema evolution, proposal lifecycle, specialist multi-signature reviews, safe merge | [oms-governance.md](oms-governance.md) |
+| **F-08** | **Production Telemetry & Observability** | `operon telemetry status` | Sentry distributed tracing, PostHog product analytics, zero-leak PII scrubbing, diagnostic ping | [telemetry.md](telemetry.md) |
 
 ## Verification Conventions
 

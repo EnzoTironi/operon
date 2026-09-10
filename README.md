@@ -1,7 +1,7 @@
 # Operon (Operational Ontology & Decision Runtime)
 
 > **The Type-Safe Operational Ontology and Decision Runtime for AI Agents and Enterprise Systems.**  
-> Built natively with [Effect TypeScript](https://effect.website/) and deployed via [Alchemy](https://alchemy.run).
+> Built natively with [Effect TypeScript](https://effect.website/) (`effect@4.0.0-rc.112`) and deployed via [Alchemy](https://alchemy.run).
 
 Based on the architectural principles and formal verification frameworks from _Operational Ontology: From Business Mirror to Decision Runtime_ (Bailing Zhang, 2026).
 
@@ -22,142 +22,163 @@ When autonomous LLM agents or AI decision systems attempt actions without an ope
 
 ---
 
-## Key Features
-
-- **Four Responsibility Planes**:
-  - **Data Plane**: Bitemporal business objects, properties, relationships (Links), and freshness budgets.
-  - **Logic Plane**: Derived properties and deterministic guard functions.
-  - **Action Plane**: Governed state transitions with staged edits and Saga rollback compensation.
-  - **Security Plane**: Cross-cutting property-level ABAC, hash-chained `DecisionRecord`s, and first-class human overrides.
-- **Two-Level 4C Decision Readiness**: $$\text{DecisionReadiness} = \text{Correct} \land \text{Complete} \land \text{Current} \land \text{Consistent}$$
-- **The 7-Step Governed Write Pipeline**:
-  1. Parameter Schema Validation
-  2. Subject & Agent Authorization Tier Verification
-  3. Submission Criteria & Freshness Budget Verification
-  4. Staged Logic Execution (pure Effect computation)
-  5. Funnel Merge (optimistic concurrency & CDC stream reconciliation)
-  6. Cryptographic `DecisionRecord` Dossier Generation
-  7. Side Effects with Saga Compensation
-- **Model Context Protocol (MCP) Server**:
-  - **Dual Key Isolation**: Consumer Key (queries & bounded actions) vs. Builder Key (schema changes).
-  - **Dynamic Tool Schema Projection**: Automatically converts `@operon/schema` Action cards into MCP tools.
-  - **4-Tier Agent Authorization Ladder**:
-    1. _Observe_ (Read-only)
-    2. _Propose_ (Action Inbox proposal)
-    3. _Execute with Approval_ (Human confirms)
-    4. _Bounded Autonomy_ (Automatic execution within risk envelopes)
-- **Edge-First Infrastructure as Effects via Alchemy (`alchemy.run`)**:
-  - Serverless deployment to **Cloudflare** (Workers edge gateway, D1 database, R2 audit vault, Queues).
-
----
-
 ## Monorepo Architecture
 
-```text
-packages/
-├── @operon/schema         # Declarative modeling language (Objects, Properties, Links, Actions)
-├── @operon/runtime        # 4C readiness, 7-step write pipeline, Action Inbox, DecisionRecords
-├── @operon/mcp            # Model Context Protocol server & tool projection for Claude / Cursor
-└── @operon/alchemy        # Cloudflare serverless edge infrastructure (alchemy.run)
-examples/
-└── @operon/example-healthcare-cdss # Complete Chapter 1 Clinical CDSS simulation
+The workspace is organized into a modular pnpm monorepo consisting of 7 core packages and 5 industry reference implementations:
+
+### Core Packages (`packages/`)
+
+| Package | Description |
+| :-- | :-- |
+| [`@operon/schema`](file:///Users/enzotironi/operationalonto/packages/schema/README.md) | Declarative domain modeling language (Objects, Properties, Links, ValueTypes, Actions, Freshness Budgets). |
+| [`@operon/runtime`](file:///Users/enzotironi/operationalonto/packages/runtime/README.md) | The 7-step write pipeline, 4C readiness engine, Action Inbox, Bitemporal storage, OMS, and Model Sandbox. |
+| [`@operon/cli`](file:///Users/enzotironi/operationalonto/packages/cli/README.md) | Official command-line interface built on pure Effect fibers (`doctor`, `object`, `readiness`, `action`, etc.). |
+| [`@operon/telemetry`](file:///Users/enzotironi/operationalonto/packages/telemetry/README.md) | Production observability (Sentry + PostHog), PII/secret scrubbing, Effect log layers, and distributed tracing. |
+| [`@operon/osdk`](file:///Users/enzotironi/operationalonto/packages/osdk/README.md) | Type-safe client SDK and TypeScript code generator for frontend and service integration. |
+| [`@operon/mcp`](file:///Users/enzotironi/operationalonto/packages/mcp/README.md) | Model Context Protocol server, dual-key isolation (Consumer vs Builder), and AI-FDE autonomous agents. |
+| [`@operon/alchemy`](file:///Users/enzotironi/operationalonto/packages/alchemy/README.md) | Serverless Cloudflare edge infrastructure synthesis via [Alchemy](https://alchemy.run) (Workers, D1, R2, Queues). |
+
+### Industry Reference Implementations (`examples/`)
+
+| Example | Book Chapter | Real-World Scenario |
+| :-- | :-- | :-- |
+| [`@operon/example-healthcare-cdss`](file:///Users/enzotironi/operationalonto/examples/healthcare-cdss/src/simulation.ts) | Chapter 1 | Hospital inpatient CDSS preventing trust collapse, clinical discretion overrides, and renal dose adjustment. |
+| [`@operon/example-aviation-skywise`](file:///Users/enzotironi/operationalonto/examples/aviation-skywise/src/simulation.ts) | Chapter 11 | Aviation fleet predictive maintenance, flight-hour tracking, and automated work order generation. |
+| [`@operon/example-wastewater-compliance`](file:///Users/enzotironi/operationalonto/examples/wastewater-compliance/src/simulation.ts) | Chapter 12 | Municipal wastewater treatment aeration control, EPA compliance enforcement, and chemical dosing. |
+| [`@operon/example-sompo-rdp`](file:///Users/enzotironi/operationalonto/examples/sompo-rdp/src/simulation.ts) | Chapter 14 | SOMPO Real Data Platform elder care sensor telemetry, claims triage, and incident detection. |
+| [`@operon/example-higher-education`](file:///Users/enzotironi/operationalonto/examples/higher-education/src/simulation.ts) | Chapter 13 | Higher education prerequisite waiver governance and curriculum committee approval workflow. |
+
+---
+
+## Key Pillars & Operational Guarantees
+
+### 1. Two-Level 4C Decision Readiness
+
+State must pass mathematical criteria before an action can be decided: $$\text{DecisionReadiness} = \text{Correct} \land \text{Complete} \land \text{Current} \land \text{Consistent}$$
+
+- **Level 1 (Object Readiness)**: Required fields populated, schema-valid data types, properties within freshness budgets, and intra-object invariants verified.
+- **Level 2 (Structural Readiness)**: Graph referential integrity (zero dangling links) and relationship validity verified.
+
+### 2. The 7-Step Governed Write Pipeline
+
+Every mutation passes through 7 deterministic safety gates:
+
+1. **Parameter Schema Validation**: Runtime Effect Schema parsing.
+2. **Subject & Agent Tier Verification**: Bounded agent autonomy checks (Tiers 1–4).
+3. **Submission Criteria & Freshness Budget**: Pre-conditions and maximum staleness verification.
+4. **Staged Logic Execution**: Pure Effect computation with zero side effects.
+5. **Funnel Merge**: Optimistic concurrency version checks and CDC stream reconciliation.
+6. **Cryptographic `DecisionRecord` Generation**: Continuous SHA-256 hash-chaining of inputs, outputs, and agent identities.
+7. **Side Effects with Saga Compensation**: Forward side-effects executed with automatic reverse rollback on downstream failure.
+
+### 3. Frontline Safety Veto & Action Inbox
+
+When high-risk actions are proposed by Tier 2 agents or boundary criteria trigger reviews:
+
+- Actions route to the **Action Inbox** as pending proposals.
+- Human specialists can approve or exercise structured safety veto overrides with category attribution (`clinical_discretion`, `regulatory_override`, etc.).
+- Overrides are permanently recorded in the audit ledger to power organizational continuous learning.
+
+### 4. Bitemporal Point-in-Time State Engine
+
+Maintains two independent time dimensions across all entities:
+
+- **Valid Time ($T_v$)**: When the fact was true in the real world.
+- **Transaction Time ($T_x$)**: When the fact was recorded in the database. Enables instant time-travel queries (`asOfValidTime`, `asOfTransactionTime`) and retroactive corrections without mutating historical records.
+
+---
+
+## Operon CLI Reference
+
+The CLI provides full operator and agent control over the platform:
+
+```bash
+# Preflight health checks
+operon doctor [--json] [--db <path>]
+
+# Bitemporal object inspection and mutation
+operon object get <typeId> <id> [--json]
+operon object put --type <typeId> --id <id> --properties '<json>'
+operon object query <typeId> <id> --valid-time <ms> --tx-time <ms>
+
+# 4C decision readiness evaluation
+operon readiness check <typeId> <id> [--json]
+
+# Governed action submission
+operon action list [--json]
+operon action submit <actionId> --params '<json>' [--agent-tier <1|2|3|4>] [--dry-run]
+
+# Action Inbox & Human Veto
+operon inbox list [--json]
+operon inbox approve <id> --reviewer <id> --comments <text>
+operon inbox reject <id> --reviewer <id> --reason <text>
+
+# Cryptographic Audit Ledger Verification
+operon audit list [--limit <n>] [--json]
+operon audit verify [--json]
+
+# OMS Branching Governance
+operon oms branch create <branch> --author <id>
+operon oms proposal create --branch <branch> --title <title> --author <id>
+operon oms proposal review <id> --reviewer <id> --verdict <approve|reject>
+operon oms proposal merge <id> --author <id>
+
+# Model Sandbox Replay Proofs
+operon sandbox verify <modelId> [--inputs '<json>'] [--iterations <n>]
+
+# Launch MCP Stdio Server
+operon mcp start [--agent-tier <1|2|3|4>]
+
+# Production Telemetry & Diagnostics
+operon telemetry status [--ping] [--json]
+
+# Run Domain Demonstrations
+operon demo <healthcare|aviation|wastewater|sompo|education>
 ```
 
 ---
 
-## Quickstart
+## Enterprise Observability (Sentry & PostHog)
 
-### 1. Installation
+Operon features built-in production telemetry and dogfooding instrumentation via `@operon/telemetry`:
+
+- **Zero-Leak Privacy**: `TelemetryDataScrubber` automatically masks secrets, passwords, tokens, SSNs, and medical record numbers, while pseudonymizing identifiers with SHA-256 hashes.
+- **Sentry Integration**: Distributed tracing spans (`operon.pipeline.execute`, `operon.cli.command`), automated error capture with breadcrumb timelines.
+- **PostHog Analytics**: Product telemetry tracking action submissions, execution rates, agent tier distributions, and inbox review cycles.
+- **Native Effect Logging**: Custom Effect `Logger` layer captures all `Effect.logInfo`, `Effect.logWarning`, and `Effect.logError` emissions directly into Sentry and PostHog.
+- **Diagnostic Mode**: In the absence of external API keys, telemetry safely operates in no-op mode with an internal diagnostic event buffer.
+
+---
+
+## Aggressive Declarative Testing
+
+Operon uses an **aggressive declarative testing** philosophy:
+
+- Test descriptions define the formal behavior of the system as an unambiguous specification (`"does X"`, `"does X if Y"`).
+- Tests act as the executable blueprint rather than passive regression catchers.
+- 100% of test suites across all packages and examples enforce this standard.
+
+---
+
+## Quality Gates & Verification
 
 ```bash
-pnpm install
+# Format check and auto-fix (Ultracite)
+pnpm check
+pnpm fix
+
+# High-speed static analysis (Oxlint with Effect plugin)
+pnpm lint
+
+# Compile all 12 workspace packages (TypeScript Project References)
 pnpm build
+
+# Execute 100% of test suites
 pnpm test
+
+# Run End-to-End System Verification Harness (All 7 Pillars)
+node --experimental-strip-types .cursor/skills/verify-operon/helpers/verify-all.ts
 ```
-
-### 2. Defining an Object Type and Action
-
-```typescript
-import { Schema } from "effect";
-import {
-  defineObjectType,
-  defineActionType,
-  defineProperty,
-} from "@operon/schema";
-
-// Define a business object with freshness budget
-export const Patient = defineObjectType({
-  id: "Patient",
-  name: "Patient",
-  description: "Hospital Inpatient",
-  typology: "master",
-  primaryKey: "patientId",
-  properties: {
-    patientId: defineProperty({
-      schema: Schema.String,
-      description: "Patient ID",
-      required: true,
-    }),
-    eGFR: defineProperty({
-      schema: Schema.Number,
-      description: "Renal eGFR",
-      required: true,
-      freshnessBudget: {
-        maxStalenessMs: 24 * 60 * 60 * 1000,
-        onStale: "escalate_to_human",
-      },
-    }),
-  },
-});
-
-// Define a governed Action with Submission Criteria
-export const AdjustDoseAction = defineActionType({
-  id: "adjust_dose",
-  name: "Adjust Insulin Dose",
-  description: "Adjust bedtime basal insulin dosage",
-  parametersSchema: Schema.Struct({
-    patientId: Schema.String,
-    proposedDose: Schema.Number.pipe(
-      Schema.check(Schema.isBetween({ maximum: 100, minimum: 1 }))
-    ),
-  }),
-  riskTier: "high",
-  defaultExecutionMode: "proposal",
-  minimumAgentTier: 2, // Routes to Action Inbox for review
-  submissionCriteria: [
-    {
-      id: "safe_ceiling_check",
-      description: "Dose must not exceed 50U without specialist confirmation",
-      evaluate: (params) =>
-        Effect.succeed({
-          passed: params.proposedDose <= 50,
-          verdict: params.proposedDose <= 50 ? "allow" : "review",
-          failureReason:
-            params.proposedDose > 50 ? "Exceeds 50U threshold" : undefined,
-        }),
-    },
-  ],
-});
-```
-
-### 3. Running the Chapter 1 Clinical CDSS Demo
-
-To run the anchoring case study simulation demonstrating how Operon intercepts ungrounded recommendations, structures observations, and tracks human physician overrides:
-
-```bash
-pnpm --filter @operon/example-healthcare-cdss run demo
-```
-
----
-
-## Commercial Licensing & Cloud Offering
-
-- **Core Engine & MCP Gateway**: Open Source (Apache 2.0 / MIT).
-- **Operon Cloud (Enterprise SaaS)**:
-  - Managed Multi-Tenant Edge Gateway deployed with Alchemy.
-  - Action Inbox Web Dashboard for human-in-the-loop approvals.
-  - Cryptographic DecisionRecord Vault (FDA 21 CFR Part 11, SOC2, HIPAA).
-  - Rejection Compass: Analytics dashboard tracking frontline override reasons to tune agent reliability.
 
 ---
 
