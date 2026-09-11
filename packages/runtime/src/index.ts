@@ -49,4 +49,5 @@ export * from "./views/surface-runtime.js";
 export * from "./connectors/contracted-connector.js";
 export * from "./federation/federation-service.js";
 export * from "./export/sovereign-export-service.js";
+export * from "./deployment/fenced-writer-service.js";
 export * from "@operon/assurance";

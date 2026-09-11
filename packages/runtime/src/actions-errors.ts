@@ -798,3 +798,54 @@ export class RestoreSideEffectReplayForbiddenError extends Data.TaggedError(
   readonly message: string;
   readonly restoreId: string;
 }> {}
+
+/**
+ * SplitBrainWriterFencedError (S16 / OPR-FULL-047 / FULL-ACC-047):
+ * Writer process was fenced out by a higher fencing token holder after failover.
+ */
+export class SplitBrainWriterFencedError extends Data.TaggedError(
+  "SplitBrainWriterFencedError"
+)<{
+  readonly activeFenceToken: number;
+  readonly currentHolderProcessId: string;
+  readonly message: string;
+  readonly presentedFenceToken: number;
+  readonly rejectedProcessId: string;
+  readonly tenantId: string;
+}> {}
+
+/**
+ * ProductionInMemoryAuthorityForbiddenError (S16):
+ * Production deployment profile prohibited from using in-memory authority.
+ */
+export class ProductionInMemoryAuthorityForbiddenError extends Data.TaggedError(
+  "ProductionInMemoryAuthorityForbiddenError"
+)<{
+  readonly message: string;
+  readonly profile: string;
+  readonly tenantId: string;
+}> {}
+
+/**
+ * ProductionSimulatedDispatcherForbiddenError (S16):
+ * Production deployment profile prohibited from running simulated dispatchers.
+ */
+export class ProductionSimulatedDispatcherForbiddenError extends Data.TaggedError(
+  "ProductionSimulatedDispatcherForbiddenError"
+)<{
+  readonly message: string;
+  readonly profile: string;
+  readonly tenantId: string;
+}> {}
+
+/**
+ * ProductionTenantInvalidError (S16):
+ * Production deployment profile requires an explicit non-test/non-default tenant ID.
+ */
+export class ProductionTenantInvalidError extends Data.TaggedError(
+  "ProductionTenantInvalidError"
+)<{
+  readonly message: string;
+  readonly profile: string;
+  readonly tenantId: string;
+}> {}
