@@ -761,3 +761,40 @@ export class RemoteCellCompensationError extends Data.TaggedError(
   readonly cellId?: string;
   readonly message: string;
 }> {}
+
+/**
+ * ExportSecretLeakageError (S15 / OPR-FULL-045):
+ * Sovereign export aborted because credentials, private keys, or raw secrets were detected.
+ */
+export class ExportSecretLeakageError extends Data.TaggedError(
+  "ExportSecretLeakageError"
+)<{
+  readonly detectedKeys: readonly string[];
+  readonly message: string;
+  readonly tenantId: string;
+}> {}
+
+/**
+ * RestoreIntegrityMismatchError (S15 / OPR-FULL-045):
+ * Sovereign restore rejected because bundle checksum does not match computed checksum.
+ */
+export class RestoreIntegrityMismatchError extends Data.TaggedError(
+  "RestoreIntegrityMismatchError"
+)<{
+  readonly actualChecksum: string;
+  readonly expectedChecksum: string;
+  readonly exportId: string;
+  readonly message: string;
+}> {}
+
+/**
+ * RestoreSideEffectReplayForbiddenError (S15 / OPR-FULL-045 / FULL-ACC-045):
+ * Restore pipeline detected an attempt to re-dispatch historical notifications or outbox items.
+ */
+export class RestoreSideEffectReplayForbiddenError extends Data.TaggedError(
+  "RestoreSideEffectReplayForbiddenError"
+)<{
+  readonly attemptedEffectType: string;
+  readonly message: string;
+  readonly restoreId: string;
+}> {}

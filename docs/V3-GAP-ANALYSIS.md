@@ -31,8 +31,8 @@ This document establishes the authoritative mapping between the **Operon V3 Rele
 | :-- | :-- | :-- | :-- | :-- | :-- |
 | **`V3-01`** | **G3 / WS09** | Contracted Inbound & Outbound Connectors | `packages/runtime/src/connectors/`<br>`packages/schema/src/connectors.ts` | 🟢 **RESOLVED_PASSED**<br>Derived from `OPR-FULL-043`, `OPR-FULL-044`, `S15`. | Contracted connector declarations: conditional write support, source freshness, CDC order/outage handling, broker credential boundary, compensation support. Explicit rejection when source lacks required guarantees (`FULL-ACC-043`). Verified with 9/9 unit tests. |
 | **`V3-02`** | **G3 / WS09** | Federated Authority & Multi-Cell Compensation | `packages/runtime/src/federation/`<br>`packages/schema/src/federation.ts` | 🟢 **RESOLVED_PASSED**<br>Derived from `OPR-FULL-044`, `OPR-FULL-046`, `S15`. | Contracted views and actions between independent cells; link traversal outside contract is denied (`FULL-ACC-044`); remote claims remain attributed with uncertainty; partial multi-cell failure handled via compensation without fictional global transactions (`FULL-ACC-046`). Verified with 8/8 unit tests. |
-| **`V3-03`** | **G3 / WS09** | Sovereign Export, Import & Clean Replay-Free Restore | `packages/runtime/src/federation/`<br>`packages/runtime/src/export/` | 🟡 **In Progress**<br>Derived from `OPR-FULL-045`, `S15`. | Clean export/import preserving identities and authorized history without secrets; clean restore into new cell yields matching queries/dossiers with zero historical side-effects or re-sent notifications (`FULL-ACC-045`). |
-| **`V3-04`** | **G3 / WS10** | Sovereign Deployment Profiles & Fenced Dual-Writer Resolution | `packages/runtime/src/cluster/`<br>`packages/runtime/src/deployment/` | ⚪ **Not Started**<br>Derived from `OPR-FULL-047`, `S16`. | Multi-process failover; split-brain fencing: when two processes claim same tenant, only current fence holder dispatches new effects (`FULL-ACC-047`). Prohibits in-memory authority in production. |
+| **`V3-03`** | **G3 / WS09** | Sovereign Export, Import & Clean Replay-Free Restore | `packages/runtime/src/federation/`<br>`packages/runtime/src/export/` | 🟢 **RESOLVED_PASSED**<br>Derived from `OPR-FULL-045`, `S15`. | Clean export/import preserving identities and authorized history without secrets; clean restore into new cell yields matching queries/dossiers with zero historical side-effects or re-sent notifications (`FULL-ACC-045`). Verified with 5/5 unit tests. |
+| **`V3-04`** | **G3 / WS10** | Sovereign Deployment Profiles & Fenced Dual-Writer Resolution | `packages/runtime/src/cluster/`<br>`packages/runtime/src/deployment/` | 🟡 **In Progress**<br>Derived from `OPR-FULL-047`, `S16`. | Multi-process failover; split-brain fencing: when two processes claim same tenant, only current fence holder dispatches new effects (`FULL-ACC-047`). Prohibits in-memory authority in production. |
 | **`V3-05`** | **G3 / WS10** | Audited Backup, Qualified Restore & Key Rotation | `packages/runtime/src/backup/`<br>`packages/runtime/src/security/` | ⚪ **Not Started**<br>Derived from `OPR-FULL-048`, `OPR-FULL-049`, `S16`. | Backup audit and restore qualification verifying hash chain integrity, decisions, approvals, and receipts (`FULL-ACC-048`); zero-downtime key rotation and process confinement (`OPR-FULL-049`). |
 | **`V3-06`** | **G3 / WS10** | Tenant Resource Quotas & Operational Economics | `packages/runtime/src/economics/`<br>`packages/schema/src/economics.ts` | ⚪ **Not Started**<br>Derived from `OPR-FULL-050`, `OPR-OPS-*`, `S16`. | Multi-tenant resource quotas, model/tool spend metering, queue backlog contention measurement, finite mission aggregate bounds. |
 | **`V3-07`** | **G3 / WS11** | Independent Evidence, Dual Ledgers & Adversarial Factory Verification | `packages/assurance/src/factory/`<br>`validation/` | ⚪ **Not Started**<br>Derived from `OPR-FULL-051..054`, `S17`. | Two ledgers (immutable normative requirements vs candidate observations); strict implementer/verifier separation; adversarial mutation defense: dropped/duplicate cases, zero-assertion pass, forged runner, and tampered receipts fail evidence gate. |
@@ -40,14 +40,14 @@ This document establishes the authoritative mapping between the **Operon V3 Rele
 
 ---
 
-## 3. Active Execution: `V3-03` (Sovereign Export, Import & Clean Replay-Free Restore)
+## 3. Active Execution: `V3-04` (Sovereign Deployment Profiles & Fenced Dual-Writer Resolution)
 
-With `V3-01` and `V3-02` complete and verified, execution proceeds on Workstream `WS09 - Connectors and portable authority` with ticket `V3-03`:
+With Workstream `WS09` tickets (`V3-01`, `V3-02`, `V3-03`) 100% complete and verified, execution transitions to Workstream `WS10 - Deployment and sovereign operations` with ticket `V3-04`:
 
-1. **Sovereign Export Without Secret Leakage (`S15`, `OPR-FULL-045`, `FULL-ACC-045`)**:
-   - Export canonical definitions, authorized evidence, bitemporal history, execution receipts, and policy configurations using documented portable representation.
-   - Strict secret sanitization: tokens, cryptographic private keys, internal credentials, and unconsented data are never included in sovereign export bundles.
-2. **Clean Replay-Free Restore (`S15`, `FULL-ACC-045`)**:
-   - Restore bundle into an independent cell or environment.
-   - Verified identities, historical queries, and dossier states match the source cell perfectly.
-   - Zero historical side-effects: restore never re-fires outbound webhooks, re-executes external connectors, re-sends notifications, or produces spurious outbox mutations.
+1. **Split-Brain Fencing (`S16`, `OPR-FULL-047`, `FULL-ACC-047`)**:
+   - Monotonically incrementing fencing tokens or epochs for writer lease authority.
+   - When two processes/workers concurrently claim authority over the same tenant:
+     - The process holding the current/higher fencing token is permitted to dispatch state transitions and effects.
+     - The older or superseded process is rejected/quarantined with structured `SplitBrainWriterFencedError` (`FULL-ACC-047`).
+2. **Prohibition of In-Memory Authority in Production (`S16`)**:
+   - Production deployment profile requires durable distributed/database lease verification; in-memory lease minting is strictly rejected in production profile.

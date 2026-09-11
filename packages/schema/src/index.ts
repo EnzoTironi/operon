@@ -29,3 +29,4 @@ export * from "./context-verification.js";
 export * from "./surfaces.js";
 export * from "./connectors.js";
 export * from "./federation.js";
+export * from "./export.js";
