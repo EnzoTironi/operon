@@ -412,3 +412,43 @@ export class MemoryAccessDeniedError extends Data.TaggedError(
     | "TENANT_MISMATCH";
   readonly tenantId: string;
 }> {}
+
+/**
+ * ModelPromotionDeniedError (S12 / OPR-FULL-024):
+ * Promotion of candidate model to production routing rejected due to benchmark failure or data policy violation.
+ */
+export class ModelPromotionDeniedError extends Data.TaggedError(
+  "ModelPromotionDeniedError"
+)<{
+  readonly candidateModelId: string;
+  readonly currentProductionModelId: string;
+  readonly failures: readonly string[];
+  readonly message: string;
+  readonly reason: "BENCHMARK_FAILURE" | "DATA_POLICY_VIOLATION";
+}> {}
+
+/**
+ * ReadinessDeficientError (S12 / OPR-FULL-025):
+ * Action rejected because state readiness is deficient, even if model context fidelity is high.
+ */
+export class ReadinessDeficientError extends Data.TaggedError(
+  "ReadinessDeficientError"
+)<{
+  readonly actionId: string;
+  readonly contextFidelityScore: number;
+  readonly deficiencies: readonly string[];
+  readonly message: string;
+  readonly objectId: string;
+}> {}
+
+/**
+ * ModelGatewayExecutionError (S12 / OPR-FULL-024):
+ * Model execution or fallback routing failure in gateway.
+ */
+export class ModelGatewayExecutionError extends Data.TaggedError(
+  "ModelGatewayExecutionError"
+)<{
+  readonly message: string;
+  readonly modelId?: string;
+  readonly routingKey: string;
+}> {}

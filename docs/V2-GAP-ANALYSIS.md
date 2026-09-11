@@ -31,20 +31,22 @@ This document establishes the authoritative mapping between the **Operon V2 Rele
 | **`V2-02`** | **G2 / WS06** | Key Separation & Untrusted Model Candidates | `packages/schema/src/missions.ts`<br>`packages/runtime/src/missions/model-boundary.ts`<br>`packages/runtime/src/missions/model-boundary.test.ts` | 🟢 **100% Done**<br>Derived from `OPR-AGT-003` & `OPR-AGT-004`. | None. Key scope separation (consumer runtime vs builder dev), prompt injection immunity, reserved authority field rejection, and typed admission/quarantine verified with 14/14 tests passing. |
 | **`V2-03`** | **G2 / WS06** | Verifiable Mission Objectives & Planning DAGs | `packages/schema/src/missions.ts`<br>`packages/runtime/src/missions/mission-runner.ts`<br>`packages/runtime/src/missions/mission-runner.test.ts` | 🟢 **100% Done**<br>Derived from `OPR-FULL-021` & `OPR-FULL-023`. | None. Mission lifecycle with observable success predicates, cycle-free planning DAGs, envelope/budget/risk validation, mandatory constraint enforcement regardless of score, and prevention of fictional success verified with 14/14 tests passing. |
 | **`V2-04`** | **G2 / WS06** | Active Evidence Acquisition & Governed Memory | `packages/runtime/src/missions/evidence-acquisition.ts`<br>`packages/runtime/src/missions/agent-memory.ts`<br>`packages/runtime/src/missions/agent-memory.test.ts` | 🟢 **100% Done**<br>Derived from `OPR-FULL-022` & `OPR-AGT-005`. | None. Governed evidence acquisition within envelope/budget without fact fabrication on missing sources, strict cross-tenant memory isolation, TTL expiration, authority injection defense, and reconstructable task execution traces verified with 9/9 tests passing. |
-| **`V2-05`** | **G2 / WS06** | Replaceable Model Gateway & 4C Readiness | `packages/runtime/src/missions/model-gateway.ts`<br>`packages/runtime/src/missions/model-gateway.test.ts` | ⚪ **Not Started**<br>Derived from `OPR-FULL-024`, `OPR-FULL-025`, `OPR-CTX-001`. | Provider-neutral model gateway with evaluation suites, input classification, token budgeting. Enforce that context fidelity does not bypass canonical 4C-L1 state correctness. |
+| **`V2-05`** | **G2 / WS06** | Replaceable Model Gateway & 4C Readiness | `packages/runtime/src/missions/model-gateway.ts`<br>`packages/runtime/src/missions/model-gateway.test.ts` | 🟢 **100% Done**<br>Derived from `OPR-FULL-024`, `OPR-FULL-025`, `OPR-CTX-001`. | None. Provider-neutral model gateway with evaluation suites, benchmark-gated promotion to production routing, 4C state readiness verification over linguistic context fidelity, and graceful outage fallback with telemetry verified with 5/5 tests passing. |
 | **`V2-06`** | **G2 / WS06** | Typed Read Functions & L2 Context Verification | `packages/schema/src/functions.ts`<br>`packages/runtime/src/functions/`<br>`packages/runtime/src/functions/functions.test.ts` | ⚪ **Not Started**<br>Derived from `OPR-FUN-001..006` & `OPR-L2-001..006`. | Pure typed query functions with versioned logic and cache invalidation. L2 factual contradiction detection against bitemporal evidence. |
 | **`V2-07`** | **G2 / WS07** | Generated Application Surfaces | `packages/generated-ui/`<br>`packages/runtime/src/views/` | ⚪ **Not Started**<br>Derived from `S13`, `OPR-UX-*`, `OPR-ORG-*`. | Dynamic/disposable generated UI surfaces over kernel contracts. Strict state distinction (accepted, proposed, running, confirmed, hypothetical). Audience and tenant isolation. Zero UI expansion of authority. |
 | **`V2-08`** | **G2 / WS08** | Recipes, Skills & Enterprise Composition | `packages/recipes/`<br>`packages/skills/`<br>`examples/` | ⚪ **Not Started**<br>Derived from `S14`, `OPR-HC-*`, `OPR-WW-*`. | Package contracts for multi-domain capabilities. Execute composition journeys (J1-J4) across two unrelated recipes and one generated app with survival across regeneration and migration. |
 
 ---
 
-## 3. Immediate Next Execution: `V2-05` (Replaceable Model Gateway & 4C Readiness)
+## 3. Immediate Next Execution: `V2-06` (Typed Read Functions & L2 Context Verification)
 
-With `V2-01`, `V2-02`, `V2-03`, and `V2-04` resolved, the next ticket is `V2-05` (Workstream `WS06 - Missions and agent runtime`), addressing:
+With `V2-01`, `V2-02`, `V2-03`, `V2-04`, and `V2-05` resolved, the next ticket is `V2-06` (Workstream `WS06 - Missions and agent runtime`), addressing:
 
-1. **Replaceable Model Gateway (`OPR-FULL-024`)**:
-   - Provider-neutral model execution gateway supporting replaceable models, input classification, prompt/tool release pinning, and token budgeting.
-   - Sentinel evaluation suites with reproducible gold outputs.
-2. **Context Fidelity & 4C-L1 Non-Bypass (`OPR-CTX-001`, `OPR-FULL-025`)**:
-   - High-fidelity context injection must strictly never bypass canonical 4C-L1 state validation.
-   - Outage / changed provider produces a recorded lifecycle event with explicit fallback policy.
+1. **Typed Read Functions (`OPR-FUN-001..006`)**:
+   - Pure, deterministic read functions defined over typed domain entities.
+   - Versioned execution logic with explicit input/output schema validation.
+   - Cache invalidation bound to bitemporal event revisions.
+2. **L2 Context Verification (`OPR-L2-001..006`)**:
+   - Verification of prompt/agent context against L2 ground truth and bitemporal evidence.
+   - Explicit detection and rejection of factual hallucinations, contradictions, and temporal inconsistencies.
+   - Audit trail capturing source evidence references for every verified read assertion.
