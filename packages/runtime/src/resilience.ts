@@ -239,17 +239,18 @@ export class SystemHealthMap {
 
       yield* Effect.forEach(
         [...this.probes.entries()],
-        Effect.fn("AdaptiveResilienceService.checkProbe")(
-          function* ([name, probe]) {
-            const health = yield* probe();
-            components[name] = health;
-            if (health.status === "unhealthy") {
-              hasUnhealthy = true;
-            } else if (health.status === "degraded") {
-              hasDegraded = true;
-            }
+        Effect.fn("AdaptiveResilienceService.checkProbe")(function* ([
+          name,
+          probe,
+        ]) {
+          const health = yield* probe();
+          components[name] = health;
+          if (health.status === "unhealthy") {
+            hasUnhealthy = true;
+          } else if (health.status === "degraded") {
+            hasDegraded = true;
           }
-        ),
+        }),
         { concurrency: 1 }
       );
 

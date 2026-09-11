@@ -1,11 +1,3 @@
-import {
-  joinPath,
-  makeDirSync,
-  makeTempDirSync,
-  rmDirRecursiveSync,
-  writeTextFileSync,
-} from "./fs-io.js";
-
 import type {
   ConsentScope,
   F1TestCase,
@@ -17,6 +9,13 @@ import { describe, expect, it } from "vitest";
 import { PublicationLeakError } from "./errors.js";
 import { F1EvaluatorService } from "./f1-evaluator.js";
 import { F2MirrorService } from "./f2-evaluator.js";
+import {
+  joinPath,
+  makeDirSync,
+  makeTempDirSync,
+  rmDirRecursiveSync,
+  writeTextFileSync,
+} from "./fs-io.js";
 import { PublicationBoundaryService } from "./publication-boundary.js";
 
 describe("@operon/assurance test suite", () => {
@@ -407,10 +406,7 @@ describe("@operon/assurance test suite", () => {
         );
 
         // Create clean files
-        writeTextFileSync(
-          joinPath(tempDir, "README.md"),
-          "# Operon Public"
-        );
+        writeTextFileSync(joinPath(tempDir, "README.md"), "# Operon Public");
         makeDirSync(joinPath(tempDir, "src"));
         writeTextFileSync(
           joinPath(tempDir, "src/main.ts"),

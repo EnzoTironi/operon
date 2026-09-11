@@ -70,49 +70,39 @@ const validateApprovalState = Effect.fn(
 ) {
   if (approval) {
     if (approval.preparedDigest !== prepared.canonicalDigest) {
-      return yield* 
-        new ApprovalDigestMismatchError({
-          message: `Approval viewedDigest '${approval.viewedDigest}' does not match prepared digest '${prepared.canonicalDigest}'`,
-          preparedDigest: prepared.canonicalDigest,
-          viewedDigest: approval.viewedDigest,
-        })
-      ;
+      return yield* new ApprovalDigestMismatchError({
+        message: `Approval viewedDigest '${approval.viewedDigest}' does not match prepared digest '${prepared.canonicalDigest}'`,
+        preparedDigest: prepared.canonicalDigest,
+        viewedDigest: approval.viewedDigest,
+      });
     }
     if (approval.decision !== "approved") {
-      return yield* 
-        new FreshnessOrPolicyDeniedError({
-          actionId: prepared.actionId,
-          message: `Cannot commit rejected proposal approval '${approval.id}'`,
-          reasons: ["Proposal was rejected by reviewer"],
-        })
-      ;
+      return yield* new FreshnessOrPolicyDeniedError({
+        actionId: prepared.actionId,
+        message: `Cannot commit rejected proposal approval '${approval.id}'`,
+        reasons: ["Proposal was rejected by reviewer"],
+      });
     }
     if (now > approval.expiresAt) {
-      return yield* 
-        new StaleApprovalError({
-          message: `Approval '${approval.id}' expired at ${approval.expiresAt}`,
-          preparedDigest: prepared.canonicalDigest,
-          reason: "approval_expired",
-        })
-      ;
+      return yield* new StaleApprovalError({
+        message: `Approval '${approval.id}' expired at ${approval.expiresAt}`,
+        preparedDigest: prepared.canonicalDigest,
+        reason: "approval_expired",
+      });
     }
     if (consumedApprovals.has(approval.id)) {
-      return yield* 
-        new StaleApprovalError({
-          message: `Approval '${approval.id}' has already been consumed by another operation`,
-          preparedDigest: prepared.canonicalDigest,
-          reason: "approval_already_consumed",
-        })
-      ;
+      return yield* new StaleApprovalError({
+        message: `Approval '${approval.id}' has already been consumed by another operation`,
+        preparedDigest: prepared.canonicalDigest,
+        reason: "approval_already_consumed",
+      });
     }
   } else if (prepared.verdict !== "allow") {
-    return yield* 
-      new FreshnessOrPolicyDeniedError({
-        actionId: prepared.actionId,
-        message: `Action requires review (prepared verdict: ${prepared.verdict}) and cannot be committed without signed approval`,
-        reasons: prepared.reviewReasons ?? ["Requires human approval"],
-      })
-    ;
+    return yield* new FreshnessOrPolicyDeniedError({
+      actionId: prepared.actionId,
+      message: `Action requires review (prepared verdict: ${prepared.verdict}) and cannot be committed without signed approval`,
+      reasons: prepared.reviewReasons ?? ["Requires human approval"],
+    });
   }
 });
 
@@ -154,23 +144,19 @@ const rollbackSnapshots = Effect.fn("AtomicCommitService.rollbackSnapshots")(
   ) {
     yield* Effect.forEach(
       [...snapshots.entries()],
-      Effect.fn("AtomicCommitService.revertSnapshot")(
-        function* ([key, orig]) {
-          const [typeId, id] = key.split(":");
-          if (typeId && id) {
-            const objTypeId = ObjectTypeId.make(typeId);
-            if (objectStore.revertObject) {
-              yield* objectStore.revertObject(objTypeId, id, orig);
-            } else if (orig) {
-              yield* objectStore.putObject(orig).pipe(Effect.ignore);
-            } else {
-              yield* objectStore
-                .deleteObject(objTypeId, id)
-                .pipe(Effect.ignore);
-            }
+      Effect.fn("AtomicCommitService.revertSnapshot")(function* ([key, orig]) {
+        const [typeId, id] = key.split(":");
+        if (typeId && id) {
+          const objTypeId = ObjectTypeId.make(typeId);
+          if (objectStore.revertObject) {
+            yield* objectStore.revertObject(objTypeId, id, orig);
+          } else if (orig) {
+            yield* objectStore.putObject(orig).pipe(Effect.ignore);
+          } else {
+            yield* objectStore.deleteObject(objTypeId, id).pipe(Effect.ignore);
           }
         }
-      ),
+      }),
       { concurrency: 1 }
     );
   }
@@ -423,12 +409,10 @@ export class AtomicCommitService {
 
       // 1. Tenant & Environment non-disclosure check
       if (prepared.tenantId !== tenantId) {
-        return yield* 
-          new TenantMismatchError({
-            message: "Prepared action does not exist for tenant",
-            tenantId,
-          })
-        ;
+        return yield* new TenantMismatchError({
+          message: "Prepared action does not exist for tenant",
+          tenantId,
+        });
       }
 
       const scopedIdempotencyKey = `${tenantId}:${environmentId}:${prepared.actionId}:${idempotencyKey}`;
@@ -437,12 +421,10 @@ export class AtomicCommitService {
       const existingIdempotency = idempotencyRegistry.get(scopedIdempotencyKey);
       if (existingIdempotency) {
         if (existingIdempotency.preparedDigest !== prepared.canonicalDigest) {
-          return yield* 
-            new IdempotencyConflictError({
-              idempotencyKey,
-              message: `Idempotency key '${idempotencyKey}' was already committed with a different prepared proposal digest`,
-            })
-          ;
+          return yield* new IdempotencyConflictError({
+            idempotencyKey,
+            message: `Idempotency key '${idempotencyKey}' was already committed with a different prepared proposal digest`,
+          });
         }
         return existingIdempotency.receipt;
       }
@@ -631,20 +613,16 @@ export class AtomicCommitService {
     return Effect.gen(function* () {
       const op = operations.get(operationId);
       if (!op) {
-        return yield* 
-          new TenantMismatchError({
-            message: `Operation '${operationId}' not found`,
-            tenantId,
-          })
-        ;
+        return yield* new TenantMismatchError({
+          message: `Operation '${operationId}' not found`,
+          tenantId,
+        });
       }
       if (op.tenantId !== tenantId) {
-        return yield* 
-          new TenantMismatchError({
-            message: `Operation does not exist for tenant`,
-            tenantId,
-          })
-        ;
+        return yield* new TenantMismatchError({
+          message: `Operation does not exist for tenant`,
+          tenantId,
+        });
       }
 
       const updatedReceipt: OperationReceipt = {
@@ -667,12 +645,10 @@ export class AtomicCommitService {
         return;
       }
       if (op.tenantId !== tenantId) {
-        return yield* 
-          new TenantMismatchError({
-            message: "Operation does not exist for tenant",
-            tenantId,
-          })
-        ;
+        return yield* new TenantMismatchError({
+          message: "Operation does not exist for tenant",
+          tenantId,
+        });
       }
       return op;
     });

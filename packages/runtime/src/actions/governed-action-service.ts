@@ -403,13 +403,11 @@ export class GovernedActionService {
 
       const action = actionTypes.get(actionId);
       if (!action) {
-        return yield* 
-          new FreshnessOrPolicyDeniedError({
-            actionId,
-            message: `ActionType '${actionId}' is not registered`,
-            reasons: [`ActionType '${actionId}' not found`],
-          })
-        ;
+        return yield* new FreshnessOrPolicyDeniedError({
+          actionId,
+          message: `ActionType '${actionId}' is not registered`,
+          reasons: [`ActionType '${actionId}' not found`],
+        });
       }
 
       // 1. Parameter decoding & validation
@@ -617,55 +615,45 @@ export class GovernedActionService {
       // 1. Lookup prepared action by preparedDigest
       const prepared = preparedActions.get(preparedDigest);
       if (!prepared) {
-        return yield* 
-          new PreparedActionNotFoundError({
-            message: `Prepared action with digest '${preparedDigest}' not found`,
-            preparedDigest,
-          })
-        ;
+        return yield* new PreparedActionNotFoundError({
+          message: `Prepared action with digest '${preparedDigest}' not found`,
+          preparedDigest,
+        });
       }
 
       // 2. Tenant non-disclosure check
       if (prepared.tenantId !== reviewerContext.tenantId) {
-        return yield* 
-          new TenantMismatchError({
-            message: `Prepared action does not exist for tenant`,
-            tenantId: reviewerContext.tenantId,
-          })
-        ;
+        return yield* new TenantMismatchError({
+          message: `Prepared action does not exist for tenant`,
+          tenantId: reviewerContext.tenantId,
+        });
       }
 
       // 3. Exact Proposal Digest Match (S07 Invariant)
       if (preparedDigest !== viewedDigest) {
-        return yield* 
-          new ApprovalDigestMismatchError({
-            message: `Viewed proposal digest '${viewedDigest}' does not match prepared digest '${preparedDigest}'`,
-            preparedDigest,
-            viewedDigest,
-          })
-        ;
+        return yield* new ApprovalDigestMismatchError({
+          message: `Viewed proposal digest '${viewedDigest}' does not match prepared digest '${preparedDigest}'`,
+          preparedDigest,
+          viewedDigest,
+        });
       }
 
       // 4. Stale approval check (Proposal expiration)
       if (now > prepared.expiresAt) {
-        return yield* 
-          new StaleApprovalError({
-            message: `Prepared action proposal '${prepared.id}' expired at ${prepared.expiresAt}`,
-            preparedDigest,
-            reason: "proposal_expired",
-          })
-        ;
+        return yield* new StaleApprovalError({
+          message: `Prepared action proposal '${prepared.id}' expired at ${prepared.expiresAt}`,
+          preparedDigest,
+          reason: "proposal_expired",
+        });
       }
 
       // 5. Self-Approval Invariant: Proposer cannot self-approve
       if (reviewerContext.reviewer.id === prepared.proposer.id) {
-        return yield* 
-          new SelfApprovalDeniedError({
-            message: `Independent review required: proposer '${prepared.proposer.id}' cannot approve own proposal`,
-            proposerId: prepared.proposer.id,
-            reviewerId: reviewerContext.reviewer.id,
-          })
-        ;
+        return yield* new SelfApprovalDeniedError({
+          message: `Independent review required: proposer '${prepared.proposer.id}' cannot approve own proposal`,
+          proposerId: prepared.proposer.id,
+          reviewerId: reviewerContext.reviewer.id,
+        });
       }
 
       // 6. Fabricated Approval Invariant: Sentinel or AI agent cannot satisfy human approval requirement
@@ -673,12 +661,10 @@ export class GovernedActionService {
         reviewerContext.reviewer.type === "agent" &&
         reviewerContext.assurance !== "delegated_service"
       ) {
-        return yield* 
-          new FabricatedApprovalError({
-            message: `Approval requires an authenticated human reviewer, but got agent '${reviewerContext.reviewer.id}'`,
-            reason: "agent_cannot_approve_human_proposal",
-          })
-        ;
+        return yield* new FabricatedApprovalError({
+          message: `Approval requires an authenticated human reviewer, but got agent '${reviewerContext.reviewer.id}'`,
+          reason: "agent_cannot_approve_human_proposal",
+        });
       }
 
       // 7. Role / Authorization check
@@ -686,13 +672,11 @@ export class GovernedActionService {
         DEFAULT_APPROVER_ROLES.has(r.toLowerCase())
       );
       if (!hasAllowedRole) {
-        return yield* 
-          new UnauthorizedReviewerError({
-            message: `Reviewer '${reviewerContext.reviewer.id}' lacks authorized approver role`,
-            requiredRole: "approver",
-            reviewerId: reviewerContext.reviewer.id,
-          })
-        ;
+        return yield* new UnauthorizedReviewerError({
+          message: `Reviewer '${reviewerContext.reviewer.id}' lacks authorized approver role`,
+          requiredRole: "approver",
+          reviewerId: reviewerContext.reviewer.id,
+        });
       }
 
       // 8. Create ApprovalRecord
@@ -735,20 +719,16 @@ export class GovernedActionService {
     return Effect.gen(function* () {
       const p = preparedActions.get(preparedDigest);
       if (!p) {
-        return yield* 
-          new PreparedActionNotFoundError({
-            message: `Prepared action with digest '${preparedDigest}' not found`,
-            preparedDigest,
-          })
-        ;
+        return yield* new PreparedActionNotFoundError({
+          message: `Prepared action with digest '${preparedDigest}' not found`,
+          preparedDigest,
+        });
       }
       if (p.tenantId !== tenantId) {
-        return yield* 
-          new TenantMismatchError({
-            message: "Prepared action does not exist for tenant",
-            tenantId,
-          })
-        ;
+        return yield* new TenantMismatchError({
+          message: "Prepared action does not exist for tenant",
+          tenantId,
+        });
       }
       return p;
     });
@@ -765,20 +745,16 @@ export class GovernedActionService {
     return Effect.gen(function* () {
       const a = approvals.get(approvalId);
       if (!a) {
-        return yield* 
-          new ApprovalRecordNotFoundError({
-            approvalId,
-            message: `Approval record '${approvalId}' not found`,
-          })
-        ;
+        return yield* new ApprovalRecordNotFoundError({
+          approvalId,
+          message: `Approval record '${approvalId}' not found`,
+        });
       }
       if (a.reviewerContext.tenantId !== tenantId) {
-        return yield* 
-          new TenantMismatchError({
-            message: "Approval record does not exist for tenant",
-            tenantId,
-          })
-        ;
+        return yield* new TenantMismatchError({
+          message: "Approval record does not exist for tenant",
+          tenantId,
+        });
       }
       return a;
     });
@@ -795,12 +771,10 @@ export class GovernedActionService {
         return;
       }
       if (a.reviewerContext.tenantId !== tenantId) {
-        return yield* 
-          new TenantMismatchError({
-            message: "Approval record does not exist for tenant",
-            tenantId,
-          })
-        ;
+        return yield* new TenantMismatchError({
+          message: "Approval record does not exist for tenant",
+          tenantId,
+        });
       }
       return a;
     });

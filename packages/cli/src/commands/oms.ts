@@ -210,9 +210,7 @@ const handleArtifactApply = Effect.fn("handleArtifactApply")(function* (
 
   const expectedRevision = revStr ? Math.trunc(Number(revStr)) : undefined;
 
-  const fileContent = yield* Effect.try(() =>
-    readTextFileSync(filePath)
-  );
+  const fileContent = yield* Effect.try(() => readTextFileSync(filePath));
 
   // SAFETY: Artifact file content decoded and validated by applyArtifact
   const rawArtifact = parseJson(fileContent) as DefinitionArtifact;

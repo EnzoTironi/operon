@@ -1,7 +1,7 @@
 import type { KnipConfig } from "knip";
 
 const config: KnipConfig = {
-  ignore: [".cursor/**", ".agents/**"],
+  ignore: [".cursor/**", ".agents/**", "tools/**"],
   ignoreDependencies: [
     "@effect/language-service",
     "@vitest/coverage-v8",
@@ -17,7 +17,6 @@ const config: KnipConfig = {
         "validation/**/*.ts",
         ".agents/skills/verify-operon/helpers/**/*.ts",
       ],
-      ignoreDependencies: ["effect"],
     },
     "packages/alchemy": {
       entry: ["src/worker.ts!"],

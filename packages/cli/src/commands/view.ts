@@ -67,9 +67,7 @@ function readRawData(
         new Error(`Failed to parse JSON from stdin: ${String(cause)}`),
       // SAFETY: parse stdin JSON content as ViewRecord
       try: () =>
-        parseJson(readStdinSync()) as
-          | ViewRecord
-          | readonly ViewRecord[],
+        parseJson(readStdinSync()) as ViewRecord | readonly ViewRecord[],
     });
   }
   const dataStr = getFlagValue(args, "--data");

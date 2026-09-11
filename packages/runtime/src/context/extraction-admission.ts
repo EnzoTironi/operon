@@ -79,25 +79,21 @@ export const ExtractionAdmissionServiceLive = Layer.sync(
 
           const candidate = candidates.get(candidateId);
           if (!candidate) {
-            return yield* 
-              new UnadmittedCandidateError({
-                candidateId,
-                message: `Candidate fact '${candidateId}' not found`,
-                status: "NOT_FOUND",
-              })
-            ;
+            return yield* new UnadmittedCandidateError({
+              candidateId,
+              message: `Candidate fact '${candidateId}' not found`,
+              status: "NOT_FOUND",
+            });
           }
 
           // Must be admitted by an authorized human role, not by automated agents (OPR-L2-005)
           if (!PERMITTED_HUMAN_ROLES.has(admittedByActorRole)) {
-            return yield* 
-              new FunctionPermissionDeniedError({
-                callerId: admittedByActorId,
-                functionId: "admitCandidate",
-                message: `Actor '${admittedByActorId}' with role '${admittedByActorRole}' is not authorized to admit evidence; human admission role required`,
-                missingPermissions: ["HUMAN_ADMISSION_AUTHORITY"],
-              })
-            ;
+            return yield* new FunctionPermissionDeniedError({
+              callerId: admittedByActorId,
+              functionId: "admitCandidate",
+              message: `Actor '${admittedByActorId}' with role '${admittedByActorRole}' is not authorized to admit evidence; human admission role required`,
+              missingPermissions: ["HUMAN_ADMISSION_AUTHORITY"],
+            });
           }
 
           // Update candidate status
@@ -151,24 +147,20 @@ export const ExtractionAdmissionServiceLive = Layer.sync(
       )(function* (candidateId: string) {
         const candidate = candidates.get(candidateId);
         if (!candidate || candidate.status !== "ADMITTED") {
-          return yield* 
-            new UnadmittedCandidateError({
-              candidateId,
-              message: `Candidate '${candidateId}' is in '${candidate?.status ?? "UNKNOWN"}' state and cannot be used as authoritative evidence without human admission`,
-              status: candidate?.status ?? "UNKNOWN",
-            })
-          ;
+          return yield* new UnadmittedCandidateError({
+            candidateId,
+            message: `Candidate '${candidateId}' is in '${candidate?.status ?? "UNKNOWN"}' state and cannot be used as authoritative evidence without human admission`,
+            status: candidate?.status ?? "UNKNOWN",
+          });
         }
 
         const admitted = admittedFacts.get(candidateId);
         if (!admitted) {
-          return yield* 
-            new UnadmittedCandidateError({
-              candidateId,
-              message: `Admitted record for candidate '${candidateId}' missing`,
-              status: "CORRUPTED",
-            })
-          ;
+          return yield* new UnadmittedCandidateError({
+            candidateId,
+            message: `Admitted record for candidate '${candidateId}' missing`,
+            status: "CORRUPTED",
+          });
         }
 
         return admitted;
@@ -182,13 +174,11 @@ export const ExtractionAdmissionServiceLive = Layer.sync(
         function* (candidateId: string) {
           const candidate = candidates.get(candidateId);
           if (!candidate) {
-            return yield* 
-              new UnadmittedCandidateError({
-                candidateId,
-                message: `Candidate '${candidateId}' not found`,
-                status: "NOT_FOUND",
-              })
-            ;
+            return yield* new UnadmittedCandidateError({
+              candidateId,
+              message: `Candidate '${candidateId}' not found`,
+              status: "NOT_FOUND",
+            });
           }
 
           candidates.set(candidateId, { ...candidate, status: "REJECTED" });

@@ -73,14 +73,12 @@ export const GovernedMemoryServiceLive = Layer.sync(
         options?: { readonly mandateId?: string; readonly now?: number }
       ) {
         if (tenantId !== accessKey.tenantId) {
-          return yield* 
-            new MemoryAccessDeniedError({
-              memoryId: "query",
-              message: `Cross-tenant memory access prohibited: caller tenant '${accessKey.tenantId}' cannot query tenant '${tenantId}'`,
-              reason: "TENANT_MISMATCH",
-              tenantId,
-            })
-          ;
+          return yield* new MemoryAccessDeniedError({
+            memoryId: "query",
+            message: `Cross-tenant memory access prohibited: caller tenant '${accessKey.tenantId}' cannot query tenant '${tenantId}'`,
+            reason: "TENANT_MISMATCH",
+            tenantId,
+          });
         }
 
         const now = options?.now ?? (yield* Clock.currentTimeMillis);
@@ -115,14 +113,12 @@ export const GovernedMemoryServiceLive = Layer.sync(
       ) {
         // 1. Enforce tenant boundary
         if (record.tenantId !== accessKey.tenantId) {
-          return yield* 
-            new MemoryAccessDeniedError({
-              memoryId: record.memoryId,
-              message: `Cross-tenant memory write denied: record tenant '${record.tenantId}' does not match access key tenant '${accessKey.tenantId}'`,
-              reason: "TENANT_MISMATCH",
-              tenantId: record.tenantId,
-            })
-          ;
+          return yield* new MemoryAccessDeniedError({
+            memoryId: record.memoryId,
+            message: `Cross-tenant memory write denied: record tenant '${record.tenantId}' does not match access key tenant '${accessKey.tenantId}'`,
+            reason: "TENANT_MISMATCH",
+            tenantId: record.tenantId,
+          });
         }
 
         // 2. Enforce authority key immutability (memory cannot mint or store forged authority)
@@ -171,26 +167,22 @@ export const GovernedMemoryServiceLive = Layer.sync(
               });
             }
 
-            return yield* 
-              new MemoryAccessDeniedError({
-                memoryId,
-                message: `Memory '${memoryId}' not found in tenant '${accessKey.tenantId}'`,
-                reason: "TENANT_MISMATCH",
-                tenantId: accessKey.tenantId,
-              })
-            ;
+            return yield* new MemoryAccessDeniedError({
+              memoryId,
+              message: `Memory '${memoryId}' not found in tenant '${accessKey.tenantId}'`,
+              reason: "TENANT_MISMATCH",
+              tenantId: accessKey.tenantId,
+            });
           }
 
           // Check expiration
           if (record.expiresAt !== undefined && now > record.expiresAt) {
-            return yield* 
-              new MemoryAccessDeniedError({
-                memoryId,
-                message: `Memory '${memoryId}' has expired (expiredAt: ${record.expiresAt}, now: ${now})`,
-                reason: "EXPIRED",
-                tenantId: record.tenantId,
-              })
-            ;
+            return yield* new MemoryAccessDeniedError({
+              memoryId,
+              message: `Memory '${memoryId}' has expired (expiredAt: ${record.expiresAt}, now: ${now})`,
+              reason: "EXPIRED",
+              tenantId: record.tenantId,
+            });
           }
 
           return record;

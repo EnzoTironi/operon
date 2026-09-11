@@ -251,26 +251,22 @@ export const ModelBoundaryServiceLive = Layer.succeed(
       switch (key.scope) {
         case "CONSUMER": {
           if (check.operation === "definition_change") {
-            return yield* 
-              new KeyScopeViolationError({
-                attemptedAction: check.operation,
-                keyId: key.keyId,
-                keyScope: "CONSUMER",
-                message: `Consumer key '${key.keyId}' cannot change governing definitions or guard policies (targetDomain: definition)`,
-                targetDomain: "definition",
-              })
-            ;
+            return yield* new KeyScopeViolationError({
+              attemptedAction: check.operation,
+              keyId: key.keyId,
+              keyScope: "CONSUMER",
+              message: `Consumer key '${key.keyId}' cannot change governing definitions or guard policies (targetDomain: definition)`,
+              targetDomain: "definition",
+            });
           }
           if (check.operation === "self_approval") {
-            return yield* 
-              new KeyScopeViolationError({
-                attemptedAction: check.operation,
-                keyId: key.keyId,
-                keyScope: "CONSUMER",
-                message: `Consumer key '${key.keyId}' cannot approve proposals directly without independent review (targetDomain: self_approval)`,
-                targetDomain: "self_approval",
-              })
-            ;
+            return yield* new KeyScopeViolationError({
+              attemptedAction: check.operation,
+              keyId: key.keyId,
+              keyScope: "CONSUMER",
+              message: `Consumer key '${key.keyId}' cannot approve proposals directly without independent review (targetDomain: self_approval)`,
+              targetDomain: "self_approval",
+            });
           }
           break;
         }
@@ -279,26 +275,22 @@ export const ModelBoundaryServiceLive = Layer.succeed(
             check.operation === "production_read" ||
             check.operation === "production_write"
           ) {
-            return yield* 
-              new KeyScopeViolationError({
-                attemptedAction: check.operation,
-                keyId: key.keyId,
-                keyScope: "BUILDER",
-                message: `Builder key '${key.keyId}' cannot directly access production business data (targetDomain: production_data); use isolated sandbox resources`,
-                targetDomain: "production_data",
-              })
-            ;
+            return yield* new KeyScopeViolationError({
+              attemptedAction: check.operation,
+              keyId: key.keyId,
+              keyScope: "BUILDER",
+              message: `Builder key '${key.keyId}' cannot directly access production business data (targetDomain: production_data); use isolated sandbox resources`,
+              targetDomain: "production_data",
+            });
           }
           if (check.operation === "self_approval") {
-            return yield* 
-              new KeyScopeViolationError({
-                attemptedAction: check.operation,
-                keyId: key.keyId,
-                keyScope: "BUILDER",
-                message: `Builder key '${key.keyId}' cannot self-approve or merge its own proposal into production (targetDomain: self_approval)`,
-                targetDomain: "self_approval",
-              })
-            ;
+            return yield* new KeyScopeViolationError({
+              attemptedAction: check.operation,
+              keyId: key.keyId,
+              keyScope: "BUILDER",
+              message: `Builder key '${key.keyId}' cannot self-approve or merge its own proposal into production (targetDomain: self_approval)`,
+              targetDomain: "self_approval",
+            });
           }
           break;
         }
@@ -321,15 +313,13 @@ export const ModelBoundaryServiceLive = Layer.succeed(
       const evalResult = evaluateCandidate(input, registry);
 
       if (evalResult.verdict !== "ADMITTED" || !evalResult.sanitizedPayload) {
-        return yield* 
-          new UntrustedCandidateQuarantinedError({
-            candidateId: input.candidateId,
-            message: `Model candidate '${input.candidateId}' was not admitted: ${evalResult.quarantineReason ?? "Validation failed"}`,
-            modelId: input.modelId,
-            reason: evalResult.quarantineReason ?? "validation_failed",
-            violations: evalResult.violations,
-          })
-        ;
+        return yield* new UntrustedCandidateQuarantinedError({
+          candidateId: input.candidateId,
+          message: `Model candidate '${input.candidateId}' was not admitted: ${evalResult.quarantineReason ?? "Validation failed"}`,
+          modelId: input.modelId,
+          reason: evalResult.quarantineReason ?? "validation_failed",
+          violations: evalResult.violations,
+        });
       }
 
       return evalResult.sanitizedPayload;

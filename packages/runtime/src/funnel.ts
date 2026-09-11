@@ -123,72 +123,72 @@ export class FunnelService {
       rawRecords,
       Effect.fn("FunnelService.ingestRecord")(function* (record) {
         const rawId = record[pipeline.primaryKeyField];
-          if (rawId === undefined || rawId === null) {
-            skippedCount++;
-            return;
-          }
-          const id = String(rawId);
-          const mappedProperties = extractRecordProperties(
-            record,
-            pipeline.propertyMappings
+        if (rawId === undefined || rawId === null) {
+          skippedCount++;
+          return;
+        }
+        const id = String(rawId);
+        const mappedProperties = extractRecordProperties(
+          record,
+          pipeline.propertyMappings
+        );
+
+        const existing = yield* store.getObject(
+          pipeline.targetObjectTypeId as ObjectTypeId,
+          id
+        );
+
+        if (!existing) {
+          const newInstance: ObjectInstance = {
+            id,
+            lastModifiedAt: now,
+            properties: mappedProperties,
+            typeId: pipeline.targetObjectTypeId as ObjectTypeId,
+            version: 1,
+          };
+          yield* store.putObject(newInstance).pipe(
+            Effect.mapError(
+              (err) =>
+                new FunnelIngestionError({
+                  message: `Failed to insert object: ${err.message}`,
+                  pipelineId,
+                })
+            )
           );
+          createdCount++;
+          return;
+        }
 
-          const existing = yield* store.getObject(
-            pipeline.targetObjectTypeId as ObjectTypeId,
-            id
+        const shouldUpdate = resolveConflict(
+          pipeline.conflictPolicy,
+          existing,
+          record
+        );
+
+        if (shouldUpdate) {
+          const updatedInstance: ObjectInstance = {
+            ...existing,
+            lastModifiedAt: now,
+            properties: {
+              ...existing.properties,
+              ...mappedProperties,
+            },
+            version: existing.version + 1,
+          };
+          yield* store.putObject(updatedInstance).pipe(
+            Effect.mapError(
+              (err) =>
+                new FunnelIngestionError({
+                  message: `Failed to update object: ${err.message}`,
+                  pipelineId,
+                })
+            )
           );
-
-          if (!existing) {
-            const newInstance: ObjectInstance = {
-              id,
-              lastModifiedAt: now,
-              properties: mappedProperties,
-              typeId: pipeline.targetObjectTypeId as ObjectTypeId,
-              version: 1,
-            };
-            yield* store.putObject(newInstance).pipe(
-              Effect.mapError(
-                (err) =>
-                  new FunnelIngestionError({
-                    message: `Failed to insert object: ${err.message}`,
-                    pipelineId,
-                  })
-              )
-            );
-            createdCount++;
-            return;
-          }
-
-          const shouldUpdate = resolveConflict(
-            pipeline.conflictPolicy,
-            existing,
-            record
-          );
-
-          if (shouldUpdate) {
-            const updatedInstance: ObjectInstance = {
-              ...existing,
-              lastModifiedAt: now,
-              properties: {
-                ...existing.properties,
-                ...mappedProperties,
-              },
-              version: existing.version + 1,
-            };
-            yield* store.putObject(updatedInstance).pipe(
-              Effect.mapError(
-                (err) =>
-                  new FunnelIngestionError({
-                    message: `Failed to update object: ${err.message}`,
-                    pipelineId,
-                  })
-              )
-            );
-            updatedCount++;
-          } else {
-            skippedCount++;
-          }
-        }),
+          updatedCount++;
+        } else {
+          skippedCount++;
+        }
+      }),
       { concurrency: 1 }
     );
 
@@ -538,45 +538,45 @@ export class AccountableIngestionService {
 
         yield* Effect.forEach(
           items,
-          Effect.fn("AccountableIngestionService.processItem")(function* (
-            item
-          ) {
-            const rawPk = item[options.primaryKeyField];
-            if (rawPk === undefined || rawPk === null) {
-              openQuestions.push(
-                `Record in source '${src.sourceId}' missing primary key field '${options.primaryKeyField}'`
+          Effect.fn("AccountableIngestionService.processItem")(
+            function* (item) {
+              const rawPk = item[options.primaryKeyField];
+              if (rawPk === undefined || rawPk === null) {
+                openQuestions.push(
+                  `Record in source '${src.sourceId}' missing primary key field '${options.primaryKeyField}'`
+                );
+                return;
+              }
+              const pkStr = String(rawPk);
+              const { mappedProps, fieldProvenances } = mapItemProperties(
+                item,
+                options.propertyMappings,
+                src
               );
-              return;
+
+              const prev = seenRecordsById.get(pkStr);
+              if (prev) {
+                yield* checkConflictingProperties(prev, mappedProps, pkStr);
+              }
+
+              const candidate: CandidateRecord = {
+                confidence: 0.95,
+                properties: mappedProps,
+                provenance: {
+                  batchId: src.batchId,
+                  digest: src.digest,
+                  fieldProvenances,
+                  locator: src.locator,
+                  sourceId: src.sourceId,
+                },
+                rawRecordId: pkStr,
+                targetObjectTypeId: options.targetObjectTypeId,
+              };
+
+              seenRecordsById.set(pkStr, candidate);
+              candidateRecords.push(candidate);
             }
-            const pkStr = String(rawPk);
-            const { mappedProps, fieldProvenances } = mapItemProperties(
-              item,
-              options.propertyMappings,
-              src
-            );
-
-            const prev = seenRecordsById.get(pkStr);
-            if (prev) {
-              yield* checkConflictingProperties(prev, mappedProps, pkStr);
-            }
-
-            const candidate: CandidateRecord = {
-              confidence: 0.95,
-              properties: mappedProps,
-              provenance: {
-                batchId: src.batchId,
-                digest: src.digest,
-                fieldProvenances,
-                locator: src.locator,
-                sourceId: src.sourceId,
-              },
-              rawRecordId: pkStr,
-              targetObjectTypeId: options.targetObjectTypeId,
-            };
-
-            seenRecordsById.set(pkStr, candidate);
-            candidateRecords.push(candidate);
-          }),
+          ),
           { concurrency: 1 }
         );
       }),

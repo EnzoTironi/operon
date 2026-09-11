@@ -224,10 +224,7 @@ const evaluateSubmissionCriteria = Effect.fn("evaluateSubmissionCriteria")(
     actionType: ActionType<Params>,
     params: Params,
     evalContext: ActionEvaluationContext
-  ): Effect.fn.Return<
-    SubmissionCriteriaResult,
-    SubmissionCriteriaFailedError
-  > {
+  ): Effect.fn.Return<SubmissionCriteriaResult, SubmissionCriteriaFailedError> {
     if (!actionType.submissionCriteria) {
       return { guardResults: [], needsHumanReview: false };
     }
@@ -434,18 +431,18 @@ const executeSideEffectsWithCompensation = Effect.fn(
           parameters: params as Record<string, unknown>,
           reason: `Side effect '${se.id}' failed: ${failureReason}${compensationSucceeded ? "" : " (compensation failed)"}`,
           ruleVersion,
-            stateSnapshot: snapshot,
-            subject: security.subject,
-            timestamp: nowMs,
-            verdict: "deny",
-          });
-          return yield* new SideEffectExecutionError({
-            cause: sideEffectResult.cause,
-            sideEffectId: se.id,
-          });
-        }
-        executedSideEffects.push(se);
-      }),
+          stateSnapshot: snapshot,
+          subject: security.subject,
+          timestamp: nowMs,
+          verdict: "deny",
+        });
+        return yield* new SideEffectExecutionError({
+          cause: sideEffectResult.cause,
+          sideEffectId: se.id,
+        });
+      }
+      executedSideEffects.push(se);
+    }),
     { concurrency: 1 }
   );
 });
@@ -456,7 +453,10 @@ const executeStagedLogicOrMutation = Effect.fn("executeStagedLogicOrMutation")(
     actionType: ActionType<Params>,
     params: Params,
     evalContext: ActionEvaluationContext
-  ): Effect.fn.Return<readonly ObjectInstance[], SubmissionCriteriaFailedError> {
+  ): Effect.fn.Return<
+    readonly ObjectInstance[],
+    SubmissionCriteriaFailedError
+  > {
     if (submission.stagedLogic) {
       return yield* submission.stagedLogic(params, evalContext).pipe(
         Effect.mapError(
@@ -656,263 +656,259 @@ export function executeWritePipeline<Params = ActionParameters>(
     | IdempotencyConflictError,
     never
   > = Effect.gen(function* () {
-      const {
-        actionType,
-        rawParameters,
-        security,
-        ruleVersion = "1.0.0",
-        idempotencyKey,
-      } = submission;
-      const now = security.timestamp;
-      const startTime = yield* Clock.currentTimeMillis;
+    const {
+      actionType,
+      rawParameters,
+      security,
+      ruleVersion = "1.0.0",
+      idempotencyKey,
+    } = submission;
+    const now = security.timestamp;
+    const startTime = yield* Clock.currentTimeMillis;
 
-      const paramsHash = createHash("sha256")
-        .update(serializeJson(rawParameters))
-        .digest("hex");
+    const paramsHash = createHash("sha256")
+      .update(serializeJson(rawParameters))
+      .digest("hex");
 
-      if (idempotencyKey) {
-        const existing = idempotencyRegistry.get(idempotencyKey);
-        if (existing) {
-          if (
-            existing.actionTypeId !== actionType.id ||
-            existing.paramsHash !== paramsHash
-          ) {
-            return yield* new IdempotencyConflictError({
-              idempotencyKey,
-              message: `Idempotency key '${idempotencyKey}' was already submitted with different parameters or action type`,
-            });
-          }
-          return existing.result;
+    if (idempotencyKey) {
+      const existing = idempotencyRegistry.get(idempotencyKey);
+      if (existing) {
+        if (
+          existing.actionTypeId !== actionType.id ||
+          existing.paramsHash !== paramsHash
+        ) {
+          return yield* new IdempotencyConflictError({
+            idempotencyKey,
+            message: `Idempotency key '${idempotencyKey}' was already submitted with different parameters or action type`,
+          });
         }
+        return existing.result;
       }
+    }
 
-      // STEP 1: Validate Parameters
-      const decodeExit = decodeSchemaExit(
-        actionType.parametersSchema as Schema.Decoder<Params>
-      )(rawParameters);
-      if (Exit.isFailure(decodeExit)) {
-        return yield* new ParameterValidationError({
-          actionTypeId: actionType.id,
-          details: decodeExit.cause,
-          message: `Parameter validation failed: ${String(decodeExit.cause)}`,
-        });
-      }
-      const params = decodeExit.value;
-      telemetry.addBreadcrumb(
-        "pipeline.step1",
-        `Parameters validated for action '${actionType.id}'`
-      );
+    // STEP 1: Validate Parameters
+    const decodeExit = decodeSchemaExit(
+      actionType.parametersSchema as Schema.Decoder<Params>
+    )(rawParameters);
+    if (Exit.isFailure(decodeExit)) {
+      return yield* new ParameterValidationError({
+        actionTypeId: actionType.id,
+        details: decodeExit.cause,
+        message: `Parameter validation failed: ${String(decodeExit.cause)}`,
+      });
+    }
+    const params = decodeExit.value;
+    telemetry.addBreadcrumb(
+      "pipeline.step1",
+      `Parameters validated for action '${actionType.id}'`
+    );
 
-      // STEP 2: Verify Permissions and Agent Authorization Ladder (4 Tiers)
-      yield* validateActionPermissions(actionType, security);
+    // STEP 2: Verify Permissions and Agent Authorization Ladder (4 Tiers)
+    yield* validateActionPermissions(actionType, security);
 
-      const evalContext: ActionEvaluationContext = {
-        getObject: (typeId: ObjectTypeId, id: string) =>
-          objectStore.getObject(typeId, id),
+    const evalContext: ActionEvaluationContext = {
+      getObject: (typeId: ObjectTypeId, id: string) =>
+        objectStore.getObject(typeId, id),
+      now,
+      security,
+    };
+
+    // STEP 3: Evaluate Submission Criteria & Freshness Budgets (Fail-Closed)
+    yield* checkFreshnessBudgets(
+      actionType,
+      params as Record<string, unknown>,
+      objectStore,
+      now
+    );
+
+    const { guardResults, needsHumanReview, reviewReason } =
+      yield* evaluateSubmissionCriteria(actionType, params, evalContext);
+
+    const isProposal = checkIfProposalMode(
+      security,
+      submission,
+      actionType,
+      needsHumanReview
+    );
+
+    const snapshot: Record<string, unknown> = {
+      agentTier: security.subject.agentTier,
+      evaluatedParams: params as Record<string, unknown>,
+      guardResults,
+      riskTier: actionType.riskTier,
+      ruleVersion,
+      timestamp: now,
+    };
+
+    if (isProposal) {
+      return yield* handleProposalMode({
+        actionType,
+        auditStore,
+        idempotencyKey,
+        needsHumanReview,
         now,
-        security,
-      };
-
-      // STEP 3: Evaluate Submission Criteria & Freshness Budgets (Fail-Closed)
-      yield* checkFreshnessBudgets(
-        actionType,
-        params as Record<string, unknown>,
-        objectStore,
-        now
-      );
-
-      const { guardResults, needsHumanReview, reviewReason } =
-        yield* evaluateSubmissionCriteria(actionType, params, evalContext);
-
-      const isProposal = checkIfProposalMode(
-        security,
-        submission,
-        actionType,
-        needsHumanReview
-      );
-
-      const snapshot: Record<string, unknown> = {
-        agentTier: security.subject.agentTier,
-        evaluatedParams: params as Record<string, unknown>,
-        guardResults,
-        riskTier: actionType.riskTier,
+        params: params as Record<string, unknown>,
+        paramsHash,
+        reviewReason,
         ruleVersion,
+        security,
+        snapshot,
+        telemetry,
+      });
+    }
+
+    // STEP 4: Execute Staged Logic or Action Mutation Handler
+    const stagedEdits = yield* executeStagedLogicOrMutation(
+      submission,
+      actionType,
+      params,
+      evalContext
+    );
+
+    // STEP 5: Apply Edits & Funnel Merge (Atomic Transaction)
+    const originalSnapshots = new Map<string, ObjectInstance | undefined>();
+    yield* Effect.forEach(
+      stagedEdits,
+      Effect.fn("WritePipeline.captureOriginalSnapshot")(function* (edit) {
+        const existing = yield* objectStore.getObject(edit.typeId, edit.id);
+        originalSnapshots.set(
+          `${edit.typeId}:${edit.id}`,
+          existing ? structuredClone(existing) : undefined
+        );
+      }),
+      { concurrency: 1 }
+    );
+
+    const updatedObjects = yield* applyStagedEdits(
+      stagedEdits,
+      objectStore,
+      now,
+      actionType
+    );
+
+    // STEP 6: Persist DecisionRecord (Atomic with Rollback on Audit Failure)
+    const decisionRecord = yield* auditStore
+      .appendDecision({
+        actionTypeId: actionType.id,
+        correlationId: security.correlationId,
+        id: generatePrefixedId("decision"),
+        outcome: "executed",
+        parameters: params as Record<string, unknown>,
+        ruleVersion,
+        stateSnapshot: snapshot,
+        subject: security.subject,
         timestamp: now,
-      };
-
-      if (isProposal) {
-        return yield* handleProposalMode({
-          actionType,
-          auditStore,
-          idempotencyKey,
-          needsHumanReview,
-          now,
-          params: params as Record<string, unknown>,
-          paramsHash,
-          reviewReason,
-          ruleVersion,
-          security,
-          snapshot,
-          telemetry,
-        });
-      }
-
-      // STEP 4: Execute Staged Logic or Action Mutation Handler
-      const stagedEdits = yield* executeStagedLogicOrMutation(
-        submission,
-        actionType,
-        params,
-        evalContext
-      );
-
-      // STEP 5: Apply Edits & Funnel Merge (Atomic Transaction)
-      const originalSnapshots = new Map<string, ObjectInstance | undefined>();
-      yield* Effect.forEach(
-        stagedEdits,
-        Effect.fn("WritePipeline.captureOriginalSnapshot")(function* (edit) {
-          const existing = yield* objectStore.getObject(edit.typeId, edit.id);
-          originalSnapshots.set(
-            `${edit.typeId}:${edit.id}`,
-            existing ? structuredClone(existing) : undefined
-          );
-        }),
-        { concurrency: 1 }
-      );
-
-      const updatedObjects = yield* applyStagedEdits(
-        stagedEdits,
-        objectStore,
-        now,
-        actionType
-      );
-
-      // STEP 6: Persist DecisionRecord (Atomic with Rollback on Audit Failure)
-      const decisionRecord = yield* auditStore
-        .appendDecision({
-          actionTypeId: actionType.id,
-          correlationId: security.correlationId,
-          id: generatePrefixedId("decision"),
-          outcome: "executed",
-          parameters: params as Record<string, unknown>,
-          ruleVersion,
-          stateSnapshot: snapshot,
-          subject: security.subject,
-          timestamp: now,
-          verdict: "allow",
-        })
-        .pipe(
-          Effect.catch((error) =>
-            rollbackStagedEdits(
-              stagedEdits,
-              originalSnapshots,
-              objectStore
-            ).pipe(
-              Effect.andThen(
-                Effect.fail(
-                  new StorageError({
-                    cause: error,
-                    message: `Audit append failed: ${error.message}`,
-                  })
-                )
+        verdict: "allow",
+      })
+      .pipe(
+        Effect.catch((error) =>
+          rollbackStagedEdits(stagedEdits, originalSnapshots, objectStore).pipe(
+            Effect.andThen(
+              Effect.fail(
+                new StorageError({
+                  cause: error,
+                  message: `Audit append failed: ${error.message}`,
+                })
               )
             )
           )
-        );
+        )
+      );
 
-      // Materialize standard 1-to-1 ActionLog object
-      const targetObj = updatedObjects[0];
-      const actionLogInstance: ObjectInstance = {
-        id: `log_${decisionRecord.id}`,
-        lastModifiedAt: now,
-        properties: {
-          actionTypeId: actionType.id,
-          callerId: security.subject.id,
-          decisionRecordId: decisionRecord.id,
-          executionId: decisionRecord.id,
-          // SAFETY: Action execution parameters conform to ActionParameters
-          parameters: (params ?? {}) as ActionParameters,
-          recordHash: decisionRecord.recordHash,
-          status: "executed",
-          targetObjectId: targetObj?.id ?? null,
-          targetObjectTypeId: targetObj?.typeId ?? null,
-        },
-        typeId: "ActionLog" as ObjectTypeId,
-        version: 1,
-      };
-      yield* objectStore.putObject(actionLogInstance).pipe(Effect.ignore);
-      if (targetObj) {
-        yield* objectStore
-          .linkObjects({
-            createdAt: now,
-            linkTypeId: "ActionLogTarget" as LinkTypeId,
-            sourceId: actionLogInstance.id,
-            targetId: targetObj.id,
-          })
-          .pipe(Effect.ignore);
-      }
+    // Materialize standard 1-to-1 ActionLog object
+    const targetObj = updatedObjects[0];
+    const actionLogInstance: ObjectInstance = {
+      id: `log_${decisionRecord.id}`,
+      lastModifiedAt: now,
+      properties: {
+        actionTypeId: actionType.id,
+        callerId: security.subject.id,
+        decisionRecordId: decisionRecord.id,
+        executionId: decisionRecord.id,
+        // SAFETY: Action execution parameters conform to ActionParameters
+        parameters: (params ?? {}) as ActionParameters,
+        recordHash: decisionRecord.recordHash,
+        status: "executed",
+        targetObjectId: targetObj?.id ?? null,
+        targetObjectTypeId: targetObj?.typeId ?? null,
+      },
+      typeId: "ActionLog" as ObjectTypeId,
+      version: 1,
+    };
+    yield* objectStore.putObject(actionLogInstance).pipe(Effect.ignore);
+    if (targetObj) {
+      yield* objectStore
+        .linkObjects({
+          createdAt: now,
+          linkTypeId: "ActionLogTarget" as LinkTypeId,
+          sourceId: actionLogInstance.id,
+          targetId: targetObj.id,
+        })
+        .pipe(Effect.ignore);
+    }
 
-      // STEP 7: Side Effects and Saga Compensation
-      const sideEffectsList: readonly ActionSideEffect<Params>[] =
-        actionType.sideEffects ?? [];
-      if (sideEffectsList.length > 0) {
-        yield* executeSideEffectsWithCompensation({
-          actionType,
-          auditStore,
-          evalContext,
-          params,
-          ruleVersion,
-          security,
-          sideEffects: sideEffectsList,
-          snapshot,
-        });
-      }
-
-      const finishTime = yield* Clock.currentTimeMillis;
-
-      telemetry.trackEvent({
-        event: "operon_action_submitted",
-        properties: {
-          actionId: actionType.id,
-          agentTier: security.subject.agentTier,
-          correlationId: security.correlationId,
-          executionMode: "automated",
-          riskTier: actionType.riskTier,
-          subjectId: security.subject.id,
-          subjectType: security.subject.type,
-        },
-        subject: security.subject,
+    // STEP 7: Side Effects and Saga Compensation
+    const sideEffectsList: readonly ActionSideEffect<Params>[] =
+      actionType.sideEffects ?? [];
+    if (sideEffectsList.length > 0) {
+      yield* executeSideEffectsWithCompensation({
+        actionType,
+        auditStore,
+        evalContext,
+        params,
+        ruleVersion,
+        security,
+        sideEffects: sideEffectsList,
+        snapshot,
       });
+    }
 
-      telemetry.trackEvent({
-        event: "operon_action_executed",
-        properties: {
-          actionId: actionType.id,
-          decisionRecordId: decisionRecord.id,
-          durationMs: finishTime - startTime,
-          recordHash: decisionRecord.recordHash,
-          subjectId: security.subject.id,
-          updatedObjectsCount: updatedObjects.length,
-        },
-        subject: security.subject,
-      });
+    const finishTime = yield* Clock.currentTimeMillis;
 
-      const executedResult: ActionExecutionResult = {
-        decisionRecord,
-        status: "executed" as const,
-        updatedObjects,
-      };
-
-      const finalKey: string = idempotencyKey ?? "";
-      if (finalKey !== "") {
-        idempotencyRegistry.set(finalKey, {
-          actionTypeId: actionType.id,
-          paramsHash,
-          result: executedResult,
-        });
-      }
-
-      return executedResult;
+    telemetry.trackEvent({
+      event: "operon_action_submitted",
+      properties: {
+        actionId: actionType.id,
+        agentTier: security.subject.agentTier,
+        correlationId: security.correlationId,
+        executionMode: "automated",
+        riskTier: actionType.riskTier,
+        subjectId: security.subject.id,
+        subjectType: security.subject.type,
+      },
+      subject: security.subject,
     });
+
+    telemetry.trackEvent({
+      event: "operon_action_executed",
+      properties: {
+        actionId: actionType.id,
+        decisionRecordId: decisionRecord.id,
+        durationMs: finishTime - startTime,
+        recordHash: decisionRecord.recordHash,
+        subjectId: security.subject.id,
+        updatedObjectsCount: updatedObjects.length,
+      },
+      subject: security.subject,
+    });
+
+    const executedResult: ActionExecutionResult = {
+      decisionRecord,
+      status: "executed" as const,
+      updatedObjects,
+    };
+
+    const finalKey: string = idempotencyKey ?? "";
+    if (finalKey !== "") {
+      idempotencyRegistry.set(finalKey, {
+        actionTypeId: actionType.id,
+        paramsHash,
+        result: executedResult,
+      });
+    }
+
+    return executedResult;
+  });
 
   return telemetry.withSpan(
     "operon.pipeline.execute",

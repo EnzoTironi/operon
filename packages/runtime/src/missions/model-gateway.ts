@@ -177,12 +177,10 @@ export const ModelGatewayServiceLive = Layer.sync(ModelGatewayService, () => {
         }
 
         if (!primary) {
-          return yield* 
-            new ModelGatewayExecutionError({
-              message: `No model found for routing key '${routingKey}'`,
-              routingKey,
-            })
-          ;
+          return yield* new ModelGatewayExecutionError({
+            message: `No model found for routing key '${routingKey}'`,
+            routingKey,
+          });
         }
 
         const primaryAttempt = yield* Effect.exit(primary.runner(input));
@@ -211,13 +209,11 @@ export const ModelGatewayServiceLive = Layer.sync(ModelGatewayService, () => {
           }
         }
 
-        return yield* 
-          new ModelGatewayExecutionError({
-            message: `Primary model '${primary.config.modelId}' failed and no functional fallback succeeded: ${String(primaryAttempt.cause)}`,
-            modelId: primary.config.modelId,
-            routingKey,
-          })
-        ;
+        return yield* new ModelGatewayExecutionError({
+          message: `Primary model '${primary.config.modelId}' failed and no functional fallback succeeded: ${String(primaryAttempt.cause)}`,
+          modelId: primary.config.modelId,
+          routingKey,
+        });
       }
     ),
 
@@ -232,15 +228,13 @@ export const ModelGatewayServiceLive = Layer.sync(ModelGatewayService, () => {
       // When a new model candidate fails the benchmark or data exposure suite,
       // production routing is NOT changed.
       if (!report.passed || report.score < 1) {
-        return yield* 
-          new ModelPromotionDeniedError({
-            candidateModelId,
-            currentProductionModelId: activeProductionModelId,
-            failures: report.failures,
-            message: `Promotion of candidate '${candidateModelId}' denied: benchmark score ${report.score} < 1.0 (${report.failures.length} failures). Production routing unchanged (${activeProductionModelId}).`,
-            reason: "BENCHMARK_FAILURE",
-          })
-        ;
+        return yield* new ModelPromotionDeniedError({
+          candidateModelId,
+          currentProductionModelId: activeProductionModelId,
+          failures: report.failures,
+          message: `Promotion of candidate '${candidateModelId}' denied: benchmark score ${report.score} < 1.0 (${report.failures.length} failures). Production routing unchanged (${activeProductionModelId}).`,
+          reason: "BENCHMARK_FAILURE",
+        });
       }
 
       activeProductionModelId = candidateModelId;
@@ -303,15 +297,13 @@ export const ModelGatewayServiceLive = Layer.sync(ModelGatewayService, () => {
           deficiencies.push(...readiness.consistent.contradictions);
         }
 
-        return yield* 
-          new ReadinessDeficientError({
-            actionId,
-            contextFidelityScore: modelOutput.contextFidelity,
-            deficiencies,
-            message: `Action '${actionId}' rejected: Context fidelity score (${modelOutput.contextFidelity}) does not authorize action with deficient state readiness on '${objectId}': ${deficiencies.join("; ")}`,
-            objectId,
-          })
-        ;
+        return yield* new ReadinessDeficientError({
+          actionId,
+          contextFidelityScore: modelOutput.contextFidelity,
+          deficiencies,
+          message: `Action '${actionId}' rejected: Context fidelity score (${modelOutput.contextFidelity}) does not authorize action with deficient state readiness on '${objectId}': ${deficiencies.join("; ")}`,
+          objectId,
+        });
       }
 
       return Effect.void;

@@ -1,11 +1,3 @@
-import {
-  fileExistsSync,
-  joinPath,
-  readDirWithTypesSync,
-  readTextFileSync,
-  relativePath as getRelativePath,
-} from "./fs-io.js";
-
 import { computeCanonicalDigest } from "@operon/schema";
 import type {
   ArtifactClassification,
@@ -15,6 +7,13 @@ import type {
 import { Cause, Clock, Effect, Exit, Option, Predicate } from "effect";
 
 import { PublicationLeakError } from "./errors.js";
+import {
+  fileExistsSync,
+  joinPath,
+  readDirWithTypesSync,
+  readTextFileSync,
+  relativePath as getRelativePath,
+} from "./fs-io.js";
 
 const DEFAULT_PROTECTED_PATH_PATTERNS = [
   /gold/iu,
@@ -100,9 +99,10 @@ const checkContentViolation = Effect.fn("checkContentViolation")(function* (
   relativePath: string,
   boundary: BoundaryChecker
 ): Effect.fn.Return<Option.Option<PublicationViolation>> {
-  const content = yield* Effect.try(() =>
-    readTextFileSync(fullPath)
-  ).pipe(Effect.option, Effect.map(Option.getOrUndefined));
+  const content = yield* Effect.try(() => readTextFileSync(fullPath)).pipe(
+    Effect.option,
+    Effect.map(Option.getOrUndefined)
+  );
 
   if (content === undefined) {
     return Option.none();

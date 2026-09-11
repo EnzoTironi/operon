@@ -118,14 +118,12 @@ export const ContractedConnectorServiceLive = Layer.sync(
 
         // OPR-FULL-044 Invariant: Token availability does NOT grant business authority!
         if (operation.requiresBusinessGrant && !intentGrantId) {
-          return yield* 
-            new BusinessAuthorityMissingError({
-              actorId,
-              message: `Outbound operation '${operation.operationId}' denied: missing required IntentGrant. Bearer token presence does not confer business authority.`,
-              operationId: operation.operationId,
-              tokenPresent: bearerToken !== undefined && bearerToken.length > 0,
-            })
-          ;
+          return yield* new BusinessAuthorityMissingError({
+            actorId,
+            message: `Outbound operation '${operation.operationId}' denied: missing required IntentGrant. Bearer token presence does not confer business authority.`,
+            operationId: operation.operationId,
+            tokenPresent: bearerToken !== undefined && bearerToken.length > 0,
+          });
         }
 
         const timestamp = yield* Clock.currentTimeMillis;
@@ -159,13 +157,11 @@ export const ContractedConnectorServiceLive = Layer.sync(
       )(function* (params) {
         // OPR-FULL-044 Invariant: Credentials live in broker/worker boundary, NEVER in agent filesystem!
         if (params.actorType === "AGENT") {
-          return yield* 
-            new BrokerCredentialViolationError({
-              actorId: params.actorId,
-              connectorId: params.connectorId,
-              message: `Security violation: Agent '${params.actorId}' attempted direct credential access for connector '${params.connectorId}'. Credentials isolated to broker boundary.`,
-            })
-          ;
+          return yield* new BrokerCredentialViolationError({
+            actorId: params.actorId,
+            connectorId: params.connectorId,
+            message: `Security violation: Agent '${params.actorId}' attempted direct credential access for connector '${params.connectorId}'. Credentials isolated to broker boundary.`,
+          });
         }
 
         return { credentialsAvailable: true };
@@ -182,75 +178,65 @@ export const ContractedConnectorServiceLive = Layer.sync(
           req.supportsConditionalWrites &&
           !declaration.capabilities.supportsConditionalWrites
         ) {
-          return yield* 
-            new ConnectorCapabilityMismatchError({
-              connectorId: declaration.connectorId,
-              message: `Connector '${declaration.connectorId}' does not support conditional writes demanded by package '${requirement.packageId}'. Incompatibility is explicit and cannot be bypassed.`,
-              packageId: requirement.packageId,
-              providedValue: false,
-              requiredCapability: "supportsConditionalWrites",
-            })
-          ;
+          return yield* new ConnectorCapabilityMismatchError({
+            connectorId: declaration.connectorId,
+            message: `Connector '${declaration.connectorId}' does not support conditional writes demanded by package '${requirement.packageId}'. Incompatibility is explicit and cannot be bypassed.`,
+            packageId: requirement.packageId,
+            providedValue: false,
+            requiredCapability: "supportsConditionalWrites",
+          });
         }
 
         if (
           req.supportsIdempotencyKeys &&
           !declaration.capabilities.supportsIdempotencyKeys
         ) {
-          return yield* 
-            new ConnectorCapabilityMismatchError({
-              connectorId: declaration.connectorId,
-              message: `Connector '${declaration.connectorId}' does not support idempotency keys demanded by package '${requirement.packageId}'. Incompatibility is explicit and cannot be bypassed.`,
-              packageId: requirement.packageId,
-              providedValue: false,
-              requiredCapability: "supportsIdempotencyKeys",
-            })
-          ;
+          return yield* new ConnectorCapabilityMismatchError({
+            connectorId: declaration.connectorId,
+            message: `Connector '${declaration.connectorId}' does not support idempotency keys demanded by package '${requirement.packageId}'. Incompatibility is explicit and cannot be bypassed.`,
+            packageId: requirement.packageId,
+            providedValue: false,
+            requiredCapability: "supportsIdempotencyKeys",
+          });
         }
 
         if (
           req.supportsCompensatingActions &&
           !declaration.capabilities.supportsCompensatingActions
         ) {
-          return yield* 
-            new ConnectorCapabilityMismatchError({
-              connectorId: declaration.connectorId,
-              message: `Connector '${declaration.connectorId}' does not support compensating actions demanded by package '${requirement.packageId}'.`,
-              packageId: requirement.packageId,
-              providedValue: false,
-              requiredCapability: "supportsCompensatingActions",
-            })
-          ;
+          return yield* new ConnectorCapabilityMismatchError({
+            connectorId: declaration.connectorId,
+            message: `Connector '${declaration.connectorId}' does not support compensating actions demanded by package '${requirement.packageId}'.`,
+            packageId: requirement.packageId,
+            providedValue: false,
+            requiredCapability: "supportsCompensatingActions",
+          });
         }
 
         if (
           req.supportsAtomicBatch &&
           !declaration.capabilities.supportsAtomicBatch
         ) {
-          return yield* 
-            new ConnectorCapabilityMismatchError({
-              connectorId: declaration.connectorId,
-              message: `Connector '${declaration.connectorId}' does not support atomic batch operations demanded by package '${requirement.packageId}'.`,
-              packageId: requirement.packageId,
-              providedValue: false,
-              requiredCapability: "supportsAtomicBatch",
-            })
-          ;
+          return yield* new ConnectorCapabilityMismatchError({
+            connectorId: declaration.connectorId,
+            message: `Connector '${declaration.connectorId}' does not support atomic batch operations demanded by package '${requirement.packageId}'.`,
+            packageId: requirement.packageId,
+            providedValue: false,
+            requiredCapability: "supportsAtomicBatch",
+          });
         }
 
         if (
           req.supportsChangeDataCapture &&
           !declaration.capabilities.supportsChangeDataCapture
         ) {
-          return yield* 
-            new ConnectorCapabilityMismatchError({
-              connectorId: declaration.connectorId,
-              message: `Connector '${declaration.connectorId}' does not support Change Data Capture demanded by package '${requirement.packageId}'.`,
-              packageId: requirement.packageId,
-              providedValue: false,
-              requiredCapability: "supportsChangeDataCapture",
-            })
-          ;
+          return yield* new ConnectorCapabilityMismatchError({
+            connectorId: declaration.connectorId,
+            message: `Connector '${declaration.connectorId}' does not support Change Data Capture demanded by package '${requirement.packageId}'.`,
+            packageId: requirement.packageId,
+            providedValue: false,
+            requiredCapability: "supportsChangeDataCapture",
+          });
         }
 
         return { compatible: true };

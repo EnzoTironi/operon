@@ -295,10 +295,7 @@ export const L2ContextVerifierServiceLive = Layer.sync(
                 "INACCESSIBLE",
                 () => "EVIDENCE_INACCESSIBLE" as const
               ),
-              Match.when(
-                "VERSION_MISMATCH",
-                () => "VERSION_MISMATCH" as const
-              ),
+              Match.when("VERSION_MISMATCH", () => "VERSION_MISMATCH" as const),
               Match.when(
                 "SPAN_OUT_OF_BOUNDS",
                 () => "SPAN_OUT_OF_BOUNDS" as const
@@ -328,13 +325,11 @@ export const L2ContextVerifierServiceLive = Layer.sync(
             omitted.push("missing_evidence_warnings");
           }
 
-          return yield* 
-            new CompletenessCheckFailedError({
-              message: `Output failed completeness check for template '${template.templateId}': omitted [${omitted.join(", ")}]`,
-              omittedRequirements: omitted,
-              templateId: template.templateId,
-            })
-          ;
+          return yield* new CompletenessCheckFailedError({
+            message: `Output failed completeness check for template '${template.templateId}': omitted [${omitted.join(", ")}]`,
+            omittedRequirements: omitted,
+            templateId: template.templateId,
+          });
         }
 
         return result;
@@ -363,18 +358,9 @@ export const L2ContextVerifierServiceLive = Layer.sync(
             message: `L2 Context verification failed for entity '${entityId}', property '${property}': ${failedVerdict.details}`,
             property,
             reason: Match.value(failedVerdict.status).pipe(
-              Match.when(
-                "OBJECT_NOT_FOUND",
-                () => "OBJECT_NOT_FOUND" as const
-              ),
-              Match.when(
-                "PROPERTY_ABSENT",
-                () => "PROPERTY_ABSENT" as const
-              ),
-              Match.when(
-                "VERSION_MISMATCH",
-                () => "VERSION_MISMATCH" as const
-              ),
+              Match.when("OBJECT_NOT_FOUND", () => "OBJECT_NOT_FOUND" as const),
+              Match.when("PROPERTY_ABSENT", () => "PROPERTY_ABSENT" as const),
+              Match.when("VERSION_MISMATCH", () => "VERSION_MISMATCH" as const),
               Match.orElse(() => "VALUE_MISMATCH" as const)
             ),
           });

@@ -61,28 +61,24 @@ export const EvidenceAcquisitionServiceLive = Layer.sync(
           if (
             !mandate.envelope.allowedActionClasses.includes(action.actionClass)
           ) {
-            return yield* 
-              new EvidenceAcquisitionDeniedError({
-                actionId: action.actionId,
-                mandateId: mandate.mandateId,
-                message: `Action class '${action.actionClass}' is not permitted by mandate envelope: [${mandate.envelope.allowedActionClasses.join(", ")}]`,
-                reason: "ACTION_NOT_ALLOWED",
-              })
-            ;
+            return yield* new EvidenceAcquisitionDeniedError({
+              actionId: action.actionId,
+              mandateId: mandate.mandateId,
+              message: `Action class '${action.actionClass}' is not permitted by mandate envelope: [${mandate.envelope.allowedActionClasses.join(", ")}]`,
+              reason: "ACTION_NOT_ALLOWED",
+            });
           }
 
           // 2. Validate target object is within mandate object set
           if (
             !isObjectInSet(mandate.envelope.objectSet, action.targetObjectId)
           ) {
-            return yield* 
-              new EvidenceAcquisitionDeniedError({
-                actionId: action.actionId,
-                mandateId: mandate.mandateId,
-                message: `Target object '${action.targetObjectId}' is outside mandate object set: [${mandate.envelope.objectSet.join(", ")}]`,
-                reason: "OBJECT_NOT_ALLOWED",
-              })
-            ;
+            return yield* new EvidenceAcquisitionDeniedError({
+              actionId: action.actionId,
+              mandateId: mandate.mandateId,
+              message: `Target object '${action.targetObjectId}' is outside mandate object set: [${mandate.envelope.objectSet.join(", ")}]`,
+              reason: "OBJECT_NOT_ALLOWED",
+            });
           }
 
           // 3. Validate budget limit
@@ -90,14 +86,12 @@ export const EvidenceAcquisitionServiceLive = Layer.sync(
             mandate.envelope.spentBudget + action.budgetCost >
             mandate.envelope.budgetLimit
           ) {
-            return yield* 
-              new EvidenceAcquisitionDeniedError({
-                actionId: action.actionId,
-                mandateId: mandate.mandateId,
-                message: `Acquisition cost ${action.budgetCost} exceeds remaining budget (${mandate.envelope.budgetLimit - mandate.envelope.spentBudget})`,
-                reason: "BUDGET_EXCEEDED",
-              })
-            ;
+            return yield* new EvidenceAcquisitionDeniedError({
+              actionId: action.actionId,
+              mandateId: mandate.mandateId,
+              message: `Acquisition cost ${action.budgetCost} exceeds remaining budget (${mandate.envelope.budgetLimit - mandate.envelope.spentBudget})`,
+              reason: "BUDGET_EXCEEDED",
+            });
           }
 
           // 4. Query connector

@@ -8,7 +8,6 @@ import {
   unlinkFileSync,
   writeTextFileSync,
 } from "./fs-io.js";
-
 import { runCli } from "./index.js";
 
 describe("@operon/cli test suite", () => {
