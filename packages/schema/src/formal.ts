@@ -3,14 +3,14 @@ import { Schema } from "effect";
 /**
  * Formal assurance report outcome classification (S19, OPR-FULL-026, OPR-FULL-029)
  */
-export const FormalAssuranceOutcomeSchema = Schema.Literal(
+export const FormalAssuranceOutcomeSchema = Schema.Literals([
   "PROVEN_IN_MODEL",
   "COUNTEREXAMPLE",
   "BOUNDED_NO_COUNTEREXAMPLE",
   "INCONCLUSIVE",
   "TIMEOUT",
-  "UNSUPPORTED"
-);
+  "UNSUPPORTED",
+]);
 
 export type FormalAssuranceOutcome = Schema.Schema.Type<
   typeof FormalAssuranceOutcomeSchema

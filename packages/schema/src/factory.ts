@@ -6,7 +6,7 @@ import { Schema } from "effect";
 export const NormativeCaseRequirementSchema = Schema.Struct({
   caseId: Schema.String,
   description: Schema.String,
-  expectedOutcome: Schema.Literal("PASS", "FAIL"),
+  expectedOutcome: Schema.Literals(["PASS", "FAIL"]),
   isProtected: Schema.Boolean,
   minimumAssertions: Schema.Number,
   requirementId: Schema.String,
@@ -36,7 +36,7 @@ export const CandidateObservationSchema = Schema.Struct({
   caseId: Schema.String,
   executionReceiptHash: Schema.String,
   observedAt: Schema.Number,
-  status: Schema.Literal("PASS", "FAIL", "INCONCLUSIVE"),
+  status: Schema.Literals(["PASS", "FAIL", "INCONCLUSIVE"]),
 });
 
 export type CandidateObservation = Schema.Schema.Type<

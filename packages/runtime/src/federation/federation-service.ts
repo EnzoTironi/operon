@@ -75,7 +75,7 @@ export class FederationService {
     | FederationContractExpiredError
     | UncontractedLinkTraversalError
   > {
-    return Effect.gen(this, function* () {
+    return Effect.gen(function* () {
       if (contract.revoked) {
         return yield* Effect.fail(
           new FederationContractRevokedError({
@@ -148,7 +148,7 @@ export class FederationService {
     | FederationContractExpiredError
     | UncontractedLinkTraversalError
   > {
-    return Effect.gen(this, function* () {
+    return Effect.gen(function* () {
       if (contract.revoked) {
         return yield* Effect.fail(
           new FederationContractRevokedError({
@@ -223,7 +223,7 @@ export class FederationService {
       readonly status: "FRESH" | "STALE" | "UNREACHABLE" | "DISPUTED";
     };
   }): Effect.Effect<FederatedRemoteClaim, FederationAttributionMissingError> {
-    return Effect.gen(this, function* () {
+    return Effect.gen(function* () {
       const missingFields: string[] = [];
       if (!claim.attribution.sourceCellId) {
         missingFields.push("attribution.sourceCellId");
@@ -268,7 +268,7 @@ export class FederationService {
     plan: MultiCellOperationPlan,
     cellExecutors: Record<string, CellStepExecutor>
   ): Effect.Effect<MultiCellSagaOutcome, never> {
-    return Effect.gen(this, function* () {
+    return Effect.gen(function* () {
       const stepResults: MultiCellStepResult[] = [];
       const remotePendingClaims: FederatedRemoteClaim[] = [];
       const committedSteps: MultiCellOperationStep[] = [];

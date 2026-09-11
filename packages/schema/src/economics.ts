@@ -3,23 +3,23 @@ import { Schema } from "effect";
 /**
  * Quota violation classification (S16, OPR-FULL-048)
  */
-export const QuotaTypeSchema = Schema.Literal(
+export const QuotaTypeSchema = Schema.Literals([
   "CONCURRENCY",
   "RATE_LIMIT",
-  "BUDGET_EXHAUSTED"
-);
+  "BUDGET_EXHAUSTED",
+]);
 
 export type QuotaType = Schema.Schema.Type<typeof QuotaTypeSchema>;
 
 /**
  * Locality channel subject to sovereign regional boundary fences (S16, OPR-FULL-050)
  */
-export const LocalityChannelSchema = Schema.Literal(
+export const LocalityChannelSchema = Schema.Literals([
   "MODEL_INVOCATION",
   "LOG_EXPORT",
   "BACKUP_TRANSFER",
-  "ARTIFACT_EGRESS"
-);
+  "ARTIFACT_EGRESS",
+]);
 
 export type LocalityChannel = Schema.Schema.Type<typeof LocalityChannelSchema>;
 
@@ -55,7 +55,7 @@ export type LocalityPolicy = Schema.Schema.Type<typeof LocalityPolicySchema>;
 export const MissionCapacityReservationSchema = Schema.Struct({
   reservationId: Schema.String,
   reservedAt: Schema.Number,
-  status: Schema.Literal("ACTIVE", "RELEASED", "EXPIRED"),
+  status: Schema.Literals(["ACTIVE", "RELEASED", "EXPIRED"]),
   tenantId: Schema.String,
 });
 

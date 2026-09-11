@@ -7,7 +7,10 @@ import type {
 import { Context, Effect, Layer } from "effect";
 
 import { CommunicationComplianceViolationError } from "../actions-errors.js";
-import { L2ContextVerifierService } from "./l2-context-verifier.js";
+import {
+  resolveCitationsInternal,
+  verifyCompletenessInternal,
+} from "./l2-context-verifier.js";
 import type { RegisteredEvidenceSource } from "./l2-context-verifier.js";
 
 /**
@@ -73,8 +76,7 @@ export const QualityGateServiceLive = Layer.sync(QualityGateService, () =>
       // 2. Check Citations Resolution (OPR-L2-003, 006)
       let citationsResolved = true;
       if (citations.length > 0) {
-        const verifier = yield* L2ContextVerifierService;
-        const resolutionResults = yield* verifier.resolveCitations(
+        const resolutionResults = resolveCitationsInternal(
           citations,
           registeredEvidence
         );
@@ -96,11 +98,7 @@ export const QualityGateServiceLive = Layer.sync(QualityGateService, () =>
       // 3. Check Completeness (OPR-L2-002, 006)
       let completenessPassed = true;
       if (template) {
-        const verifier = yield* L2ContextVerifierService;
-        const compRes = yield* verifier.verifyCompleteness(
-          structuredPayload,
-          template
-        );
+        const compRes = verifyCompletenessInternal(structuredPayload, template);
         completenessPassed = compRes.passed;
       }
 

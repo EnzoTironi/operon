@@ -109,55 +109,12 @@ export const TypedReadServiceLive = Layer.sync(TypedReadService, () => {
   const materializedStore = new Map<string, MaterializedOutputRecord>();
   let visibleCommittedEdits: StagedEditMutation[] = [];
 
-  return TypedReadService.of({
-    checkFreshness: Effect.fn("TypedReadService.checkFreshness")(
-      (outputId: string, currentVersions: Record<string, string | number>) =>
-        Effect.sync(() => {
-          const record = materializedStore.get(outputId);
-          if (!record) {
-            return { isStale: true, staleDependencies: ["RECORD_NOT_FOUND"] };
-          }
-
-          const staleDependencies: string[] = [];
-          for (const dep of record.dependencies) {
-            const currentVer = currentVersions[dep.entityId];
-            if (
-              currentVer === undefined ||
-              String(currentVer) !== String(dep.version)
-            ) {
-              staleDependencies.push(dep.entityId);
-            }
-          }
-
-          const isStale = staleDependencies.length > 0;
-          if (isStale && !record.isStale) {
-            const updatedRecord: MaterializedOutputRecord = {
-              ...record,
-              isStale: true,
-            };
-            materializedStore.set(outputId, updatedRecord);
-          }
-
-          return {
-            isStale,
-            staleDependencies,
-          };
-        })
-    ),
-
-    getAuditLineage: Effect.fn("TypedReadService.getAuditLineage")(
-      (outputId: string) => Effect.sync(() => materializedStore.get(outputId))
-    ),
-
-    getVisibleStagedEdits: Effect.fn("TypedReadService.getVisibleStagedEdits")(
-      () => Effect.sync(() => visibleCommittedEdits)
-    ),
-
-    invokeFunction: Effect.fn("TypedReadService.invokeFunction")(function* (
-      functionId: string,
-      rawInput: unknown,
-      ctx: FunctionExecutionContext
-    ) {
+  const invokeFunctionInternal = (
+    functionId: string,
+    rawInput: unknown,
+    ctx: FunctionExecutionContext
+  ) =>
+    Effect.gen(function* () {
       const fn = functions.get(functionId);
       if (!fn) {
         return yield* Effect.fail(
@@ -215,7 +172,55 @@ export const TypedReadServiceLive = Layer.sync(TypedReadService, () => {
       }
 
       return outputExit.value;
-    }),
+    });
+
+  return TypedReadService.of({
+    checkFreshness: Effect.fn("TypedReadService.checkFreshness")(
+      (outputId: string, currentVersions: Record<string, string | number>) =>
+        Effect.sync(() => {
+          const record = materializedStore.get(outputId);
+          if (!record) {
+            return { isStale: true, staleDependencies: ["RECORD_NOT_FOUND"] };
+          }
+
+          const staleDependencies: string[] = [];
+          for (const dep of record.dependencies) {
+            const currentVer = currentVersions[dep.entityId];
+            if (
+              currentVer === undefined ||
+              String(currentVer) !== String(dep.version)
+            ) {
+              staleDependencies.push(dep.entityId);
+            }
+          }
+
+          const isStale = staleDependencies.length > 0;
+          if (isStale && !record.isStale) {
+            const updatedRecord: MaterializedOutputRecord = {
+              ...record,
+              isStale: true,
+            };
+            materializedStore.set(outputId, updatedRecord);
+          }
+
+          return {
+            isStale,
+            staleDependencies,
+          };
+        })
+    ),
+
+    getAuditLineage: Effect.fn("TypedReadService.getAuditLineage")(
+      (outputId: string) => Effect.sync(() => materializedStore.get(outputId))
+    ),
+
+    getVisibleStagedEdits: Effect.fn("TypedReadService.getVisibleStagedEdits")(
+      () => Effect.sync(() => visibleCommittedEdits)
+    ),
+
+    invokeFunction: Effect.fn("TypedReadService.invokeFunction")(
+      invokeFunctionInternal
+    ),
 
     materializeOutput: Effect.fn("TypedReadService.materializeOutput")(
       function* (
@@ -224,10 +229,10 @@ export const TypedReadServiceLive = Layer.sync(TypedReadService, () => {
         ctx: FunctionExecutionContext,
         dependencies: readonly DependencyRecord[]
       ) {
-        const invokeResult = yield* TypedReadService.pipe(
-          Effect.flatMap((service) =>
-            service.invokeFunction(functionId, rawInput, ctx)
-          )
+        const invokeResult = yield* invokeFunctionInternal(
+          functionId,
+          rawInput,
+          ctx
         );
 
         const fn = functions.get(functionId);

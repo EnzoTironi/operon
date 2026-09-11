@@ -79,6 +79,190 @@ function valuesEqual(a: unknown, b: unknown): boolean {
   return false;
 }
 
+export function resolveCitationsInternal(
+  citations: readonly EvidenceCitation[],
+  registeredEvidence: Record<string, RegisteredEvidenceSource>
+): readonly CitationResolutionResult[] {
+  const results: CitationResolutionResult[] = [];
+
+  for (const citation of citations) {
+    const evidence = registeredEvidence[citation.evidenceId];
+    if (!evidence) {
+      results.push({
+        citationId: citation.citationId,
+        details: `Evidence ID '${citation.evidenceId}' not found in registered evidence`,
+        status: "NOT_FOUND",
+      });
+      continue;
+    }
+
+    if (!evidence.accessible) {
+      results.push({
+        citationId: citation.citationId,
+        details: `Evidence ID '${citation.evidenceId}' is inaccessible to current tenant/caller`,
+        status: "INACCESSIBLE",
+      });
+      continue;
+    }
+
+    if (String(evidence.version) !== String(citation.sourceVersion)) {
+      results.push({
+        citationId: citation.citationId,
+        details: `Version mismatch: evidence version is '${evidence.version}', citation cited '${citation.sourceVersion}'`,
+        status: "VERSION_MISMATCH",
+      });
+      continue;
+    }
+
+    const { end, start } = citation.charSpan;
+    if (start < 0 || end > evidence.content.length || start >= end) {
+      results.push({
+        citationId: citation.citationId,
+        details: `Span [${start}, ${end}] is out of bounds for content length ${evidence.content.length}`,
+        status: "SPAN_OUT_OF_BOUNDS",
+      });
+      continue;
+    }
+
+    const actualSnippet = evidence.content.slice(start, end);
+    if (actualSnippet.trim() !== citation.expectedTextSnippet.trim()) {
+      results.push({
+        citationId: citation.citationId,
+        details: `Snippet mismatch: expected '${citation.expectedTextSnippet}', found '${actualSnippet}'`,
+        status: "SEMANTIC_MISMATCH",
+      });
+      continue;
+    }
+
+    results.push({
+      citationId: citation.citationId,
+      details: "Citation resolved and supported by ground evidence span",
+      status: "RESOLVED_SUPPORTED",
+    });
+  }
+
+  return results;
+}
+
+export function verifyCompletenessInternal(
+  outputPayload: Record<string, unknown>,
+  template: MustAnswerTemplate
+): CompletenessCheckResult {
+  const omittedFacts: string[] = [];
+
+  for (const fact of template.requiredFacts) {
+    const val = outputPayload[fact];
+    if (val === undefined || val === null) {
+      omittedFacts.push(fact);
+    }
+  }
+
+  let missingUncertainty = false;
+  if (
+    template.requireUncertaintyDeclaration &&
+    outputPayload.uncertainty === undefined &&
+    outputPayload.confidence === undefined
+  ) {
+    missingUncertainty = true;
+  }
+
+  let missingContraindications = false;
+  if (
+    template.requireContraindicationCheck &&
+    outputPayload.contraindications === undefined
+  ) {
+    missingContraindications = true;
+  }
+
+  let missingEvidenceWarningOmitted = false;
+  if (
+    template.requireMissingEvidenceWarning &&
+    outputPayload.missingEvidenceWarnings === undefined &&
+    outputPayload.warnings === undefined
+  ) {
+    missingEvidenceWarningOmitted = true;
+  }
+
+  const passed =
+    omittedFacts.length === 0 &&
+    !missingUncertainty &&
+    !missingContraindications &&
+    !missingEvidenceWarningOmitted;
+
+  return {
+    missingContraindications,
+    missingEvidenceWarningOmitted,
+    missingUncertainty,
+    omittedFacts,
+    passed,
+    templateId: template.templateId,
+  };
+}
+
+export function verifyFactualAssertionsInternal(
+  assertions: readonly FactualAssertion[],
+  registeredContext: Record<string, ObjectInstance>
+): readonly L2VerificationVerdict[] {
+  const verdicts: L2VerificationVerdict[] = [];
+
+  for (const assertion of assertions) {
+    const entity = registeredContext[assertion.entityId];
+    if (!entity) {
+      verdicts.push({
+        assertionId: assertion.assertionId,
+        details: `Entity '${assertion.entityId}' not found in registered evidence context`,
+        status: "OBJECT_NOT_FOUND",
+      });
+      continue;
+    }
+
+    if (
+      assertion.expectedVersion !== undefined &&
+      String(entity.version ?? entity.lastModifiedAt) !==
+        String(assertion.expectedVersion)
+    ) {
+      verdicts.push({
+        assertionId: assertion.assertionId,
+        details: `Entity '${assertion.entityId}' version mismatch`,
+        status: "VERSION_MISMATCH",
+      });
+      continue;
+    }
+
+    // In Operon, properties is a record on entity
+    const properties = (entity.properties ?? {}) as Record<string, unknown>;
+    if (!(assertion.property in properties)) {
+      // Absent property does NOT count as agreement! (OPR-L2-001)
+      verdicts.push({
+        assertionId: assertion.assertionId,
+        details: `Property '${assertion.property}' is absent in entity '${assertion.entityId}' (absent property does not count as agreement)`,
+        status: "PROPERTY_ABSENT",
+      });
+      continue;
+    }
+
+    const evidenceValue = properties[assertion.property];
+    if (!valuesEqual(evidenceValue, assertion.assertedValue)) {
+      verdicts.push({
+        assertionId: assertion.assertionId,
+        details: `Value mismatch for '${assertion.property}': asserted '${JSON.stringify(assertion.assertedValue)}', evidence has '${JSON.stringify(evidenceValue)}'`,
+        evidenceValue,
+        status: "MISMATCH_VALUE",
+      });
+      continue;
+    }
+
+    verdicts.push({
+      assertionId: assertion.assertionId,
+      details: `Factual assertion verified against ground evidence`,
+      evidenceValue,
+      status: "VERIFIED",
+    });
+  }
+
+  return verdicts;
+}
+
 /**
  * Live layer for L2ContextVerifierService
  */
@@ -89,11 +273,7 @@ export const L2ContextVerifierServiceLive = Layer.sync(
       assertCitationsResolved: Effect.fn(
         "L2ContextVerifierService.assertCitationsResolved"
       )(function* (citations, registeredEvidence) {
-        const verifier = yield* L2ContextVerifierService;
-        const results = yield* verifier.resolveCitations(
-          citations,
-          registeredEvidence
-        );
+        const results = resolveCitationsInternal(citations, registeredEvidence);
 
         for (const res of results) {
           if (res.status !== "RESOLVED_SUPPORTED") {
@@ -125,11 +305,7 @@ export const L2ContextVerifierServiceLive = Layer.sync(
       assertCompleteness: Effect.fn(
         "L2ContextVerifierService.assertCompleteness"
       )(function* (outputPayload, template) {
-        const verifier = yield* L2ContextVerifierService;
-        const result = yield* verifier.verifyCompleteness(
-          outputPayload,
-          template
-        );
+        const result = verifyCompletenessInternal(outputPayload, template);
 
         if (!result.passed) {
           const omitted = [...result.omittedFacts];
@@ -158,8 +334,7 @@ export const L2ContextVerifierServiceLive = Layer.sync(
       assertFactualCorrectness: Effect.fn(
         "L2ContextVerifierService.assertFactualCorrectness"
       )(function* (assertions, registeredContext) {
-        const verifier = yield* L2ContextVerifierService;
-        const verdicts = yield* verifier.verifyFactualAssertions(
+        const verdicts = verifyFactualAssertionsInternal(
           assertions,
           registeredContext
         );
@@ -197,194 +372,23 @@ export const L2ContextVerifierServiceLive = Layer.sync(
 
       resolveCitations: Effect.fn("L2ContextVerifierService.resolveCitations")(
         (citations, registeredEvidence) =>
-          Effect.sync(() => {
-            const results: CitationResolutionResult[] = [];
-
-            for (const citation of citations) {
-              const evidence = registeredEvidence[citation.evidenceId];
-              if (!evidence) {
-                results.push({
-                  citationId: citation.citationId,
-                  details: `Evidence ID '${citation.evidenceId}' not found in registered evidence`,
-                  status: "NOT_FOUND",
-                });
-                continue;
-              }
-
-              if (!evidence.accessible) {
-                results.push({
-                  citationId: citation.citationId,
-                  details: `Evidence ID '${citation.evidenceId}' is inaccessible to current tenant/caller`,
-                  status: "INACCESSIBLE",
-                });
-                continue;
-              }
-
-              if (String(evidence.version) !== String(citation.sourceVersion)) {
-                results.push({
-                  citationId: citation.citationId,
-                  details: `Version mismatch: evidence version is '${evidence.version}', citation cited '${citation.sourceVersion}'`,
-                  status: "VERSION_MISMATCH",
-                });
-                continue;
-              }
-
-              const { end, start } = citation.charSpan;
-              if (start < 0 || end > evidence.content.length || start >= end) {
-                results.push({
-                  citationId: citation.citationId,
-                  details: `Span [${start}, ${end}] is out of bounds for content length ${evidence.content.length}`,
-                  status: "SPAN_OUT_OF_BOUNDS",
-                });
-                continue;
-              }
-
-              const actualSnippet = evidence.content.slice(start, end);
-              if (
-                actualSnippet.trim() !== citation.expectedTextSnippet.trim()
-              ) {
-                results.push({
-                  citationId: citation.citationId,
-                  details: `Snippet mismatch: expected '${citation.expectedTextSnippet}', found '${actualSnippet}'`,
-                  status: "SEMANTIC_MISMATCH",
-                });
-                continue;
-              }
-
-              results.push({
-                citationId: citation.citationId,
-                details:
-                  "Citation resolved and supported by ground evidence span",
-                status: "RESOLVED_SUPPORTED",
-              });
-            }
-
-            return results;
-          })
+          Effect.sync(() =>
+            resolveCitationsInternal(citations, registeredEvidence)
+          )
       ),
 
       verifyCompleteness: Effect.fn(
         "L2ContextVerifierService.verifyCompleteness"
       )((outputPayload, template) =>
-        Effect.sync(() => {
-          const omittedFacts: string[] = [];
-
-          for (const fact of template.requiredFacts) {
-            const val = outputPayload[fact];
-            if (val === undefined || val === null) {
-              omittedFacts.push(fact);
-            }
-          }
-
-          let missingUncertainty = false;
-          if (
-            template.requireUncertaintyDeclaration &&
-            outputPayload.uncertainty === undefined &&
-            outputPayload.confidence === undefined
-          ) {
-            missingUncertainty = true;
-          }
-
-          let missingContraindications = false;
-          if (
-            template.requireContraindicationCheck &&
-            outputPayload.contraindications === undefined
-          ) {
-            missingContraindications = true;
-          }
-
-          let missingEvidenceWarningOmitted = false;
-          if (
-            template.requireMissingEvidenceWarning &&
-            outputPayload.missingEvidenceWarnings === undefined &&
-            outputPayload.warnings === undefined
-          ) {
-            missingEvidenceWarningOmitted = true;
-          }
-
-          const passed =
-            omittedFacts.length === 0 &&
-            !missingUncertainty &&
-            !missingContraindications &&
-            !missingEvidenceWarningOmitted;
-
-          return {
-            missingContraindications,
-            missingEvidenceWarningOmitted,
-            missingUncertainty,
-            omittedFacts,
-            passed,
-            templateId: template.templateId,
-          };
-        })
+        Effect.sync(() => verifyCompletenessInternal(outputPayload, template))
       ),
 
       verifyFactualAssertions: Effect.fn(
         "L2ContextVerifierService.verifyFactualAssertions"
       )((assertions, registeredContext) =>
-        Effect.sync(() => {
-          const verdicts: L2VerificationVerdict[] = [];
-
-          for (const assertion of assertions) {
-            const entity = registeredContext[assertion.entityId];
-            if (!entity) {
-              verdicts.push({
-                assertionId: assertion.assertionId,
-                details: `Entity '${assertion.entityId}' not found in registered evidence context`,
-                status: "OBJECT_NOT_FOUND",
-              });
-              continue;
-            }
-
-            if (
-              assertion.expectedVersion !== undefined &&
-              String(entity.version ?? entity.lastModifiedAt) !==
-                String(assertion.expectedVersion)
-            ) {
-              verdicts.push({
-                assertionId: assertion.assertionId,
-                details: `Entity '${assertion.entityId}' version mismatch`,
-                status: "VERSION_MISMATCH",
-              });
-              continue;
-            }
-
-            // In Operon, properties is a record on entity
-            const properties = (entity.properties ?? {}) as Record<
-              string,
-              unknown
-            >;
-            if (!(assertion.property in properties)) {
-              // Absent property does NOT count as agreement! (OPR-L2-001)
-              verdicts.push({
-                assertionId: assertion.assertionId,
-                details: `Property '${assertion.property}' is absent in entity '${assertion.entityId}' (absent property does not count as agreement)`,
-                status: "PROPERTY_ABSENT",
-              });
-              continue;
-            }
-
-            const evidenceValue = properties[assertion.property];
-            if (!valuesEqual(evidenceValue, assertion.assertedValue)) {
-              verdicts.push({
-                assertionId: assertion.assertionId,
-                details: `Value mismatch for '${assertion.property}': asserted '${JSON.stringify(assertion.assertedValue)}', evidence has '${JSON.stringify(evidenceValue)}'`,
-                evidenceValue,
-                status: "MISMATCH_VALUE",
-              });
-              continue;
-            }
-
-            verdicts.push({
-              assertionId: assertion.assertionId,
-              details: `Factual assertion verified against ground evidence`,
-              evidenceValue,
-              status: "VERIFIED",
-            });
-          }
-
-          return verdicts;
-        })
+        Effect.sync(() =>
+          verifyFactualAssertionsInternal(assertions, registeredContext)
+        )
       ),
     })
 );
