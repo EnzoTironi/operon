@@ -452,3 +452,133 @@ export class ModelGatewayExecutionError extends Data.TaggedError(
   readonly modelId?: string;
   readonly routingKey: string;
 }> {}
+
+/**
+ * FunctionPermissionDeniedError (OPR-FUN-001):
+ * Caller lacks mandatory permissions to invoke typed read function.
+ */
+export class FunctionPermissionDeniedError extends Data.TaggedError(
+  "FunctionPermissionDeniedError"
+)<{
+  readonly callerId: string;
+  readonly functionId: string;
+  readonly message: string;
+  readonly missingPermissions: readonly string[];
+}> {}
+
+/**
+ * FunctionValidationError (OPR-FUN-001):
+ * Function input parameters or returned output failed schema validation.
+ */
+export class FunctionValidationError extends Data.TaggedError(
+  "FunctionValidationError"
+)<{
+  readonly errors: readonly string[];
+  readonly functionId: string;
+  readonly message: string;
+  readonly phase: "INPUT_VALIDATION" | "OUTPUT_VALIDATION";
+}> {}
+
+/**
+ * ModelOutOfScopeError (OPR-FUN-004):
+ * Model input features fall outside declared applicability envelope.
+ */
+export class ModelOutOfScopeError extends Data.TaggedError(
+  "ModelOutOfScopeError"
+)<{
+  readonly details: string;
+  readonly feature: string;
+  readonly message: string;
+  readonly modelId: string;
+}> {}
+
+/**
+ * RulePrecedenceViolationError (OPR-FUN-006):
+ * Attempted action overrides deterministic hard red lines with model scores or explanations.
+ */
+export class RulePrecedenceViolationError extends Data.TaggedError(
+  "RulePrecedenceViolationError"
+)<{
+  readonly attemptedAction: string;
+  readonly explanation?: string;
+  readonly message: string;
+  readonly modelConfidence: number;
+  readonly ruleId: string;
+}> {}
+
+/**
+ * L2ContextMismatchError (OPR-L2-001):
+ * Assertion does not match ground truth or registered bitemporal evidence context.
+ */
+export class L2ContextMismatchError extends Data.TaggedError(
+  "L2ContextMismatchError"
+)<{
+  readonly assertionId: string;
+  readonly details: string;
+  readonly entityId: string;
+  readonly message: string;
+  readonly property: string;
+  readonly reason:
+    | "OBJECT_NOT_FOUND"
+    | "PROPERTY_ABSENT"
+    | "VALUE_MISMATCH"
+    | "VERSION_MISMATCH";
+}> {}
+
+/**
+ * CompletenessCheckFailedError (OPR-L2-002):
+ * Output fails Must-Answer template requirements or omits mandatory contraindication checks.
+ */
+export class CompletenessCheckFailedError extends Data.TaggedError(
+  "CompletenessCheckFailedError"
+)<{
+  readonly message: string;
+  readonly omittedRequirements: readonly string[];
+  readonly templateId: string;
+}> {}
+
+/**
+ * CitationResolutionError (OPR-L2-003):
+ * Claim citation cannot be resolved to registered evidence span or version.
+ */
+export class CitationResolutionError extends Data.TaggedError(
+  "CitationResolutionError"
+)<{
+  readonly citationId: string;
+  readonly claimId: string;
+  readonly message: string;
+  readonly reason:
+    | "EVIDENCE_INACCESSIBLE"
+    | "EVIDENCE_NOT_FOUND"
+    | "SEMANTIC_MISMATCH"
+    | "SPAN_OUT_OF_BOUNDS"
+    | "VERSION_MISMATCH";
+}> {}
+
+/**
+ * CommunicationComplianceViolationError (OPR-L2-004):
+ * Generated communication exceeds actor authority tier or makes unpermitted commitments.
+ */
+export class CommunicationComplianceViolationError extends Data.TaggedError(
+  "CommunicationComplianceViolationError"
+)<{
+  readonly actorId: string;
+  readonly actorTier: string;
+  readonly message: string;
+  readonly violationType:
+    | "UNAUTHORIZED_COMMITMENT"
+    | "UNAUTHORIZED_EXECUTION_CLAIM"
+    | "UNSUPPORTED_ASSURANCE";
+}> {}
+
+/**
+ * UnadmittedCandidateError (OPR-L2-005):
+ * Candidate fact attempted to be used as authoritative evidence before human admission.
+ */
+export class UnadmittedCandidateError extends Data.TaggedError(
+  "UnadmittedCandidateError"
+)<{
+  readonly candidateId: string;
+  readonly message: string;
+  readonly status: string;
+}> {}
