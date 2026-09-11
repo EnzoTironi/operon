@@ -21,3 +21,4 @@ export * from "./evidence.js";
 export * from "./authority-types.js";
 export * from "./reviewer.js";
 export * from "./scenarios.js";
+export * from "./promotion.js";

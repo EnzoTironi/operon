@@ -195,3 +195,39 @@ export class SandboxContainmentError extends Data.TaggedError(
   readonly escapeType: "network" | "filesystem" | "credential" | "effect";
   readonly target: string;
 }> {}
+
+/**
+ * PromotionEvidenceMismatchError (S11):
+ * Promotion evidence candidate digest or profile does not match promotion plan.
+ */
+export class PromotionEvidenceMismatchError extends Data.TaggedError(
+  "PromotionEvidenceMismatchError"
+)<{
+  readonly message: string;
+  readonly expectedCandidateDigest: string;
+  readonly actualCandidateDigest: string;
+  readonly expectedProfile: string;
+  readonly actualProfile: string;
+}> {}
+
+/**
+ * RolloutHaltedError (S11):
+ * Phased rollout halted due to cohort failure or breached stop condition.
+ */
+export class RolloutHaltedError extends Data.TaggedError("RolloutHaltedError")<{
+  readonly message: string;
+  readonly cohortId: string;
+  readonly reason: string;
+}> {}
+
+/**
+ * RollbackExecutionError (S11):
+ * Rollback execution failed due to invalid receipt or missing state.
+ */
+export class RollbackExecutionError extends Data.TaggedError(
+  "RollbackExecutionError"
+)<{
+  readonly message: string;
+  readonly promotionId: string;
+  readonly reason: string;
+}> {}

@@ -33,4 +33,5 @@ export * from "./canonical-evidence.js";
 export * from "./operon-service.js";
 export * from "./reviewer.js";
 export * from "./scenarios.js";
+export * from "./promotion.js";
 export * from "@operon/assurance";
