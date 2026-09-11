@@ -1,13 +1,13 @@
-import path from "node:path";
-
 import { PublicationBoundaryService } from "@operon/assurance";
 import { Effect, Exit } from "effect";
 
+import { joinPath, resolvePath } from "./paths.js";
+
 const __dirname = import.meta.dirname;
-const rootDir = path.resolve(__dirname, "../..");
+const rootDir = resolvePath(__dirname, "../..");
 
 export function runPublicationGate(
-  targetDirectory: string = path.join(rootDir, "packages")
+  targetDirectory: string = joinPath(rootDir, "packages")
 ) {
   const boundary = new PublicationBoundaryService();
   return boundary.scanDirectory(targetDirectory, {
@@ -22,10 +22,12 @@ if (process.argv[1] && process.argv[1].endsWith("publication-gate.ts")) {
     Effect.gen(function* () {
       const exit = yield* Effect.exit(runPublicationGate());
       if (Exit.isFailure(exit)) {
-        console.error("Publication Gate FAILED:", exit.cause);
+        yield* Effect.logError(
+          `Publication Gate FAILED: ${String(exit.cause)}`
+        );
         return 1;
       }
-      console.log(
+      yield* Effect.logInfo(
         `Publication Gate Passed: Scanned ${exit.value.scannedPaths.length} files. Zero leaks.`
       );
       return 0;

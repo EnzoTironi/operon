@@ -36,7 +36,7 @@ describe("Kernel-Level Adversarial Security & Invariant Testing", () => {
     await Effect.runPromise(
       Effect.all(
         initItems.map((item) => store.putObject(item)),
-        { concurrency: "unbounded" }
+        { concurrency: 10 }
       )
     );
 

@@ -1,12 +1,14 @@
 import { Schema } from "effect";
 
-import type { Subject } from "./security.js";
+import { Subject } from "./security.js";
 
 /**
  * Standard ActionLog Object Type Schema
  * In Operon, every action invocation materializes a 1-to-1 ActionLog object instance.
  */
 export const ActionLogTypeId = "ActionLog";
+
+export type ActionLogParameters = Record<string, Schema.Json>;
 
 export interface ActionLogObject {
   readonly id: string;
@@ -16,7 +18,7 @@ export interface ActionLogObject {
   readonly targetObjectTypeId?: string;
   readonly caller: Subject;
   readonly timestamp: number;
-  readonly parameters: Record<string, unknown>;
+  readonly parameters: ActionLogParameters;
   readonly status: "executed" | "proposed" | "rejected" | "compensated";
   readonly decisionRecordId: string;
   readonly recordHash: string;
@@ -29,9 +31,9 @@ export const ActionLogSchema = Schema.Struct({
   executionId: Schema.String,
   targetObjectId: Schema.optional(Schema.String),
   targetObjectTypeId: Schema.optional(Schema.String),
-  caller: Schema.Unknown,
+  caller: Subject,
   timestamp: Schema.Number,
-  parameters: Schema.Record(Schema.String, Schema.Unknown),
+  parameters: Schema.Record(Schema.String, Schema.Json),
   status: Schema.Literals(["executed", "proposed", "rejected", "compensated"]),
   decisionRecordId: Schema.String,
   recordHash: Schema.String,

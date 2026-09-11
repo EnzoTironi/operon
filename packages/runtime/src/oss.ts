@@ -112,15 +112,18 @@ export class ObjectSet {
     return new ObjectSet(this.store, this.objectTypeId, () =>
       this.loader().pipe(
         Effect.map((instances) =>
-          [...instances].sort((a, b) => {
+          instances.toSorted((a, b) => {
             const valA = (a.properties as Record<string, unknown>)[
               propertyName
             ];
             const valB = (b.properties as Record<string, unknown>)[
               propertyName
             ];
-            if (valA === valB) return 0;
-            const res = (valA as any) > (valB as any) ? 1 : -1;
+            if (valA === valB) {
+              return 0;
+            }
+            const res =
+              (valA as number | string) > (valB as number | string) ? 1 : -1;
             return direction === "asc" ? res : -res;
           })
         )
@@ -164,11 +167,10 @@ export class ObjectSet {
           return { value: instances.length };
         }
 
+        const propName = opts.propertyName;
         const values = instances
           .map((i) =>
-            Number(
-              (i.properties as Record<string, unknown>)[opts.propertyName!]
-            )
+            Number((i.properties as Record<string, unknown>)[propName])
           )
           .filter((v) => !Number.isNaN(v));
 
@@ -214,28 +216,38 @@ export class ObjectSet {
         const sourceObjects = yield* loader();
         const targetIds = new Set<string>();
 
-        for (const src of sourceObjects) {
-          const links: readonly LinkInstance[] =
-            direction === "forward"
-              ? yield* store.getLinks(linkTypeId, src.id)
-              : store.getReverseLinks
-                ? yield* store.getReverseLinks(linkTypeId, src.id)
-                : [];
+        yield* Effect.forEach(
+          sourceObjects,
+          Effect.fn("ObjectSet.resolveSourceLinks")(function* (src) {
+            let links: readonly LinkInstance[];
+            if (direction === "forward") {
+              links = yield* store.getLinks(linkTypeId, src.id);
+            } else if (store.getReverseLinks) {
+              links = yield* store.getReverseLinks(linkTypeId, src.id);
+            } else {
+              links = [];
+            }
 
-          for (const link of links) {
-            const targetId =
-              direction === "forward" ? link.targetId : link.sourceId;
-            targetIds.add(targetId);
-          }
-        }
+            for (const link of links) {
+              const targetId =
+                direction === "forward" ? link.targetId : link.sourceId;
+              targetIds.add(targetId);
+            }
+          }),
+          { concurrency: 1 }
+        );
 
         const targetObjects: ObjectInstance[] = [];
-        for (const tid of targetIds) {
-          const target = yield* store.getObject(targetObjectTypeId, tid);
-          if (target) {
-            targetObjects.push(target);
-          }
-        }
+        yield* Effect.forEach(
+          [...targetIds],
+          Effect.fn("ObjectSet.resolveTargetObject")(function* (tid) {
+            const target = yield* store.getObject(targetObjectTypeId, tid);
+            if (target) {
+              targetObjects.push(target);
+            }
+          }),
+          { concurrency: 1 }
+        );
 
         return targetObjects as readonly ObjectInstance[];
       })

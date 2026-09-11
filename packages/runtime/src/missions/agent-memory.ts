@@ -3,7 +3,7 @@ import type {
   GovernedAgentMemoryRecord,
   ReconstructableExecutionTrace,
 } from "@operon/schema";
-import { Context, Effect, Layer } from "effect";
+import { Clock, Context, Effect, Layer } from "effect";
 
 import { MemoryAccessDeniedError } from "../actions-errors.js";
 
@@ -73,17 +73,17 @@ export const GovernedMemoryServiceLive = Layer.sync(
         options?: { readonly mandateId?: string; readonly now?: number }
       ) {
         if (tenantId !== accessKey.tenantId) {
-          return yield* Effect.fail(
+          return yield* 
             new MemoryAccessDeniedError({
               memoryId: "query",
               message: `Cross-tenant memory access prohibited: caller tenant '${accessKey.tenantId}' cannot query tenant '${tenantId}'`,
               reason: "TENANT_MISMATCH",
               tenantId,
             })
-          );
+          ;
         }
 
-        const now = options?.now ?? Date.now();
+        const now = options?.now ?? (yield* Clock.currentTimeMillis);
         const results: GovernedAgentMemoryRecord[] = [];
 
         for (const [key, record] of memoryStore.entries()) {
@@ -115,28 +115,27 @@ export const GovernedMemoryServiceLive = Layer.sync(
       ) {
         // 1. Enforce tenant boundary
         if (record.tenantId !== accessKey.tenantId) {
-          return yield* Effect.fail(
+          return yield* 
             new MemoryAccessDeniedError({
               memoryId: record.memoryId,
               message: `Cross-tenant memory write denied: record tenant '${record.tenantId}' does not match access key tenant '${accessKey.tenantId}'`,
               reason: "TENANT_MISMATCH",
               tenantId: record.tenantId,
             })
-          );
+          ;
         }
 
         // 2. Enforce authority key immutability (memory cannot mint or store forged authority)
-        for (const key of Object.keys(record.content)) {
-          if (FORBIDDEN_MEMORY_AUTHORITY_KEYS.has(key)) {
-            return yield* Effect.fail(
-              new MemoryAccessDeniedError({
-                memoryId: record.memoryId,
-                message: `Agent memory cannot store reserved authority key '${key}': memory cannot grant authority`,
-                reason: "FORBIDDEN_AUTHORITY_INJECTION",
-                tenantId: record.tenantId,
-              })
-            );
-          }
+        const forbiddenKey = Object.keys(record.content).find((key) =>
+          FORBIDDEN_MEMORY_AUTHORITY_KEYS.has(key)
+        );
+        if (forbiddenKey) {
+          return yield* new MemoryAccessDeniedError({
+            memoryId: record.memoryId,
+            message: `Agent memory cannot store reserved authority key '${forbiddenKey}': memory cannot grant authority`,
+            reason: "FORBIDDEN_AUTHORITY_INJECTION",
+            tenantId: record.tenantId,
+          });
         }
 
         const storeKey = `${record.tenantId}:${record.memoryId}`;
@@ -151,52 +150,47 @@ export const GovernedMemoryServiceLive = Layer.sync(
       ),
 
       retrieveMemory: Effect.fn("GovernedMemoryService.retrieveMemory")(
-        function* (
-          memoryId: string,
-          accessKey: AccessKey,
-          now: number = Date.now()
-        ) {
+        function* (memoryId: string, accessKey: AccessKey, nowParam?: number) {
+          const now = nowParam ?? (yield* Clock.currentTimeMillis);
           const storeKey = `${accessKey.tenantId}:${memoryId}`;
           const record = memoryStore.get(storeKey);
 
           if (!record) {
             // Check if it exists under another tenant to detect cross-tenant attempt
-            for (const candidate of memoryStore.values()) {
-              if (
+            const crossTenantCandidate = [...memoryStore.values()].find(
+              (candidate) =>
                 candidate.memoryId === memoryId &&
                 candidate.tenantId !== accessKey.tenantId
-              ) {
-                return yield* Effect.fail(
-                  new MemoryAccessDeniedError({
-                    memoryId,
-                    message: `Cross-tenant memory retrieval denied: memory '${memoryId}' belongs to a different tenant`,
-                    reason: "TENANT_MISMATCH",
-                    tenantId: candidate.tenantId,
-                  })
-                );
-              }
+            );
+            if (crossTenantCandidate) {
+              return yield* new MemoryAccessDeniedError({
+                memoryId,
+                message: `Cross-tenant memory retrieval denied: memory '${memoryId}' belongs to a different tenant`,
+                reason: "TENANT_MISMATCH",
+                tenantId: crossTenantCandidate.tenantId,
+              });
             }
 
-            return yield* Effect.fail(
+            return yield* 
               new MemoryAccessDeniedError({
                 memoryId,
                 message: `Memory '${memoryId}' not found in tenant '${accessKey.tenantId}'`,
                 reason: "TENANT_MISMATCH",
                 tenantId: accessKey.tenantId,
               })
-            );
+            ;
           }
 
           // Check expiration
           if (record.expiresAt !== undefined && now > record.expiresAt) {
-            return yield* Effect.fail(
+            return yield* 
               new MemoryAccessDeniedError({
                 memoryId,
                 message: `Memory '${memoryId}' has expired (expiredAt: ${record.expiresAt}, now: ${now})`,
                 reason: "EXPIRED",
                 tenantId: record.tenantId,
               })
-            );
+            ;
           }
 
           return record;

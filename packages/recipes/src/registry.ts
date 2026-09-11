@@ -1,5 +1,5 @@
 import type { SkillRegistryService } from "@operon/skills";
-import { Context, Effect, Layer } from "effect";
+import { Clock, Context, Effect, Layer } from "effect";
 
 import { CorruptRecipePackError, RecipeNotFoundError } from "./errors.js";
 import { computeRecipeDigest } from "./manifest.js";
@@ -44,66 +44,68 @@ export class RecipeService extends Context.Service<
           recipes.set(recipe.id, recipe);
         }),
 
-      getRecipe: (id: string) =>
-        Effect.gen(function* () {
-          const recipe = recipes.get(id);
-          if (!recipe) {
-            return yield* Effect.fail(
-              new RecipeNotFoundError({ recipeId: id })
-            );
-          }
-          return recipe;
-        }),
+      getRecipe: Effect.fn("RecipeRegistryService.getRecipe")(function* (
+        id: string
+      ) {
+        const recipe = recipes.get(id);
+        if (!recipe) {
+          return yield* new RecipeNotFoundError({ recipeId: id });
+        }
+        return recipe;
+      }),
 
       listRecipes: () => Effect.succeed([...recipes.values()]),
 
-      importRecipe: (pack: RecipePack, skillService?: SkillRegistryService) =>
-        Effect.gen(function* () {
-          const { manifest, skills } = pack;
+      importRecipe: Effect.fn("RecipeRegistryService.importRecipe")(function* (
+        pack: RecipePack,
+        skillService?: SkillRegistryService
+      ) {
+        const { manifest, skills } = pack;
 
-          // Verify recipe manifest digest integrity
-          const { digest: _digest, ...manifestWithoutDigest } = manifest;
-          const expectedDigest = computeRecipeDigest(manifestWithoutDigest);
-          if (manifest.digest !== expectedDigest) {
-            return yield* Effect.fail(
-              new CorruptRecipePackError({
-                reason: `Manifest digest mismatch: declared '${manifest.digest}', expected '${expectedDigest}'`,
-                recipeId: manifest.id,
-              })
-            );
-          }
+        // Verify recipe manifest digest integrity
+        const { digest: _digest, ...manifestWithoutDigest } = manifest;
+        const expectedDigest = computeRecipeDigest(manifestWithoutDigest);
+        if (manifest.digest !== expectedDigest) {
+          return yield* new CorruptRecipePackError({
+            reason: `Manifest digest mismatch: declared '${manifest.digest}', expected '${expectedDigest}'`,
+            recipeId: manifest.id,
+          });
+        }
 
-          // Register recipe
-          recipes.set(manifest.id, manifest);
+        // Register recipe
+        recipes.set(manifest.id, manifest);
 
-          // If skill registry service is supplied, register packaged skills
-          if (skillService) {
-            for (const skill of skills) {
-              yield* skillService.registerSkill(skill).pipe(
-                Effect.catchTag("IncompatibleContractError", (err) =>
-                  Effect.fail(
+        // If skill registry service is supplied, register packaged skills
+        if (skillService) {
+          yield* Effect.forEach(
+            skills,
+            (skill) =>
+              skillService.registerSkill(skill).pipe(
+                Effect.catchTag(
+                  "IncompatibleContractError",
+                  (err) =>
                     new CorruptRecipePackError({
                       reason: `Skill '${skill.id}' contract incompatibility: ${err.minContract} > ${err.kernelContract}`,
                       recipeId: manifest.id,
                     })
-                  )
                 )
-              );
-            }
-          }
+              ),
+            { concurrency: 1 }
+          );
+        }
 
-          const receipt: RecipeImportReceipt = {
-            grantedAuthorityCount: 0,
-            imported: true,
-            ontologiesCount: manifest.ontologies.length,
-            recipeId: manifest.id,
-            skillsCount: skills.length,
-            timestamp: Date.now(),
-            version: manifest.version,
-          };
+        const receipt: RecipeImportReceipt = {
+          grantedAuthorityCount: 0,
+          imported: true,
+          ontologiesCount: manifest.ontologies.length,
+          recipeId: manifest.id,
+          skillsCount: skills.length,
+          timestamp: yield* Clock.currentTimeMillis,
+          version: manifest.version,
+        };
 
-          return receipt;
-        }),
+        return receipt;
+      }),
     };
   }
 

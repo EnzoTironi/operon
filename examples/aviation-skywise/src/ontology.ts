@@ -142,7 +142,7 @@ export const ScheduleMaintenanceAction = defineActionType({
       description:
         "Urgent or AOG maintenance proposals must be reviewed by the Chief Fleet Engineer",
       evaluate: (params) => {
-        const urgency = (params as any).urgency;
+        const urgency = params.urgency;
         const isRoutine = urgency === "routine";
         if (isRoutine) {
           return Effect.succeed({

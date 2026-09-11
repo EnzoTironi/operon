@@ -3,6 +3,8 @@ import type {
   SurfaceComponent,
   SurfaceLifecycleState,
 } from "@operon/schema";
+import { Predicate } from "effect";
+import type { Schema } from "effect";
 
 /**
  * Sanitize hostile text / evidence content to prevent script execution (OPR-UX-004)
@@ -22,15 +24,35 @@ export function sanitizeEvidenceContent(rawContent: string): string {
     .replaceAll(/onload\s*=\s*["'][^"']*["']/giu, "");
 }
 
+export type CardValue = Record<string, Schema.Json> | string | number;
+
 /**
  * Options for rendering an accessible card with distinct active vs proposed states (OPR-FULL-035)
  */
 export interface StateDistinctCardOptions {
-  readonly activeValue: Record<string, unknown> | string | number;
+  readonly activeValue: CardValue;
   readonly ariaLabel?: string;
   readonly componentId?: string;
-  readonly proposedValue?: Record<string, unknown> | string | number;
+  readonly proposedValue?: CardValue;
   readonly title: string;
+}
+
+function formatCardValue(value: CardValue): string {
+  if (Predicate.isString(value)) {
+    return sanitizeEvidenceContent(value);
+  }
+  if (Predicate.isObject(value)) {
+    return JSON.stringify(value, null, 2);
+  }
+  return String(value);
+}
+
+function renderProposedSection(proposedValue?: CardValue): string {
+  if (proposedValue === undefined) {
+    return "";
+  }
+  const propStr = formatCardValue(proposedValue);
+  return `\n\n#### [STATE: PROPOSED] Pending Action Proposal\n\`\`\`json\n${propStr}\n\`\`\``;
 }
 
 /**
@@ -44,31 +66,8 @@ export function renderStateDistinctCard(
     `comp-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
   const title = options.title;
 
-  const sanitizedActive =
-    typeof options.activeValue === "string"
-      ? sanitizeEvidenceContent(options.activeValue)
-      : options.activeValue;
-
-  const sanitizedProposed =
-    typeof options.proposedValue === "string"
-      ? sanitizeEvidenceContent(options.proposedValue)
-      : options.proposedValue;
-
-  const activeStr =
-    typeof sanitizedActive === "object"
-      ? JSON.stringify(sanitizedActive, null, 2)
-      : String(sanitizedActive);
-
-  let proposedSection = "";
-  if (sanitizedProposed !== undefined) {
-    const propStr =
-      typeof sanitizedProposed === "object"
-        ? JSON.stringify(sanitizedProposed, null, 2)
-        : String(sanitizedProposed);
-
-    proposedSection = `\n\n#### [STATE: PROPOSED] Pending Action Proposal\n\`\`\`json\n${propStr}\n\`\`\``;
-  }
-
+  const activeStr = formatCardValue(options.activeValue);
+  const proposedSection = renderProposedSection(options.proposedValue);
   const markup = `### ${title}\n\n#### [STATE: ACCEPTED] Current Canonical Value\n\`\`\`json\n${activeStr}\n\`\`\`${proposedSection}`;
 
   const focusNode: AccessibleFocusNode = {
@@ -79,13 +78,16 @@ export function renderStateDistinctCard(
     tabIndex: 0,
   };
 
+  const state: SurfaceLifecycleState =
+    options.proposedValue === undefined ? "ACCEPTED" : "PROPOSED";
+
   return {
     activeValue: options.activeValue,
     componentId,
     focusNode,
     proposedValue: options.proposedValue,
     renderedMarkup: markup,
-    state: options.proposedValue === undefined ? "ACCEPTED" : "PROPOSED",
+    state,
     title,
     type: "CARD",
   };
@@ -98,9 +100,17 @@ export interface AccessibleTableOptions {
   readonly ariaLabel?: string;
   readonly componentId?: string;
   readonly keyboardShortcut?: string;
-  readonly rows: readonly Record<string, unknown>[];
+  readonly rows: readonly Record<string, Schema.Json>[];
   readonly state?: SurfaceLifecycleState;
   readonly title: string;
+}
+
+function formatTableCell(val: Schema.Json | undefined): string {
+  if (val === undefined || val === null) {
+    return "";
+  }
+  const strVal = Predicate.isObject(val) ? JSON.stringify(val) : String(val);
+  return sanitizeEvidenceContent(strVal);
 }
 
 /**
@@ -128,16 +138,7 @@ export function renderAccessibleTable(
   const header = `| ${columns.join(" | ")} |`;
   const separator = `| ${columns.map(() => "---").join(" | ")} |`;
   const lines = options.rows.map(
-    (r) =>
-      `| ${columns
-        .map((col) => {
-          const val = r[col];
-          if (val === undefined || val === null) return "";
-          const strVal =
-            typeof val === "object" ? JSON.stringify(val) : String(val);
-          return sanitizeEvidenceContent(strVal);
-        })
-        .join(" | ")} |`
+    (r) => `| ${columns.map((col) => formatTableCell(r[col])).join(" | ")} |`
   );
 
   const markup = `### ${options.title} [STATE: ${state}]\n\n${header}\n${separator}\n${lines.join("\n")}`;
@@ -150,13 +151,15 @@ export function renderAccessibleTable(
     tabIndex: 0,
   };
 
+  const title = options.title;
+
   return {
     activeValue: options.rows,
     componentId,
     focusNode,
     renderedMarkup: markup,
     state,
-    title: options.title,
+    title,
     type: "TABLE",
   };
 }

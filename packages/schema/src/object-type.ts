@@ -8,11 +8,13 @@ import type {
 } from "./types.js";
 import type { ValueType } from "./value-types.js";
 
+export type ObjectProperties = Record<string, Schema.Json>;
+
 /**
  * Property definition on an Object Type
  */
-export interface PropertyDefinition<T = any> {
-  readonly schema: Schema.Schema<T>;
+export interface PropertyDefinition<T = unknown> {
+  readonly schema: Schema.Codec<T, unknown, never>;
   readonly description: string;
   readonly valueType?: ValueType<T>;
   readonly required?: boolean;
@@ -27,26 +29,26 @@ export interface PropertyDefinition<T = any> {
  * Object Type definition
  */
 export interface ObjectType<
-  Props extends Record<string, PropertyDefinition<any>> = Record<
+  Props extends Record<string, PropertyDefinition<unknown>> = Record<
     string,
-    PropertyDefinition<any>
+    PropertyDefinition<unknown>
   >,
 > {
   readonly id: ObjectTypeId;
   readonly name: string;
   readonly description: string;
   readonly typology: EntityTypology;
-  readonly primaryKey: keyof Props & string;
+  readonly primaryKey: string;
   readonly properties: Props;
   readonly implementedInterfaces?: readonly string[];
-  readonly immutableProperties?: readonly (keyof Props & string)[];
+  readonly immutableProperties?: readonly string[];
 }
 
 /**
  * Factory for defining an Object Type with strong typing
  */
 export function defineObjectType<
-  Props extends Record<string, PropertyDefinition<any>>,
+  Props extends Record<string, PropertyDefinition<unknown>>,
   PK extends keyof Props & string,
 >(config: {
   readonly id: string;
@@ -60,7 +62,7 @@ export function defineObjectType<
 }): ObjectType<Props> {
   return {
     ...config,
-    id: config.id as ObjectTypeId,
+    id: ObjectTypeId.make(config.id),
   };
 }
 
@@ -87,7 +89,7 @@ export const ObjectInstanceSchema = Schema.Struct({
   version: Schema.Number,
 });
 
-export interface ObjectInstance<T = Record<string, unknown>> extends Omit<
+export interface ObjectInstance<T = ObjectProperties> extends Omit<
   Schema.Schema.Type<typeof ObjectInstanceSchema>,
   "properties"
 > {

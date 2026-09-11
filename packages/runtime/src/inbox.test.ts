@@ -109,8 +109,9 @@ describe("ActionInbox Domain & Security Invariants (inbox.ts)", () => {
     );
   });
 
+  const defaultProposalParams = { newDose: 20, patientId: "P-100" };
   async function createProposal(
-    params = { newDose: 20, patientId: "P-100" },
+    params = defaultProposalParams,
     ttlMs?: number
   ) {
     const submission: ActionSubmission = {

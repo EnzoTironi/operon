@@ -165,4 +165,29 @@ export class InMemoryAuditStore implements AuditStore {
       return true;
     });
   }
+
+  exportSnapshot(): InMemoryAuditSnapshot {
+    return {
+      decisions: [...this.decisions],
+      lastHash: this.lastHash,
+      overrides: [...this.overrides],
+    };
+  }
+
+  importSnapshot(snapshot: InMemoryAuditSnapshot): void {
+    this.decisions.length = 0;
+    this.decisions.push(...snapshot.decisions.map((d) => structuredClone(d)));
+    this.overrides.length = 0;
+    if (snapshot.overrides) {
+      this.overrides.push(...snapshot.overrides.map((o) => structuredClone(o)));
+    }
+    const tailHash = snapshot.decisions.at(-1)?.recordHash;
+    this.lastHash = snapshot.lastHash ?? tailHash ?? "GENESIS_HASH";
+  }
+}
+
+export interface InMemoryAuditSnapshot {
+  readonly decisions: readonly DecisionRecord[];
+  readonly overrides?: readonly OverrideRecord[];
+  readonly lastHash?: string;
 }

@@ -210,8 +210,8 @@ export const SubmitWaiverRequestAction = defineActionType({
     {
       id: "r1-capstone-non-waivable",
       description: "Rule 1: Capstone prerequisite is strictly non-waivable",
-      evaluate: (params, context) =>
-        Effect.gen(function* () {
+      evaluate: Effect.fn("evaluateCapstoneNonWaivable")(
+        function* (params, context) {
           const course = yield* context.getObject(
             "Course" as ObjectTypeId,
             params.targetCourseCode
@@ -224,14 +224,15 @@ export const SubmitWaiverRequestAction = defineActionType({
             };
           }
           return { passed: true, verdict: "allow" };
-        }),
+        }
+      ),
     },
     {
       id: "r2-waiver-quota-guard",
       description:
         "Rule 2: At most two approved waivers per student per program",
-      evaluate: (params, context) =>
-        Effect.gen(function* () {
+      evaluate: Effect.fn("evaluateWaiverQuotaGuard")(
+        function* (params, context) {
           const student = yield* context.getObject(
             "Student" as ObjectTypeId,
             params.studentId
@@ -246,48 +247,48 @@ export const SubmitWaiverRequestAction = defineActionType({
             };
           }
           return { passed: true, verdict: "allow" };
-        }),
+        }
+      ),
     },
     {
       id: "r3-r4-evidence-rules",
       description:
         "Rule 3 (Grade >= 60) & Rule 4 (Work experience routes to Director review)",
-      evaluate: (params, context) =>
-        Effect.gen(function* () {
-          const evidence = yield* context.getObject(
-            "Evidence" as ObjectTypeId,
-            params.evidenceId
-          );
-          if (!evidence) {
-            return {
-              passed: false,
-              verdict: "deny",
-              failureReason: `Evidence '${params.evidenceId}' not found in registry`,
-            };
-          }
+      evaluate: Effect.fn("evaluateEvidenceRules")(function* (params, context) {
+        const evidence = yield* context.getObject(
+          "Evidence" as ObjectTypeId,
+          params.evidenceId
+        );
+        if (!evidence) {
+          return {
+            passed: false,
+            verdict: "deny",
+            failureReason: `Evidence '${params.evidenceId}' not found in registry`,
+          };
+        }
 
-          // Rule 4: Work experience routes to Department Director
-          if (evidence.properties.evidenceType === "work_experience") {
-            return {
-              passed: false,
-              verdict: "review", // Escalate to Department Director inbox!
-              failureReason:
-                "Rule R4: Professional work experience evidence requires Department Director discretion.",
-            };
-          }
+        // Rule 4: Work experience routes to Department Director
+        if (evidence.properties.evidenceType === "work_experience") {
+          return {
+            passed: false,
+            verdict: "review", // Escalate to Department Director inbox!
+            failureReason:
+              "Rule R4: Professional work experience evidence requires Department Director discretion.",
+          };
+        }
 
-          // Rule 3: Equivalent course grade must be >= 60
-          const grade = (evidence.properties.gradeScore as number) ?? 0;
-          if (grade < 60) {
-            return {
-              passed: false,
-              verdict: "deny",
-              failureReason: `Rule R3 Violation: Equivalent course grade (${grade}) is below minimum threshold 60.`,
-            };
-          }
+        // Rule 3: Equivalent course grade must be >= 60
+        const grade = (evidence.properties.gradeScore as number) ?? 0;
+        if (grade < 60) {
+          return {
+            passed: false,
+            verdict: "deny",
+            failureReason: `Rule R3 Violation: Equivalent course grade (${grade}) is below minimum threshold 60.`,
+          };
+        }
 
-          return { passed: true, verdict: "allow" };
-        }),
+        return { passed: true, verdict: "allow" };
+      }),
     },
   ],
 });

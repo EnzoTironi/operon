@@ -4,7 +4,7 @@ import type {
   ObjectInstance,
   ObjectTypeId,
 } from "@operon/schema";
-import { Effect } from "effect";
+import { Clock, Effect } from "effect";
 
 import { ConcurrentModificationError } from "./errors.js";
 
@@ -59,6 +59,52 @@ export interface ObjectStore {
   ) => Effect.Effect<void>;
 }
 
+function toObjectKey(typeId: ObjectTypeId, id: string): string {
+  return `${typeId}:${id}`;
+}
+
+const putObjectImpl = Effect.fn("InMemoryObjectStore.putObject")(function* (
+  objects: Map<string, ObjectInstance>,
+  instance: ObjectInstance
+) {
+  const k = toObjectKey(instance.typeId, instance.id);
+  const existing = objects.get(k);
+
+  if (existing && instance.version !== existing.version + 1) {
+    return yield* new ConcurrentModificationError({
+      actualVersion: instance.version,
+      expectedVersion: existing.version + 1,
+      objectId: instance.id,
+    });
+  }
+
+  const now = yield* Clock.currentTimeMillis;
+  const copy: ObjectInstance = {
+    ...structuredClone(instance),
+    lastModifiedAt: now,
+  };
+  objects.set(k, copy);
+  return copy;
+});
+
+const commitAtomicTransactionImpl = Effect.fn(
+  "InMemoryObjectStore.commitAtomicTransaction"
+)(function* (
+  validate: (
+    mutations: readonly ObjectMutation[]
+  ) => Effect.Effect<void, ConcurrentModificationError>,
+  apply: (
+    mutations: readonly ObjectMutation[],
+    links: readonly LinkInstance[] | undefined,
+    now: number
+  ) => void,
+  batch: AtomicTransactionBatch
+) {
+  yield* validate(batch.mutations);
+  const now = yield* Clock.currentTimeMillis;
+  apply(batch.mutations, batch.links, now);
+});
+
 /**
  * In-memory reference implementation of ObjectStore with deferred evaluation,
  * strict OCC (preventing version-1 overwrite escape), clone isolation, and atomic multi-object commits.
@@ -67,8 +113,8 @@ export class InMemoryObjectStore implements ObjectStore {
   private readonly objects = new Map<string, ObjectInstance>();
   private readonly links: LinkInstance[] = [];
 
-  private static toKey(typeId: ObjectTypeId, id: string): string {
-    return `${typeId}:${id}`;
+  static toKey(typeId: ObjectTypeId, id: string): string {
+    return toObjectKey(typeId, id);
   }
 
   getObject(
@@ -84,27 +130,7 @@ export class InMemoryObjectStore implements ObjectStore {
   putObject(
     instance: ObjectInstance
   ): Effect.Effect<ObjectInstance, ConcurrentModificationError> {
-    return Effect.suspend(() => {
-      const k = InMemoryObjectStore.toKey(instance.typeId, instance.id);
-      const existing = this.objects.get(k);
-
-      if (existing && instance.version !== existing.version + 1) {
-        return Effect.fail(
-          new ConcurrentModificationError({
-            actualVersion: instance.version,
-            expectedVersion: existing.version + 1,
-            objectId: instance.id,
-          })
-        );
-      }
-
-      const copy: ObjectInstance = {
-        ...structuredClone(instance),
-        lastModifiedAt: Date.now(),
-      };
-      this.objects.set(k, copy);
-      return Effect.succeed(copy);
-    });
+    return putObjectImpl(this.objects, instance);
   }
 
   deleteObject(typeId: ObjectTypeId, id: string): Effect.Effect<void> {
@@ -179,63 +205,100 @@ export class InMemoryObjectStore implements ObjectStore {
     );
   }
 
+  private validateBatchPreconditions(
+    mutations: readonly ObjectMutation[]
+  ): Effect.Effect<void, ConcurrentModificationError> {
+    for (const mutation of mutations) {
+      if (mutation.type === "put") {
+        const k = InMemoryObjectStore.toKey(
+          mutation.instance.typeId,
+          mutation.instance.id
+        );
+        const existing = this.objects.get(k);
+        if (existing && mutation.instance.version !== existing.version + 1) {
+          return Effect.fail(
+            new ConcurrentModificationError({
+              actualVersion: mutation.instance.version,
+              expectedVersion: existing.version + 1,
+              objectId: mutation.instance.id,
+            })
+          );
+        }
+      }
+    }
+    return Effect.void;
+  }
+
+  private applyBatchMutations(
+    mutations: readonly ObjectMutation[],
+    links: readonly LinkInstance[] | undefined,
+    now: number
+  ): void {
+    for (const mutation of mutations) {
+      if (mutation.type === "put") {
+        const k = InMemoryObjectStore.toKey(
+          mutation.instance.typeId,
+          mutation.instance.id
+        );
+        this.objects.set(k, {
+          ...structuredClone(mutation.instance),
+          lastModifiedAt: now,
+        });
+      } else {
+        this.objects.delete(
+          InMemoryObjectStore.toKey(mutation.typeId, mutation.id)
+        );
+      }
+    }
+
+    if (links) {
+      for (const link of links) {
+        const exists = this.links.some(
+          (l) =>
+            l.linkTypeId === link.linkTypeId &&
+            l.sourceId === link.sourceId &&
+            l.targetId === link.targetId
+        );
+        if (!exists) {
+          this.links.push(structuredClone(link));
+        }
+      }
+    }
+  }
+
   commitAtomicTransaction(
     batch: AtomicTransactionBatch
   ): Effect.Effect<void, ConcurrentModificationError> {
-    return Effect.suspend(() => {
-      // 1. Validation phase (validate ALL optimistic concurrency preconditions before applying any mutation)
-      for (const mutation of batch.mutations) {
-        if (mutation.type === "put") {
-          const k = InMemoryObjectStore.toKey(
-            mutation.instance.typeId,
-            mutation.instance.id
-          );
-          const existing = this.objects.get(k);
-          if (existing && mutation.instance.version !== existing.version + 1) {
-            return Effect.fail(
-              new ConcurrentModificationError({
-                actualVersion: mutation.instance.version,
-                expectedVersion: existing.version + 1,
-                objectId: mutation.instance.id,
-              })
-            );
-          }
-        }
-      }
-
-      // 2. Execution phase (all-or-nothing: apply all staged mutations and links)
-      const now = Date.now();
-      for (const mutation of batch.mutations) {
-        if (mutation.type === "put") {
-          const k = InMemoryObjectStore.toKey(
-            mutation.instance.typeId,
-            mutation.instance.id
-          );
-          this.objects.set(k, {
-            ...structuredClone(mutation.instance),
-            lastModifiedAt: now,
-          });
-        } else {
-          this.objects.delete(
-            InMemoryObjectStore.toKey(mutation.typeId, mutation.id)
-          );
-        }
-      }
-
-      if (batch.links) {
-        for (const link of batch.links) {
-          const exists = this.links.some(
-            (l) =>
-              l.linkTypeId === link.linkTypeId &&
-              l.sourceId === link.sourceId &&
-              l.targetId === link.targetId
-          );
-          if (!exists) {
-            this.links.push(structuredClone(link));
-          }
-        }
-      }
-      return Effect.void;
-    });
+    return commitAtomicTransactionImpl(
+      (m) => this.validateBatchPreconditions(m),
+      (m, l, n) => this.applyBatchMutations(m, l, n),
+      batch
+    );
   }
+
+  exportSnapshot(): InMemoryObjectSnapshot {
+    return {
+      links: [...this.links],
+      objects: [...this.objects.values()],
+    };
+  }
+
+  importSnapshot(snapshot: InMemoryObjectSnapshot): void {
+    this.objects.clear();
+    for (const obj of snapshot.objects) {
+      this.objects.set(
+        InMemoryObjectStore.toKey(obj.typeId, obj.id),
+        structuredClone(obj)
+      );
+    }
+    if (snapshot.links) {
+      this.links.length = 0;
+      this.links.push(...snapshot.links.map((link) => structuredClone(link)));
+    }
+  }
+}
+
+export interface InMemoryObjectSnapshot {
+  readonly objects: readonly ObjectInstance[];
+  readonly links?: readonly LinkInstance[];
 }

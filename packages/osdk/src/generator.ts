@@ -1,45 +1,145 @@
 import type { ActionType, LinkType, ObjectType } from "@operon/schema";
+import { Predicate, SchemaAST } from "effect";
+
+const PRIMITIVE_TAG_MAP: ReadonlyMap<string, string> = new Map([
+  ["Boolean", "boolean"],
+  ["BooleanKeyword", "boolean"],
+  ["Number", "number"],
+  ["NumberKeyword", "number"],
+  ["String", "string"],
+  ["StringKeyword", "string"],
+]);
+
+function renderPrimitiveAstType(ast: SchemaAST.AST): string | undefined {
+  return PRIMITIVE_TAG_MAP.get(ast._tag);
+}
+
+function renderUnionType(
+  types: readonly SchemaAST.AST[],
+  toTsType: (ast?: SchemaAST.AST) => string
+): string {
+  const nonUndefined = types.filter((t) => !Predicate.isTagged(t, "Undefined"));
+  if (nonUndefined.length === 1) {
+    return toTsType(nonUndefined[0]);
+  }
+  if (nonUndefined.length > 0) {
+    return nonUndefined.map((t) => toTsType(t)).join(" | ");
+  }
+  return "unknown";
+}
+
+function renderCompositeAstType(
+  ast: SchemaAST.AST,
+  toTsType: (ast?: SchemaAST.AST) => string
+): string | undefined {
+  if (Predicate.isTagged(ast, "Arrays")) {
+    // SAFETY: SchemaAST.Arrays node contains rest array element AST
+    const arraysNode = ast as SchemaAST.Arrays;
+    const restAst = arraysNode.rest[0];
+    return `${toTsType(restAst)}[]`;
+  }
+  if (Predicate.isTagged(ast, "Literal")) {
+    return JSON.stringify(ast.literal);
+  }
+  if (Predicate.isTagged(ast, "Union")) {
+    return renderUnionType(ast.types, toTsType);
+  }
+  return undefined;
+}
 
 /**
  * Maps an Effect Schema AST node to its TypeScript type representation.
  */
-export function schemaAstToTsType(ast: any): string {
-  if (!ast) return "unknown";
-
-  switch (ast._tag) {
-    case "String":
-    case "StringKeyword": {
-      return "string";
-    }
-    case "Number":
-    case "NumberKeyword": {
-      return "number";
-    }
-    case "Boolean":
-    case "BooleanKeyword": {
-      return "boolean";
-    }
-    case "Arrays": {
-      return `${schemaAstToTsType(ast.rest?.[0])}[]`;
-    }
-    case "Literal": {
-      return JSON.stringify(ast.literal);
-    }
-    case "Union": {
-      const nonUndefined =
-        ast.types?.filter((t: any) => t._tag !== "Undefined") ?? [];
-      if (nonUndefined.length === 1) {
-        return schemaAstToTsType(nonUndefined[0]);
-      }
-      if (nonUndefined.length > 0) {
-        return nonUndefined.map((t: any) => schemaAstToTsType(t)).join(" | ");
-      }
-      return "unknown";
-    }
-    default: {
-      return "unknown";
-    }
+export function schemaAstToTsType(ast?: SchemaAST.AST): string {
+  if (!ast) {
+    return "unknown";
   }
+  const prim = renderPrimitiveAstType(ast);
+  if (prim) {
+    return prim;
+  }
+  const comp = renderCompositeAstType(ast, schemaAstToTsType);
+  if (comp) {
+    return comp;
+  }
+  return "unknown";
+}
+
+function isPropertyOptional(p: SchemaAST.PropertySignature): boolean {
+  if (SchemaAST.isOptional(p.type)) {
+    return true;
+  }
+  const pType = p.type;
+  if (Predicate.isTagged(pType, "Undefined")) {
+    return true;
+  }
+  if (Predicate.isTagged(pType, "Union")) {
+    return pType.types.some((t) => Predicate.isTagged(t, "Undefined"));
+  }
+  return false;
+}
+
+function renderActionParamsType(ast?: SchemaAST.AST): string {
+  if (!ast) {
+    return "Record<string, unknown>";
+  }
+  if (
+    Predicate.isTagged(ast, "Objects") ||
+    Predicate.isTagged(ast, "TypeLiteral")
+  ) {
+    // SAFETY: Objects and TypeLiteral schema AST nodes contain propertySignatures
+    const propsNode = ast as {
+      readonly propertySignatures?: readonly SchemaAST.PropertySignature[];
+    };
+    const props = propsNode.propertySignatures ?? [];
+    const fields = props.map((p) => {
+      const pName = String(p.name);
+      const pType = schemaAstToTsType(p.type);
+      const isOpt = isPropertyOptional(p);
+      return `${pName}${isOpt ? "?" : ""}: ${pType}`;
+    });
+    return `{ ${fields.join("; ")} }`;
+  }
+  return "Record<string, unknown>";
+}
+
+function generateObjectTypeSource(ot: ObjectType): readonly string[] {
+  const lines: string[] = [`export interface ${ot.id}Properties {`];
+  for (const [propName, propDef] of Object.entries(ot.properties)) {
+    const tsType = schemaAstToTsType(propDef.schema?.ast);
+    const isRequired = propDef.required ?? false;
+    lines.push(
+      `  readonly ${propName}${isRequired ? "" : "?"}: ${tsType}; // ${propDef.description ?? ""}`
+    );
+  }
+  lines.push(
+    "}",
+    `export type ${ot.id}Instance = ObjectInstance<${ot.id}Properties>;`,
+    ""
+  );
+  return lines;
+}
+
+function generateClientInterface(
+  objectTypes: readonly ObjectType[],
+  actionTypes: readonly ActionType[]
+): readonly string[] {
+  const lines: string[] = [
+    "export interface TypedOperonClient extends OperonClient {",
+    "  readonly objects: {",
+  ];
+  for (const ot of objectTypes) {
+    lines.push(
+      `    readonly ${ot.id}: ObjectTypeAccessor<${ot.id}Properties>;`
+    );
+  }
+  lines.push("  };", "  readonly actions: {");
+  for (const at of actionTypes) {
+    const paramsType = renderActionParamsType(at.parametersSchema?.ast);
+    lines.push(`    readonly ${at.id}: ActionAccessor<${paramsType}>;`);
+  }
+  lines.push("  };", "}");
+  return lines;
 }
 
 /**
@@ -48,64 +148,18 @@ export function schemaAstToTsType(ast: any): string {
 export function generateOsdkSource(schema: {
   readonly objectTypes: readonly ObjectType[];
   readonly linkTypes: readonly LinkType[];
-  readonly actionTypes: readonly ActionType<any>[];
+  readonly actionTypes: readonly ActionType[];
 }): string {
-  const lines: string[] = [
+  const header = [
     "// AUTO-GENERATED BY @operon/osdk - DO NOT EDIT DIRECTLY",
     "import type { ObjectInstance } from '@operon/schema';",
     "import type { OperonClient, ObjectTypeAccessor, ActionAccessor } from '@operon/osdk';",
     "",
   ];
-
-  // Generate Object Types interfaces
-  for (const ot of schema.objectTypes) {
-    lines.push(`export interface ${ot.id}Properties {`);
-    for (const [propName, propDef] of Object.entries(ot.properties)) {
-      const ast = (propDef as any).schema?.ast;
-      const tsType = schemaAstToTsType(ast);
-      const isRequired = propDef.required ?? false;
-      lines.push(
-        `  readonly ${propName}${isRequired ? "" : "?"}: ${tsType}; // ${(propDef as any).description ?? ""}`
-      );
-    }
-    lines.push(
-      "}",
-      `export type ${ot.id}Instance = ObjectInstance<${ot.id}Properties>;`
-    );
-    lines.push("");
-  }
-
-  // Generate Typed Client Interface
-  lines.push(
-    "export interface TypedOperonClient extends OperonClient {",
-    "  readonly objects: {"
+  const objectTypeLines = schema.objectTypes.flatMap(generateObjectTypeSource);
+  const clientLines = generateClientInterface(
+    schema.objectTypes,
+    schema.actionTypes
   );
-  for (const ot of schema.objectTypes) {
-    lines.push(
-      `    readonly ${ot.id}: ObjectTypeAccessor<${ot.id}Properties>;`
-    );
-  }
-  lines.push("  };", "  readonly actions: {");
-  for (const at of schema.actionTypes) {
-    const ast = (at.parametersSchema as any)?.ast;
-    let paramsType = "Record<string, unknown>";
-    if (ast && (ast._tag === "Objects" || ast._tag === "TypeLiteral")) {
-      const fields = (ast.propertySignatures ?? []).map((p: any) => {
-        const pName = String(p.name);
-        const pType = schemaAstToTsType(p.type);
-        const isOpt =
-          p.isOptional ||
-          p.type?.context?.isOptional ||
-          p.type?._tag === "Undefined" ||
-          (p.type?._tag === "Union" &&
-            p.type?.types?.some((t: any) => t._tag === "Undefined"));
-        return `${pName}${isOpt ? "?" : ""}: ${pType}`;
-      });
-      paramsType = `{ ${fields.join("; ")} }`;
-    }
-    lines.push(`    readonly ${at.id}: ActionAccessor<${paramsType}>;`);
-  }
-  lines.push("  };", "}");
-
-  return lines.join("\n");
+  return [...header, ...objectTypeLines, ...clientLines].join("\n");
 }

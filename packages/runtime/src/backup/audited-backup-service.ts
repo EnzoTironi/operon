@@ -7,7 +7,7 @@ import type {
   RecoveryMetricsReport,
   SigningKeyDescriptor,
 } from "@operon/schema";
-import { Effect } from "effect";
+import { Clock, Effect } from "effect";
 
 import {
   BackupAuditIntegrityError,
@@ -44,8 +44,7 @@ export function buildHashChain(
   const blocks: AuditHashBlock[] = [];
   let prevHash = genesisHash;
 
-  for (let i = 0; i < events.length; i++) {
-    const event = events[i]!;
+  for (const [i, event] of events.entries()) {
     const payloadHash = createHash("sha256")
       .update(JSON.stringify(event.payload))
       .digest("hex");
@@ -142,10 +141,10 @@ export class AuditedBackupService {
     readonly simulatedRestoreDurationMs?: number;
     readonly targetCellId: string;
   }): Effect.Effect<RecoveryMetricsReport, BackupAuditIntegrityError> {
-    const startTime = Date.now();
     const { backup, declaredSla, targetCellId } = params;
 
     return Effect.gen(function* () {
+      const startTime = yield* Clock.currentTimeMillis;
       // 1. Verify hash chain integrity
       const { verifiedBlocksCount, finalHash } = yield* verifyHashChain(
         backup.hashChain,
@@ -154,26 +153,23 @@ export class AuditedBackupService {
 
       // Checkpoint hash must match the head of the chain if chain is non-empty
       if (backup.hashChain.length > 0 && backup.checkpointHash !== finalHash) {
-        return yield* Effect.fail(
-          new BackupAuditIntegrityError({
-            actualHash: finalHash,
-            backupId: backup.backupId,
-            blockIndex: backup.hashChain.length - 1,
-            expectedHash: backup.checkpointHash,
-            message: `Checkpoint hash mismatch: expected "${backup.checkpointHash}", head of chain is "${finalHash}"`,
-          })
-        );
+        return yield* new BackupAuditIntegrityError({
+          actualHash: finalHash,
+          backupId: backup.backupId,
+          blockIndex: backup.hashChain.length - 1,
+          expectedHash: backup.checkpointHash,
+          message: `Checkpoint hash mismatch: expected "${backup.checkpointHash}", head of chain is "${finalHash}"`,
+        });
       }
 
       // 2. Compute measured RTO and RPO
+      const now = yield* Clock.currentTimeMillis;
       const measuredRtoMs =
-        params.simulatedRestoreDurationMs ?? Date.now() - startTime;
+        params.simulatedRestoreDurationMs ?? now - startTime;
 
       // RPO represents maximum data loss: difference between last committed block and backup snapshot creation
-      const lastBlockTimestamp =
-        backup.hashChain.length > 0
-          ? backup.hashChain.at(-1)!.timestamp
-          : backup.createdAt;
+      const lastBlock = backup.hashChain.at(-1);
+      const lastBlockTimestamp = lastBlock?.timestamp ?? backup.createdAt;
 
       const measuredRpoMs = Math.max(0, backup.createdAt - lastBlockTimestamp);
 
@@ -189,7 +185,7 @@ export class AuditedBackupService {
         measuredRtoMs,
         qualificationPassed: true,
         reconciledEntityCount: backup.canonicalEntities.length,
-        restoredAt: new Date().toISOString(),
+        restoredAt: new Date(now).toISOString(),
         rpoObjectiveMs: declaredSla.rpoObjectiveMs,
         rtoObjectiveMs: declaredSla.rtoObjectiveMs,
         slaCompliant,

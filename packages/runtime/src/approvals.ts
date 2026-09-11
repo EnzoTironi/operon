@@ -4,7 +4,7 @@ import type {
   ProposalReview,
   Subject,
 } from "@operon/schema";
-import { Effect } from "effect";
+import { Clock, Effect } from "effect";
 
 import { ApprovalsPolicyViolationError } from "./oms.js";
 
@@ -93,65 +93,64 @@ export class ApprovalsEngine {
   /**
    * Submit a review from a stakeholder and verify merge eligibility
    */
-  submitReview(
+  readonly submitReview = Effect.fn("ApprovalsEngine.submitReview")(function* (
+    this: ApprovalsEngine,
     proposal: OntologyProposal,
     reviewer: Subject,
     verdict: "approve" | "reject" | "request_changes",
     comments: string
-  ): Effect.Effect<OntologyProposal> {
-    return Effect.sync(() => {
-      const newReview: ProposalReview = {
-        reviewer,
-        verdict,
-        comments,
-        reviewedAt: Date.now(),
-      };
+  ) {
+    const now = yield* Clock.currentTimeMillis;
+    const newReview: ProposalReview = {
+      reviewer,
+      verdict,
+      comments,
+      reviewedAt: now,
+    };
 
-      // Filter out previous reviews from the same subject if updating
-      const updatedReviews = [
-        ...proposal.reviews.filter((r) => r.reviewer.id !== reviewer.id),
-        newReview,
-      ];
+    // Filter out previous reviews from the same subject if updating
+    const updatedReviews = [
+      ...proposal.reviews.filter((r) => r.reviewer.id !== reviewer.id),
+      newReview,
+    ];
 
-      const eligibility = this.evaluateProposal({
-        ...proposal,
-        reviews: updatedReviews,
-      });
-
-      let status = proposal.status;
-      if (verdict === "reject") {
-        status = "rejected";
-      } else if (eligibility.canMerge) {
-        status = "approved";
-      } else {
-        status = "under_review";
-      }
-
-      return {
-        ...proposal,
-        status,
-        reviews: updatedReviews,
-        updatedAt: Date.now(),
-      };
+    const eligibility = this.evaluateProposal({
+      ...proposal,
+      reviews: updatedReviews,
     });
-  }
+
+    let status = proposal.status;
+    if (verdict === "reject") {
+      status = "rejected";
+    } else if (eligibility.canMerge) {
+      status = "approved";
+    } else {
+      status = "under_review";
+    }
+
+    return {
+      ...proposal,
+      status,
+      reviews: updatedReviews,
+      updatedAt: now,
+    };
+  });
 
   /**
    * Assert proposal is eligible to merge, or fail with ApprovalsPolicyViolationError
    */
-  assertMergeable(
-    proposal: OntologyProposal
-  ): Effect.Effect<void, ApprovalsPolicyViolationError> {
-    return Effect.gen({ self: this }, function* () {
+  readonly assertMergeable = Effect.fn("ApprovalsEngine.assertMergeable")(
+    function* (
+      this: ApprovalsEngine,
+      proposal: OntologyProposal
+    ): Effect.fn.Return<void, ApprovalsPolicyViolationError> {
       const eligibility = this.evaluateProposal(proposal);
       if (!eligibility.canMerge) {
-        return yield* Effect.fail(
-          new ApprovalsPolicyViolationError({
-            proposalId: proposal.id,
-            reason: `Proposal ${proposal.id} does not satisfy approvals policy: ${eligibility.reasons.join("; ")}`,
-          })
-        );
+        return yield* new ApprovalsPolicyViolationError({
+          proposalId: proposal.id,
+          reason: `Proposal ${proposal.id} does not satisfy approvals policy: ${eligibility.reasons.join("; ")}`,
+        });
       }
-    });
-  }
+    }
+  );
 }

@@ -5,7 +5,7 @@ import type {
   FunctionExecutionContext,
   MaterializedOutputRecord,
 } from "@operon/schema";
-import { Context, Effect, Layer, Schema } from "effect";
+import { Clock, Context, Effect, Exit, Layer, Schema } from "effect";
 
 import {
   FunctionPermissionDeniedError,
@@ -22,9 +22,9 @@ export interface TypedReadFunction<TInput = unknown, TOutput = unknown> {
     ctx: FunctionExecutionContext
   ) => Effect.Effect<TOutput, never>;
   readonly functionId: string;
-  readonly inputSchema: Schema.Decoder<any>;
+  readonly inputSchema: Schema.Decoder<TInput>;
   readonly isPure: true;
-  readonly outputSchema: Schema.Decoder<any>;
+  readonly outputSchema: Schema.Decoder<TOutput>;
   readonly requiredPermissions: readonly string[];
   readonly version: string;
 }
@@ -109,70 +109,63 @@ export const TypedReadServiceLive = Layer.sync(TypedReadService, () => {
   const materializedStore = new Map<string, MaterializedOutputRecord>();
   let visibleCommittedEdits: StagedEditMutation[] = [];
 
-  const invokeFunctionInternal = (
+  const invokeFunctionInternal = Effect.fn("invokeFunctionInternal")(function* (
     functionId: string,
     rawInput: unknown,
     ctx: FunctionExecutionContext
-  ) =>
-    Effect.gen(function* () {
-      const fn = functions.get(functionId);
-      if (!fn) {
-        return yield* Effect.fail(
-          new FunctionValidationError({
-            errors: [`Function '${functionId}' is not registered`],
-            functionId,
-            message: `Function '${functionId}' not found`,
-            phase: "INPUT_VALIDATION",
-          })
-        );
-      }
+  ) {
+    const fn = functions.get(functionId);
+    if (!fn) {
+      return yield* new FunctionValidationError({
+        errors: [`Function '${functionId}' is not registered`],
+        functionId,
+        message: `Function '${functionId}' not found`,
+        phase: "INPUT_VALIDATION",
+      });
+    }
 
-      // 1. Check permissions (OPR-FUN-001)
-      const missingPermissions = fn.requiredPermissions.filter(
-        (perm) => !ctx.callerPermissions.includes(perm)
-      );
-      if (missingPermissions.length > 0) {
-        return yield* Effect.fail(
-          new FunctionPermissionDeniedError({
-            callerId: ctx.callerId,
-            functionId,
-            message: `Caller '${ctx.callerId}' lacks required permissions: ${missingPermissions.join(", ")}`,
-            missingPermissions,
-          })
-        );
-      }
+    // 1. Check permissions (OPR-FUN-001)
+    const missingPermissions = fn.requiredPermissions.filter(
+      (perm) => !ctx.callerPermissions.includes(perm)
+    );
+    if (missingPermissions.length > 0) {
+      return yield* new FunctionPermissionDeniedError({
+        callerId: ctx.callerId,
+        functionId,
+        message: `Caller '${ctx.callerId}' lacks required permissions: ${missingPermissions.join(", ")}`,
+        missingPermissions,
+      });
+    }
 
-      // 2. Validate input schema
-      const inputExit = Schema.decodeUnknownExit(fn.inputSchema)(rawInput);
-      if (inputExit._tag === "Failure") {
-        return yield* Effect.fail(
-          new FunctionValidationError({
-            errors: [String(inputExit.cause)],
-            functionId,
-            message: `Input schema validation failed for '${functionId}'`,
-            phase: "INPUT_VALIDATION",
-          })
-        );
-      }
+    // 2. Validate input schema
+    const decodeInput = Schema.decodeUnknownExit(fn.inputSchema);
+    const inputExit = decodeInput(rawInput);
+    if (Exit.isFailure(inputExit)) {
+      return yield* new FunctionValidationError({
+        errors: [String(inputExit.cause)],
+        functionId,
+        message: `Input schema validation failed for '${functionId}'`,
+        phase: "INPUT_VALIDATION",
+      });
+    }
 
-      // 3. Execute pure function
-      const output = yield* fn.execute(inputExit.value, ctx);
+    // 3. Execute pure function
+    const output = yield* fn.execute(inputExit.value, ctx);
 
-      // 4. Validate output schema
-      const outputExit = Schema.decodeUnknownExit(fn.outputSchema)(output);
-      if (outputExit._tag === "Failure") {
-        return yield* Effect.fail(
-          new FunctionValidationError({
-            errors: [String(outputExit.cause)],
-            functionId,
-            message: `Output schema validation failed for '${functionId}'`,
-            phase: "OUTPUT_VALIDATION",
-          })
-        );
-      }
+    // 4. Validate output schema
+    const decodeOutput = Schema.decodeUnknownExit(fn.outputSchema);
+    const outputExit = decodeOutput(output);
+    if (Exit.isFailure(outputExit)) {
+      return yield* new FunctionValidationError({
+        errors: [String(outputExit.cause)],
+        functionId,
+        message: `Output schema validation failed for '${functionId}'`,
+        phase: "OUTPUT_VALIDATION",
+      });
+    }
 
-      return outputExit.value;
-    });
+    return outputExit.value;
+  });
 
   return TypedReadService.of({
     checkFreshness: Effect.fn("TypedReadService.checkFreshness")(
@@ -241,7 +234,7 @@ export const TypedReadServiceLive = Layer.sync(TypedReadService, () => {
         const outputId = `mat-${functionId}-${inputHash.slice(0, 12)}`;
 
         const record: MaterializedOutputRecord = {
-          computedAt: Date.now(),
+          computedAt: yield* Clock.currentTimeMillis,
           dependencies: [...dependencies],
           functionId,
           inputHash,
@@ -270,19 +263,16 @@ export const TypedReadServiceLive = Layer.sync(TypedReadService, () => {
       ) => Effect.Effect<void, Error>
     ) {
       // Check for forbidden undeclared remote side effects (OPR-FUN-002)
-      for (const m of mutations) {
-        if (m.hasUndeclaredSideEffect) {
-          return yield* Effect.fail(
-            new FunctionValidationError({
-              errors: [
-                `Mutation on '${m.entityId}' attempted undeclared remote side-effect within staging buffer`,
-              ],
-              functionId: "stageEdits",
-              message: "Undeclared side effect in staging is forbidden",
-              phase: "INPUT_VALIDATION",
-            })
-          );
-        }
+      const invalidMutation = mutations.find((m) => m.hasUndeclaredSideEffect);
+      if (invalidMutation) {
+        return yield* new FunctionValidationError({
+          errors: [
+            `Mutation on '${invalidMutation.entityId}' attempted undeclared remote side-effect within staging buffer`,
+          ],
+          functionId: "stageEdits",
+          message: "Undeclared side effect in staging is forbidden",
+          phase: "INPUT_VALIDATION",
+        });
       }
 
       // Buffer staged edits isolated from visible state

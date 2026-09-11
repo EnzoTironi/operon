@@ -5,7 +5,7 @@ import type {
 } from "@operon/schema";
 import { computeCanonicalDigest, isObjectInSet } from "@operon/schema";
 import { OperonTelemetryService } from "@operon/telemetry";
-import { Context, Effect, Layer } from "effect";
+import { Clock, Context, Effect, Layer } from "effect";
 
 import { EvidenceAcquisitionDeniedError } from "../actions-errors.js";
 
@@ -54,34 +54,35 @@ export const EvidenceAcquisitionServiceLive = Layer.sync(
         function* (
           action: EvidenceAcquisitionAction,
           mandate: MissionTaskMandate,
-          now: number = Date.now()
+          nowParam?: number
         ) {
+          const now = nowParam ?? (yield* Clock.currentTimeMillis);
           // 1. Validate action class is authorized in envelope
           if (
             !mandate.envelope.allowedActionClasses.includes(action.actionClass)
           ) {
-            return yield* Effect.fail(
+            return yield* 
               new EvidenceAcquisitionDeniedError({
                 actionId: action.actionId,
                 mandateId: mandate.mandateId,
                 message: `Action class '${action.actionClass}' is not permitted by mandate envelope: [${mandate.envelope.allowedActionClasses.join(", ")}]`,
                 reason: "ACTION_NOT_ALLOWED",
               })
-            );
+            ;
           }
 
           // 2. Validate target object is within mandate object set
           if (
             !isObjectInSet(mandate.envelope.objectSet, action.targetObjectId)
           ) {
-            return yield* Effect.fail(
+            return yield* 
               new EvidenceAcquisitionDeniedError({
                 actionId: action.actionId,
                 mandateId: mandate.mandateId,
                 message: `Target object '${action.targetObjectId}' is outside mandate object set: [${mandate.envelope.objectSet.join(", ")}]`,
                 reason: "OBJECT_NOT_ALLOWED",
               })
-            );
+            ;
           }
 
           // 3. Validate budget limit
@@ -89,14 +90,14 @@ export const EvidenceAcquisitionServiceLive = Layer.sync(
             mandate.envelope.spentBudget + action.budgetCost >
             mandate.envelope.budgetLimit
           ) {
-            return yield* Effect.fail(
+            return yield* 
               new EvidenceAcquisitionDeniedError({
                 actionId: action.actionId,
                 mandateId: mandate.mandateId,
                 message: `Acquisition cost ${action.budgetCost} exceeds remaining budget (${mandate.envelope.budgetLimit - mandate.envelope.spentBudget})`,
                 reason: "BUDGET_EXCEEDED",
               })
-            );
+            ;
           }
 
           // 4. Query connector

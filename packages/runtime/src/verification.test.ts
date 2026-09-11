@@ -1,4 +1,6 @@
-import { Effect } from "effect";
+import type { ObjectTypeId } from "@operon/schema";
+import { Effect, Predicate } from "effect";
+import type { Schema } from "effect";
 import { describe, expect, it } from "vitest";
 
 import type {
@@ -15,7 +17,8 @@ const makeContext = (): DecisionContextSubgraph => ({
       id: "patient-101",
       lastModifiedAt: 1000,
       properties: { currentDoseMg: 20, eGfr: 45, status: "admitted" },
-      typeId: "Patient" as any,
+      // SAFETY: Test fixture object type ID
+      typeId: "Patient" as ObjectTypeId,
       version: 1,
     },
   ],
@@ -51,7 +54,7 @@ const defaultPolicy: GoverningPolicy = {
   forbiddenParameters: ["overrideSafetyEnvelope"],
   scenarioRedLines: [
     {
-      condition: (val: unknown) => typeof val === "number" && val > 25,
+      condition: (val: Schema.Json) => Predicate.isNumber(val) && val > 25,
       description: "Proposed dose cannot exceed 25mg",
       property: "newDoseMg",
     },

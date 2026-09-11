@@ -138,23 +138,24 @@ export class DistributedClusterCoordinator {
   /**
    * Executes a write operation guarded by a distributed lock and fencing token
    */
-  public executeGuardedWrite<A, E, R>(
+  public readonly executeGuardedWrite = Effect.fn(
+    "DistributedClusterCoordinator.executeGuardedWrite"
+  )(function* <A, E, R>(
+    this: DistributedClusterCoordinator,
     resource: string,
     nodeId: string,
     writeOp: (lock: DistributedLock) => Effect.Effect<A, E, R>,
     ttlMs = 5000
-  ): Effect.Effect<A, E | LockAcquisitionError | StaleFencingTokenError, R> {
-    return Effect.gen({ self: this }, function* () {
-      const lock = yield* this.lockManager.acquire(resource, nodeId, ttlMs);
+  ): Effect.fn.Return<A, E | LockAcquisitionError | StaleFencingTokenError, R> {
+    const lock = yield* this.lockManager.acquire(resource, nodeId, ttlMs);
 
-      const result = yield* writeOp(lock).pipe(
-        Effect.tap(() =>
-          this.lockManager.validateFencingToken(resource, lock.fencingToken)
-        ),
-        Effect.ensuring(this.lockManager.release(lock))
-      );
+    const result = yield* writeOp(lock).pipe(
+      Effect.tap(() =>
+        this.lockManager.validateFencingToken(resource, lock.fencingToken)
+      ),
+      Effect.ensuring(this.lockManager.release(lock))
+    );
 
-      return result;
-    });
-  }
+    return result;
+  });
 }

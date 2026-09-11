@@ -8,7 +8,7 @@ import type {
 } from "@operon/schema";
 import { isObjectInSet, isRiskBandAllowed } from "@operon/schema";
 import { OperonTelemetryService } from "@operon/telemetry";
-import { Context, Effect, Layer } from "effect";
+import { Clock, Context, Effect, Layer } from "effect";
 
 import {
   BudgetExhaustedError,
@@ -109,49 +109,49 @@ export const AuthorityTierServiceLive = Layer.succeed(
       switch (tier) {
         case "TIER_1_OBSERVE": {
           if (op !== "read") {
-            return yield* Effect.fail(
+            return yield* 
               new TierAuthorityExceededError({
                 attemptedOperation: op,
                 message: `Tier 1 (Observe) is read-only; operation '${op}' is forbidden`,
                 tier,
               })
-            );
+            ;
           }
           break;
         }
         case "TIER_2_PROPOSE": {
           if (op !== "read" && op !== "propose") {
-            return yield* Effect.fail(
+            return yield* 
               new TierAuthorityExceededError({
                 attemptedOperation: op,
                 message: `Tier 2 (Propose) can only read or propose; operation '${op}' is forbidden for agent`,
                 tier,
               })
-            );
+            ;
           }
           break;
         }
         case "TIER_3_EXECUTE_WITH_APPROVAL": {
           if (op === "approve" || op === "administer") {
-            return yield* Effect.fail(
+            return yield* 
               new TierAuthorityExceededError({
                 attemptedOperation: op,
                 message: `Tier 3 (Execute with Approval) agent cannot approve its own actions or administer`,
                 tier,
               })
-            );
+            ;
           }
           break;
         }
         case "TIER_4_BOUNDED_AUTONOMY": {
           if (op === "approve" || op === "administer") {
-            return yield* Effect.fail(
+            return yield* 
               new TierAuthorityExceededError({
                 attemptedOperation: op,
                 message: `Tier 4 (Bounded Autonomy) agent cannot approve policy or administer`,
                 tier,
               })
-            );
+            ;
           }
           break;
         }
@@ -167,61 +167,61 @@ export const AuthorityTierServiceLive = Layer.succeed(
       mandate: TaskMandateEnvelope,
       invocation: InvocationEnvelopeCheck
     ) {
-      const now = invocation.now ?? Date.now();
+      const now = invocation.now ?? (yield* Clock.currentTimeMillis);
 
       // 1. Check expiration
       if (now > mandate.expiresAt) {
-        return yield* Effect.fail(
+        return yield* 
           new MandateExpiredError({
             attemptedAt: now,
             expiresAt: mandate.expiresAt,
             mandateId: mandate.mandateId,
             message: `TaskMandate '${mandate.mandateId}' expired at ${mandate.expiresAt} (attempted at ${now})`,
           })
-        );
+        ;
       }
 
       // 2. Check allowed action class
       if (!mandate.allowedActionClasses.includes(invocation.actionClass)) {
-        return yield* Effect.fail(
+        return yield* 
           new EnvelopeViolationError({
             details: `Action class '${invocation.actionClass}' is not in allowed classes: [${mandate.allowedActionClasses.join(", ")}]`,
             mandateId: mandate.mandateId,
             message: `Action class violation for mandate '${mandate.mandateId}': actionClass '${invocation.actionClass}' not allowed`,
             violationType: "actionClass",
           })
-        );
+        ;
       }
 
       // 3. Check object set containment
       if (!isObjectInSet(mandate.objectSet, invocation.targetObjectId)) {
-        return yield* Effect.fail(
+        return yield* 
           new EnvelopeViolationError({
             details: `Target object '${invocation.targetObjectId}' is outside authorized object set: [${mandate.objectSet.join(", ")}]`,
             mandateId: mandate.mandateId,
             message: `Object set violation for mandate '${mandate.mandateId}': objectSet '${invocation.targetObjectId}' not authorized`,
             violationType: "objectSet",
           })
-        );
+        ;
       }
 
       // 4. Check risk band bounds
       if (!isRiskBandAllowed(mandate.maxRiskBand, invocation.riskBand)) {
-        return yield* Effect.fail(
+        return yield* 
           new EnvelopeViolationError({
             details: `Requested risk band '${invocation.riskBand}' exceeds mandate maximum risk band '${mandate.maxRiskBand}'`,
             mandateId: mandate.mandateId,
             message: `Risk band violation for mandate '${mandate.mandateId}': riskBand '${invocation.riskBand}' exceeds maximum`,
             violationType: "riskBand",
           })
-        );
+        ;
       }
 
       // 5. Check budget limit
       const totalProjected =
         mandate.spentBudget + invocation.requestedBudgetUnits;
       if (totalProjected > mandate.budgetLimit) {
-        return yield* Effect.fail(
+        return yield* 
           new BudgetExhaustedError({
             budgetLimit: mandate.budgetLimit,
             mandateId: mandate.mandateId,
@@ -229,7 +229,7 @@ export const AuthorityTierServiceLive = Layer.succeed(
             requestedBudget: invocation.requestedBudgetUnits,
             spentBudget: mandate.spentBudget,
           })
-        );
+        ;
       }
     }),
 
@@ -240,43 +240,43 @@ export const AuthorityTierServiceLive = Layer.succeed(
     ) {
       if (targetTier === "TIER_4_BOUNDED_AUTONOMY") {
         if (!evidence) {
-          return yield* Effect.fail(
+          return yield* 
             new UnjustifiedPromotionError({
               mandateId: mandate.mandateId,
               message: `Cannot promote mandate '${mandate.mandateId}' to Tier 4 without valid calibration evidence`,
               reason: "missing_calibration_evidence",
             })
-          );
+          ;
         }
 
         if (evidence.trialCount < evidence.minimumTrialsRequired) {
-          return yield* Effect.fail(
+          return yield* 
             new UnjustifiedPromotionError({
               mandateId: mandate.mandateId,
               message: `Insufficient calibration trials: ${evidence.trialCount} completed, ${evidence.minimumTrialsRequired} required`,
               reason: "insufficient_trials",
             })
-          );
+          ;
         }
 
         if (evidence.passRate < 0.95) {
-          return yield* Effect.fail(
+          return yield* 
             new UnjustifiedPromotionError({
               mandateId: mandate.mandateId,
               message: `Calibration pass rate ${(evidence.passRate * 100).toFixed(1)}% is below required 95.0% threshold`,
               reason: "pass_rate_below_threshold",
             })
-          );
+          ;
         }
 
         if (evidence.safetyViolations > 0) {
-          return yield* Effect.fail(
+          return yield* 
             new UnjustifiedPromotionError({
               mandateId: mandate.mandateId,
               message: `Calibration evidence contains ${evidence.safetyViolations} safety violations (0 required)`,
               reason: "safety_violations_present",
             })
-          );
+          ;
         }
       }
 
@@ -306,7 +306,7 @@ export const AuthorityTierServiceLive = Layer.succeed(
       reason: string,
       violationsCount: number
     ) {
-      const demotedAt = Date.now();
+      const demotedAt = yield* Clock.currentTimeMillis;
       const demotionEvent: DemotionEvent = {
         agentId: mandate.principalId,
         demotedAt,
@@ -345,18 +345,19 @@ export const AuthorityTierServiceLive = Layer.succeed(
     recordExecutionActor: Effect.fn(
       "AuthorityTierService.recordExecutionActor"
     )(function* (params) {
-      const confirmedAt = params.confirmedAt ?? Date.now();
+      const confirmedAt =
+        params.confirmedAt ?? (yield* Clock.currentTimeMillis);
 
       switch (params.mode) {
         case "TIER_2_HUMAN": {
           if (params.humanReviewerId === params.agentProposerId) {
-            return yield* Effect.fail(
+            return yield* 
               new TierAuthorityExceededError({
                 attemptedOperation: "execute",
                 message: `Independent review required: human reviewer '${params.humanReviewerId}' cannot be identical to proposer`,
                 tier: "TIER_2_PROPOSE",
               })
-            );
+            ;
           }
           const record: ExecutionActorRecord = {
             agentProposerId: params.agentProposerId,
@@ -369,13 +370,13 @@ export const AuthorityTierServiceLive = Layer.succeed(
         }
         case "TIER_3_APPROVED_AGENT": {
           if (params.humanApproverId === params.executingAgentId) {
-            return yield* Effect.fail(
+            return yield* 
               new TierAuthorityExceededError({
                 attemptedOperation: "execute",
                 message: `Self-approval denied: human approver cannot be the executing agent '${params.executingAgentId}'`,
                 tier: "TIER_3_EXECUTE_WITH_APPROVAL",
               })
-            );
+            ;
           }
           const record: ExecutionActorRecord = {
             approvalId: params.approvalId,
@@ -398,13 +399,13 @@ export const AuthorityTierServiceLive = Layer.succeed(
         }
         default: {
           const _exhaustive: never = params;
-          return yield* Effect.fail(
+          return yield* 
             new TierAuthorityExceededError({
               attemptedOperation: "execute",
               message: `Unknown execution actor mode: ${String(_exhaustive)}`,
               tier: "TIER_1_OBSERVE",
             })
-          );
+          ;
         }
       }
     }),

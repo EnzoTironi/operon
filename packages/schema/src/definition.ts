@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 
-import { Schema } from "effect";
+import { Predicate, Schema } from "effect";
 
 import type { Subject } from "./security.js";
 import { DataClassification, EntityTypology } from "./types.js";
@@ -170,36 +170,52 @@ export interface PublicationReceipt {
   readonly idempotencyKey?: string;
 }
 
-/**
- * Deterministic RFC 8785-compliant canonical JSON serializer
- */
-export function canonicalJson(value: unknown): string {
-  if (value === null || typeof value !== "object") {
-    return JSON.stringify(value);
-  }
-  if (Array.isArray(value)) {
-    const elements = value.map((item) => {
-      const res = canonicalJson(item);
-      return res === undefined ? "null" : res;
-    });
-    return `[${elements.join(",")}]`;
-  }
-  const obj = value as Record<string, unknown>;
-  const keys = Object.keys(obj).sort();
+export type CanonicalJsonValue = Schema.Json;
+
+function serializeArray<T>(
+  elements: readonly T[],
+  serialize: <V>(v: V) => string
+): string {
+  const items = elements.map((item) => {
+    const res = serialize(item);
+    return res === undefined ? "null" : res;
+  });
+  return `[${items.join(",")}]`;
+}
+
+function serializeObject<T extends object>(
+  obj: T,
+  serialize: <V>(v: V) => string
+): string {
+  const keys = Object.keys(obj).toSorted();
   const pairs: string[] = [];
   for (const key of keys) {
-    const v = obj[key];
-    if (v !== undefined && typeof v !== "function" && typeof v !== "symbol") {
-      pairs.push(`${JSON.stringify(key)}:${canonicalJson(v)}`);
+    // SAFETY: verified object properties for canonical JSON serialization
+    const v = (obj as Record<string, Schema.Json | undefined>)[key];
+    if (v !== undefined && !Predicate.isFunction(v) && !Predicate.isSymbol(v)) {
+      pairs.push(`${JSON.stringify(key)}:${serialize(v)}`);
     }
   }
   return `{${pairs.join(",")}}`;
 }
 
 /**
+ * Deterministic RFC 8785-compliant canonical JSON serializer
+ */
+export function canonicalJson<T>(value: T): string {
+  if (Array.isArray(value)) {
+    return serializeArray(value, canonicalJson);
+  }
+  if (Predicate.isObject(value)) {
+    return serializeObject(value, canonicalJson);
+  }
+  return JSON.stringify(value);
+}
+
+/**
  * Compute SHA-256 byte digest of the canonical JSON bytes
  */
-export function computeCanonicalDigest(value: unknown): string {
+export function computeCanonicalDigest<T>(value: T): string {
   const json = canonicalJson(value);
   return createHash("sha256").update(Buffer.from(json, "utf-8")).digest("hex");
 }

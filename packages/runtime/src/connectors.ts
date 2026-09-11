@@ -1,5 +1,6 @@
 import type { ObjectTypeId } from "@operon/schema";
-import { Effect } from "effect";
+import type { Schema } from "effect";
+import { Clock, Effect, Exit } from "effect";
 
 import type {
   FunnelIngestionError,
@@ -21,22 +22,22 @@ export interface DebeziumSourceMeta {
 export type DebeziumCdcPayload =
   | {
       readonly op: "c" | "r"; // create, read (snapshot)
-      readonly before?: Record<string, unknown> | null;
-      readonly after: Record<string, unknown>;
+      readonly before?: Record<string, Schema.Json> | null;
+      readonly after: Record<string, Schema.Json>;
       readonly source: DebeziumSourceMeta;
       readonly ts_ms: number;
     }
   | {
       readonly op: "u"; // update
-      readonly before?: Record<string, unknown> | null;
-      readonly after: Record<string, unknown>;
+      readonly before?: Record<string, Schema.Json> | null;
+      readonly after: Record<string, Schema.Json>;
       readonly source: DebeziumSourceMeta;
       readonly ts_ms: number;
     }
   | {
       readonly op: "d"; // delete
-      readonly before: Record<string, unknown>;
-      readonly after?: Record<string, unknown> | null;
+      readonly before: Record<string, Schema.Json>;
+      readonly after?: Record<string, Schema.Json> | null;
       readonly source: DebeziumSourceMeta;
       readonly ts_ms: number;
     };
@@ -51,8 +52,8 @@ export interface CdcTableMapping {
   readonly targetTypeId: ObjectTypeId;
   readonly primaryKeyField: string;
   readonly propertyTransform?: (
-    raw: Record<string, unknown>
-  ) => Record<string, unknown>;
+    raw: Record<string, Schema.Json>
+  ) => Record<string, Schema.Json>;
 }
 
 export interface CdcConnectorStats {
@@ -84,57 +85,40 @@ export class KafkaCdcConnector {
   /**
    * Consumes a single Debezium CDC message and routes it through the Funnel
    */
-  public consumeMessage(
+  public readonly consumeMessage = Effect.fn(
+    "DebeziumPostgresConnector.consumeMessage"
+  )(function* (
+    this: KafkaCdcConnector,
     message: DebeziumCdcMessage
-  ): Effect.Effect<void, PipelineNotFoundError | FunnelIngestionError> {
-    return Effect.gen({ self: this }, function* () {
-      const { payload } = message;
-      const tableName = payload.source.table.toLowerCase();
-      const mapping = this.tableMappings.get(tableName);
+  ): Effect.fn.Return<void, PipelineNotFoundError | FunnelIngestionError> {
+    const { payload } = message;
+    const tableName = payload.source.table.toLowerCase();
+    const mapping = this.tableMappings.get(tableName);
 
-      if (!mapping) {
-        // Table not registered for replication
+    if (!mapping) {
+      // Table not registered for replication
+      return;
+    }
+
+    this.lastTimestampMs = payload.ts_ms;
+    if (payload.source.lsn !== undefined) {
+      this.lastLsn = payload.source.lsn;
+    }
+
+    // Handle deletes
+    if (payload.op === "d") {
+      if (!payload.before) {
         return;
       }
-
-      this.lastTimestampMs = payload.ts_ms;
-      if (payload.source.lsn !== undefined) {
-        this.lastLsn = payload.source.lsn;
-      }
-
-      // Handle deletes
-      if (payload.op === "d") {
-        if (!payload.before) return;
-        const row = payload.before;
-        const properties = mapping.propertyTransform
-          ? mapping.propertyTransform(row)
-          : row;
-        yield* this.funnel
-          .ingestStreamRecord(mapping.pipelineId, {
-            ...properties,
-            _deleted: true,
-          })
-          .pipe(
-            Effect.tapError(() =>
-              Effect.sync(() => {
-                this.errorsCount++;
-              })
-            )
-          );
-        this.processedCount++;
-        return;
-      }
-
-      // Handle create, update, snapshot read
-      const row = payload.after;
-      if (!row) return;
-
+      const row = payload.before;
       const properties = mapping.propertyTransform
         ? mapping.propertyTransform(row)
         : row;
-
       yield* this.funnel
-        .ingestStreamRecord(mapping.pipelineId, properties)
+        .ingestStreamRecord(mapping.pipelineId, {
+          ...properties,
+          _deleted: true,
+        })
         .pipe(
           Effect.tapError(() =>
             Effect.sync(() => {
@@ -142,10 +126,30 @@ export class KafkaCdcConnector {
             })
           )
         );
-
       this.processedCount++;
-    });
-  }
+      return;
+    }
+
+    // Handle create, update, snapshot read
+    const row = payload.after;
+    if (!row) {
+      return;
+    }
+
+    const properties = mapping.propertyTransform
+      ? mapping.propertyTransform(row)
+      : row;
+
+    yield* this.funnel.ingestStreamRecord(mapping.pipelineId, properties).pipe(
+      Effect.tapError(() =>
+        Effect.sync(() => {
+          this.errorsCount++;
+        })
+      )
+    );
+
+    this.processedCount++;
+  });
 
   public getStats(): CdcConnectorStats {
     return {
@@ -181,37 +185,46 @@ export class WarehouseBatchConnector {
    * Ingests a large array of records in chunks with backpressure and funnel conflict resolution
    */
   public ingestBatch(
-    records: readonly Record<string, unknown>[],
+    records: readonly Record<string, Schema.Json>[],
     options: BatchIngestOptions
   ): Effect.Effect<BatchIngestReport> {
     const chunkSize = options.chunkSize ?? 100;
-    const startTime = Date.now();
 
     return Effect.gen({ self: this }, function* () {
+      const startTime = yield* Clock.currentTimeMillis;
       let chunksProcessed = 0;
       const errors: string[] = [];
 
-      for (let i = 0; i < records.length; i += chunkSize) {
-        const slice = records.slice(i, i + chunkSize);
+      const chunkCount = Math.ceil(records.length / chunkSize);
+      const chunkIndices = Array.from({ length: chunkCount }, (_, i) => i);
 
-        const currentChunk = chunksProcessed;
-        const res = yield* this.funnel
-          .ingestBatch(options.pipelineId, slice)
-          .pipe(Effect.result);
+      const { funnel } = this;
+      yield* Effect.forEach(
+        chunkIndices,
+        Effect.fn("ContractedConnector.processChunk")(function* (currentChunk) {
+          const start = currentChunk * chunkSize;
+          const slice = records.slice(start, start + chunkSize);
+          const res = yield* funnel
+            .ingestBatch(options.pipelineId, slice)
+            .pipe(Effect.exit);
 
-        if (res._tag === "Failure") {
-          errors.push(`Chunk ${currentChunk} failed: ${String(res.failure)}`);
-        }
+          if (Exit.isFailure(res)) {
+            errors.push(`Chunk ${currentChunk} failed: ${String(res.cause)}`);
+          }
 
-        chunksProcessed++;
-      }
+          chunksProcessed++;
+        }),
+        { concurrency: 1 }
+      );
 
-      return {
-        totalRecords: records.length,
+      const endTime = yield* Clock.currentTimeMillis;
+      const report: BatchIngestReport = {
         chunksProcessed,
-        durationMs: Date.now() - startTime,
+        durationMs: endTime - startTime,
         errors,
+        totalRecords: records.length,
       };
+      return report;
     });
   }
 }

@@ -239,13 +239,13 @@ describe("Independent validation — safety invariants", () => {
           db.prepare(
             "INSERT INTO operon_objects VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
           ).run("a", "Thing", 1, "{}", 0, null, 0, null, "main");
-          const q = SqlSchemaGenerator.compileBitemporalQuery(
-            "Thing",
-            "a",
-            100,
-            100,
-            "sqlite"
-          );
+          const q = SqlSchemaGenerator.compileBitemporalQuery({
+            dialect: "sqlite",
+            id: "a",
+            txTime: 100,
+            typeId: "Thing",
+            validTime: 100,
+          });
           // Adapt the seed insertion if a legitimate schema migration changes the table.
           expect(db.prepare(q.sql).all(...(q.params as any[]))).toHaveLength(1);
         }),

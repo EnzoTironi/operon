@@ -4,7 +4,7 @@ import type {
   OutboundOperationDeclaration,
   PackageConnectorRequirement,
 } from "@operon/schema";
-import { Context, Effect, Layer } from "effect";
+import { Clock, Context, Effect, Exit, Layer } from "effect";
 
 import type { OutboundExecutionFailedError } from "../actions-errors.js";
 import {
@@ -95,15 +95,13 @@ export const ContractedConnectorServiceLive = Layer.sync(
 
       checkSourceFreshness: Effect.fn(
         "ContractedConnectorService.checkSourceFreshness"
-      )((params) =>
-        Effect.sync(() => {
-          const now = Date.now();
-          const lagMs = Math.max(0, now - params.lastReceivedTimestampMs);
-          const fresh =
-            lagMs <= params.declaration.capabilities.sourceFreshnessIntervalMs;
-          return { fresh, lagMs };
-        })
-      ),
+      )(function* (params) {
+        const now = yield* Clock.currentTimeMillis;
+        const lagMs = Math.max(0, now - params.lastReceivedTimestampMs);
+        const fresh =
+          lagMs <= params.declaration.capabilities.sourceFreshnessIntervalMs;
+        return { fresh, lagMs };
+      }),
 
       executeOutboundOperation: Effect.fn(
         "ContractedConnectorService.executeOutboundOperation"
@@ -120,22 +118,22 @@ export const ContractedConnectorServiceLive = Layer.sync(
 
         // OPR-FULL-044 Invariant: Token availability does NOT grant business authority!
         if (operation.requiresBusinessGrant && !intentGrantId) {
-          return yield* Effect.fail(
+          return yield* 
             new BusinessAuthorityMissingError({
               actorId,
               message: `Outbound operation '${operation.operationId}' denied: missing required IntentGrant. Bearer token presence does not confer business authority.`,
               operationId: operation.operationId,
               tokenPresent: bearerToken !== undefined && bearerToken.length > 0,
             })
-          );
+          ;
         }
 
-        const timestamp = Date.now();
+        const timestamp = yield* Clock.currentTimeMillis;
         const idempotencyKey = `idemp-${operation.operationId}-${timestamp}`;
 
         // Attempt remote dispatch
         const remoteExit = yield* Effect.exit(executeRemote());
-        if (remoteExit._tag === "Failure") {
+        if (Exit.isFailure(remoteExit)) {
           if (compensateRemote) {
             yield* compensateRemote();
           }
@@ -161,13 +159,13 @@ export const ContractedConnectorServiceLive = Layer.sync(
       )(function* (params) {
         // OPR-FULL-044 Invariant: Credentials live in broker/worker boundary, NEVER in agent filesystem!
         if (params.actorType === "AGENT") {
-          return yield* Effect.fail(
+          return yield* 
             new BrokerCredentialViolationError({
               actorId: params.actorId,
               connectorId: params.connectorId,
               message: `Security violation: Agent '${params.actorId}' attempted direct credential access for connector '${params.connectorId}'. Credentials isolated to broker boundary.`,
             })
-          );
+          ;
         }
 
         return { credentialsAvailable: true };
@@ -184,7 +182,7 @@ export const ContractedConnectorServiceLive = Layer.sync(
           req.supportsConditionalWrites &&
           !declaration.capabilities.supportsConditionalWrites
         ) {
-          return yield* Effect.fail(
+          return yield* 
             new ConnectorCapabilityMismatchError({
               connectorId: declaration.connectorId,
               message: `Connector '${declaration.connectorId}' does not support conditional writes demanded by package '${requirement.packageId}'. Incompatibility is explicit and cannot be bypassed.`,
@@ -192,14 +190,14 @@ export const ContractedConnectorServiceLive = Layer.sync(
               providedValue: false,
               requiredCapability: "supportsConditionalWrites",
             })
-          );
+          ;
         }
 
         if (
           req.supportsIdempotencyKeys &&
           !declaration.capabilities.supportsIdempotencyKeys
         ) {
-          return yield* Effect.fail(
+          return yield* 
             new ConnectorCapabilityMismatchError({
               connectorId: declaration.connectorId,
               message: `Connector '${declaration.connectorId}' does not support idempotency keys demanded by package '${requirement.packageId}'. Incompatibility is explicit and cannot be bypassed.`,
@@ -207,14 +205,14 @@ export const ContractedConnectorServiceLive = Layer.sync(
               providedValue: false,
               requiredCapability: "supportsIdempotencyKeys",
             })
-          );
+          ;
         }
 
         if (
           req.supportsCompensatingActions &&
           !declaration.capabilities.supportsCompensatingActions
         ) {
-          return yield* Effect.fail(
+          return yield* 
             new ConnectorCapabilityMismatchError({
               connectorId: declaration.connectorId,
               message: `Connector '${declaration.connectorId}' does not support compensating actions demanded by package '${requirement.packageId}'.`,
@@ -222,14 +220,14 @@ export const ContractedConnectorServiceLive = Layer.sync(
               providedValue: false,
               requiredCapability: "supportsCompensatingActions",
             })
-          );
+          ;
         }
 
         if (
           req.supportsAtomicBatch &&
           !declaration.capabilities.supportsAtomicBatch
         ) {
-          return yield* Effect.fail(
+          return yield* 
             new ConnectorCapabilityMismatchError({
               connectorId: declaration.connectorId,
               message: `Connector '${declaration.connectorId}' does not support atomic batch operations demanded by package '${requirement.packageId}'.`,
@@ -237,14 +235,14 @@ export const ContractedConnectorServiceLive = Layer.sync(
               providedValue: false,
               requiredCapability: "supportsAtomicBatch",
             })
-          );
+          ;
         }
 
         if (
           req.supportsChangeDataCapture &&
           !declaration.capabilities.supportsChangeDataCapture
         ) {
-          return yield* Effect.fail(
+          return yield* 
             new ConnectorCapabilityMismatchError({
               connectorId: declaration.connectorId,
               message: `Connector '${declaration.connectorId}' does not support Change Data Capture demanded by package '${requirement.packageId}'.`,
@@ -252,7 +250,7 @@ export const ContractedConnectorServiceLive = Layer.sync(
               providedValue: false,
               requiredCapability: "supportsChangeDataCapture",
             })
-          );
+          ;
         }
 
         return { compatible: true };

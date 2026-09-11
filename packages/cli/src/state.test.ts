@@ -1,25 +1,18 @@
-import * as fs from "node:fs";
-import path from "node:path";
-
 import { Effect } from "effect";
 import { describe, expect, it } from "vitest";
 
+import { fileExistsSync, resolvePath, unlinkFileSync } from "./fs-io.js";
 import { PatientType, createRuntimeContext } from "./state.js";
 
 const makeScopedTempDb = (prefix: string) =>
   Effect.acquireRelease(
     Effect.sync(() =>
-      path.resolve(process.cwd(), `.${prefix}-${Date.now()}.db`)
+      resolvePath(process.cwd(), `.${prefix}-${Date.now()}.db`)
     ),
     (dbPath) =>
       Effect.sync(() => {
-        if (fs.existsSync(dbPath)) {
-          fs.unlinkSync(dbPath);
-        }
-        const stateFile = `${dbPath}.state.json`;
-        if (fs.existsSync(stateFile)) {
-          fs.unlinkSync(stateFile);
-        }
+        unlinkFileSync(dbPath);
+        unlinkFileSync(`${dbPath}.state.json`);
       })
   );
 
@@ -112,7 +105,7 @@ describe("V0-CH-01: State persistence & two-process SQLite round-trip", () => {
       );
 
       const ctx = yield* Effect.promise(() => createRuntimeContext());
-      expect(fs.existsSync(envDbFile)).toBe(true);
+      expect(fileExistsSync(envDbFile)).toBe(true);
 
       const patient = yield* ctx.objectStore.getObject(PatientType.id, "P001");
       expect(patient).toBeDefined();

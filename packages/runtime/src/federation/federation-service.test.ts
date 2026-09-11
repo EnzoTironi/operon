@@ -72,26 +72,26 @@ describe("FederationService (S15, OPR-FULL-044, OPR-FULL-046)", () => {
     it("FULL-ACC-044.T02: traversing contracted link succeeds; traversing private/uncontracted link fails explicitly with UncontractedLinkTraversalError", async () => {
       // Contracted link traversal succeeds
       const contractedLink = await Effect.runPromise(
-        service.traverseFederatedLink(
-          sampleContract,
-          "order-9901",
-          "public_tracking",
-          "shipment-trk-5541",
-          "2026-09-11T12:00:00.000Z"
-        )
+        service.traverseFederatedLink({
+          contract: sampleContract,
+          currentTime: "2026-09-11T12:00:00.000Z",
+          linkRelation: "public_tracking",
+          sourceEntityId: "order-9901",
+          targetEntityId: "shipment-trk-5541",
+        })
       );
       expect(contractedLink.permitted).toBe(true);
       expect(contractedLink.linkRelation).toBe("public_tracking");
 
       // Private uncontracted link traversal is denied
       const uncontractedAttempt = await Effect.runPromiseExit(
-        service.traverseFederatedLink(
-          sampleContract,
-          "order-9901",
-          "internal_financial_ledger",
-          "ledger-entry-882",
-          "2026-09-11T12:00:00.000Z"
-        )
+        service.traverseFederatedLink({
+          contract: sampleContract,
+          currentTime: "2026-09-11T12:00:00.000Z",
+          linkRelation: "internal_financial_ledger",
+          sourceEntityId: "order-9901",
+          targetEntityId: "ledger-entry-882",
+        })
       );
 
       expect(Exit.isFailure(uncontractedAttempt)).toBe(true);
@@ -99,15 +99,16 @@ describe("FederationService (S15, OPR-FULL-044, OPR-FULL-046)", () => {
         const failReason = uncontractedAttempt.cause.reasons.find(
           Cause.isFailReason
         );
-        expect(failReason?.error).toBeInstanceOf(
-          UncontractedLinkTraversalError
-        );
-        const err = failReason?.error as UncontractedLinkTraversalError;
-        expect(err.linkRelation).toBe("internal_financial_ledger");
-        expect(err.contractId).toBe("contract-corp-a-to-corp-b");
-        expect(err.requestedPath).toContain(
-          "order-9901 -> [internal_financial_ledger]"
-        );
+        const err = failReason?.error;
+        expect(err).toBeInstanceOf(UncontractedLinkTraversalError);
+        if (err instanceof UncontractedLinkTraversalError) {
+          expect(err._tag).toBe("UncontractedLinkTraversalError");
+          expect(err.contractId).toBe("contract-corp-a-to-corp-b");
+          expect(err.linkRelation).toBe("internal_financial_ledger");
+          expect(err.requestedPath).toContain(
+            "order-9901 -> [internal_financial_ledger]"
+          );
+        }
       }
     });
 
@@ -118,13 +119,13 @@ describe("FederationService (S15, OPR-FULL-044, OPR-FULL-046)", () => {
       };
 
       const result = await Effect.runPromiseExit(
-        service.traverseFederatedLink(
-          revokedContract,
-          "order-9901",
-          "public_tracking",
-          "shipment-trk-5541",
-          "2026-09-11T12:00:00.000Z"
-        )
+        service.traverseFederatedLink({
+          contract: revokedContract,
+          currentTime: "2026-09-11T12:00:00.000Z",
+          linkRelation: "public_tracking",
+          sourceEntityId: "order-9901",
+          targetEntityId: "shipment-trk-5541",
+        })
       );
 
       expect(Exit.isFailure(result)).toBe(true);
@@ -148,13 +149,13 @@ describe("FederationService (S15, OPR-FULL-044, OPR-FULL-046)", () => {
       };
 
       const result = await Effect.runPromiseExit(
-        service.traverseFederatedLink(
-          expiredContract,
-          "order-9901",
-          "public_tracking",
-          "shipment-trk-5541",
-          "2026-09-11T12:00:00.000Z"
-        )
+        service.traverseFederatedLink({
+          contract: expiredContract,
+          currentTime: "2026-09-11T12:00:00.000Z",
+          linkRelation: "public_tracking",
+          sourceEntityId: "order-9901",
+          targetEntityId: "shipment-trk-5541",
+        })
       );
 
       expect(Exit.isFailure(result)).toBe(true);

@@ -1,5 +1,10 @@
-import * as fs from "node:fs";
-import path from "node:path";
+import {
+  fileExistsSync,
+  joinPath,
+  readDirWithTypesSync,
+  readTextFileSync,
+  relativePath as getRelativePath,
+} from "./fs-io.js";
 
 import { computeCanonicalDigest } from "@operon/schema";
 import type {
@@ -7,7 +12,7 @@ import type {
   PublicationScanResult,
   PublicationViolation,
 } from "@operon/schema";
-import { Cause, Effect, Exit, Option } from "effect";
+import { Cause, Clock, Effect, Exit, Option, Predicate } from "effect";
 
 import { PublicationLeakError } from "./errors.js";
 
@@ -28,6 +33,136 @@ const DEFAULT_PROTECTED_MARKERS = [
   "__OPERON_EVALUATOR_WEIGHTS__",
   "__OPERON_SECRET_THRESHOLD__",
 ];
+
+interface ScannedFile {
+  readonly fullPath: string;
+  readonly relativePath: string;
+}
+
+interface BoundaryChecker {
+  readonly classify: (filePath: string) => ArtifactClassification;
+  readonly checkNoProtectedMaterial: (
+    content: string | Buffer
+  ) => Effect.Effect<void, PublicationLeakError>;
+}
+
+const IGNORED_SCAN_NAMES = new Set(["node_modules", ".git", "dist"]);
+
+function collectFilesToScan(targetDir: string): ScannedFile[] {
+  const files: ScannedFile[] = [];
+  function walk(currentDir: string): void {
+    if (!fileExistsSync(currentDir)) {
+      return;
+    }
+    const entries = readDirWithTypesSync(currentDir);
+    for (const entry of entries) {
+      if (IGNORED_SCAN_NAMES.has(entry.name)) {
+        continue;
+      }
+      const fullPath = joinPath(currentDir, entry.name);
+      const relativePath = getRelativePath(targetDir, fullPath).replaceAll(
+        "\\",
+        "/"
+      );
+      if (entry.isDirectory()) {
+        walk(fullPath);
+      } else if (entry.isFile()) {
+        files.push({ fullPath, relativePath });
+      }
+    }
+  }
+  walk(targetDir);
+  return files;
+}
+
+function checkPathViolation(
+  relativePath: string,
+  boundary: BoundaryChecker,
+  allowedPublicOnly?: boolean
+): Option.Option<PublicationViolation> {
+  if (!allowedPublicOnly) {
+    return Option.none();
+  }
+  const classification = boundary.classify(relativePath);
+  if (classification === "PROTECTED") {
+    return Option.some<PublicationViolation>({
+      classification: "PROTECTED",
+      details: `Protected path pattern detected in public release candidate: '${relativePath}'`,
+      path: relativePath,
+      rule: "S17-PROTECTED-PATH-FORBIDDEN",
+    });
+  }
+  return Option.none();
+}
+
+const checkContentViolation = Effect.fn("checkContentViolation")(function* (
+  fullPath: string,
+  relativePath: string,
+  boundary: BoundaryChecker
+): Effect.fn.Return<Option.Option<PublicationViolation>> {
+  const content = yield* Effect.try(() =>
+    readTextFileSync(fullPath)
+  ).pipe(Effect.option, Effect.map(Option.getOrUndefined));
+
+  if (content === undefined) {
+    return Option.none();
+  }
+
+  const exit = yield* Effect.exit(boundary.checkNoProtectedMaterial(content));
+  if (Exit.isSuccess(exit)) {
+    return Option.none();
+  }
+
+  const failReason = exit.cause.reasons.find(Cause.isFailReason);
+  if (failReason && failReason.error instanceof PublicationLeakError) {
+    const leak = failReason.error;
+    return Option.some<PublicationViolation>({
+      classification: "PROTECTED",
+      details: leak.violation,
+      matchedDigest: leak.matchedDigest,
+      path: relativePath,
+      rule: "S17-PROTECTED-CONTENT-LEAK",
+    });
+  }
+
+  return Option.none();
+});
+
+function checkFileViolation(
+  file: ScannedFile,
+  boundary: BoundaryChecker,
+  allowedPublicOnly?: boolean
+): Effect.Effect<Option.Option<PublicationViolation>> {
+  const pathViolation = checkPathViolation(
+    file.relativePath,
+    boundary,
+    allowedPublicOnly
+  );
+  if (Option.isSome(pathViolation)) {
+    return Effect.succeed(pathViolation);
+  }
+  return checkContentViolation(file.fullPath, file.relativePath, boundary);
+}
+
+function maybeFailOnViolations(
+  violations: readonly PublicationViolation[],
+  failOnViolation?: boolean
+): Effect.Effect<void, PublicationLeakError> {
+  if (!failOnViolation || violations.length === 0) {
+    return Effect.void;
+  }
+  const first = violations[0];
+  if (!first) {
+    return Effect.void;
+  }
+  return Effect.fail(
+    new PublicationLeakError({
+      matchedDigest: first.matchedDigest,
+      path: first.path,
+      violation: first.details,
+    })
+  );
+}
 
 export class PublicationBoundaryService {
   private readonly protectedPatterns: readonly RegExp[];
@@ -60,8 +195,9 @@ export class PublicationBoundaryService {
     content: string | Buffer,
     extraProtectedMarkers?: readonly string[]
   ): Effect.Effect<void, PublicationLeakError> {
-    const text =
-      typeof content === "string" ? content : content.toString("utf-8");
+    const text = Predicate.isString(content)
+      ? content
+      : content.toString("utf-8");
     const markers = [
       ...this.protectedMarkers,
       ...(extraProtectedMarkers ?? []),
@@ -102,112 +238,50 @@ export class PublicationBoundaryService {
     );
   }
 
-  scanDirectory(
+  readonly scanDirectory = Effect.fn(
+    "PublicationBoundaryService.scanDirectory"
+  )(function* (
+    this: PublicationBoundaryService,
     targetDir: string,
     options?: {
       readonly allowedPublicOnly?: boolean;
       readonly failOnViolation?: boolean;
     }
-  ): Effect.Effect<PublicationScanResult, PublicationLeakError> {
-    const classifyPath = (p: string) => this.classify(p);
-    const checkLeak = (content: string | Buffer) =>
-      this.checkNoProtectedMaterial(content);
+  ): Effect.fn.Return<PublicationScanResult, PublicationLeakError> {
+    const filesToScan = collectFilesToScan(targetDir);
+    const scannedPaths: string[] = [];
+    const violations: PublicationViolation[] = [];
 
-    return Effect.gen(function* () {
-      const scannedPaths: string[] = [];
-      const violations: PublicationViolation[] = [];
-      const filesToScan: { fullPath: string; relativePath: string }[] = [];
-
-      const walk = (currentDir: string): void => {
-        if (!fs.existsSync(currentDir)) return;
-        const entries = fs.readdirSync(currentDir, { withFileTypes: true });
-
-        for (const entry of entries) {
-          const fullPath = path.join(currentDir, entry.name);
-          const relativePath = path
-            .relative(targetDir, fullPath)
-            .replaceAll("\\", "/");
-
-          if (
-            entry.name === "node_modules" ||
-            entry.name === ".git" ||
-            entry.name === "dist"
-          ) {
-            continue;
-          }
-
-          if (entry.isDirectory()) {
-            walk(fullPath);
-          } else if (entry.isFile()) {
-            filesToScan.push({ fullPath, relativePath });
-          }
-        }
-      };
-
-      walk(targetDir);
-
-      for (const { fullPath, relativePath } of filesToScan) {
-        scannedPaths.push(relativePath);
-        const classification = classifyPath(relativePath);
-
-        if (options?.allowedPublicOnly && classification === "PROTECTED") {
-          violations.push({
-            classification: "PROTECTED",
-            details: `Protected path pattern detected in public release candidate: '${relativePath}'`,
-            path: relativePath,
-            rule: "S17-PROTECTED-PATH-FORBIDDEN",
-          });
-          continue;
-        }
-
-        const content = yield* Effect.try(() =>
-          fs.readFileSync(fullPath, "utf-8")
-        ).pipe(Effect.option, Effect.map(Option.getOrUndefined));
-
-        if (content !== undefined) {
-          const exit = yield* Effect.exit(checkLeak(content));
-          if (Exit.isFailure(exit)) {
-            const failReason = exit.cause.reasons.find(Cause.isFailReason);
-            if (
-              failReason &&
-              failReason.error instanceof PublicationLeakError
-            ) {
-              const leak = failReason.error;
-              violations.push({
-                classification: "PROTECTED",
-                details: leak.violation,
-                matchedDigest: leak.matchedDigest,
-                path: relativePath,
-                rule: "S17-PROTECTED-CONTENT-LEAK",
-              });
-            }
-          }
-        }
+    const scanOneFile = Effect.fn("scanOneFile")(function* (
+      service: PublicationBoundaryService,
+      file: ScannedFile
+    ) {
+      scannedPaths.push(file.relativePath);
+      const violationOpt = yield* checkFileViolation(
+        file,
+        service,
+        options?.allowedPublicOnly
+      );
+      if (Option.isSome(violationOpt)) {
+        violations.push(violationOpt.value);
       }
-
-      const isClean = violations.length === 0;
-
-      if (!isClean && options?.failOnViolation) {
-        const first = violations[0]!;
-        return yield* Effect.fail(
-          new PublicationLeakError({
-            matchedDigest: first.matchedDigest,
-            path: first.path,
-            violation: first.details,
-          })
-        );
-      }
-
-      return {
-        isClean,
-        scannedAt: Date.now(),
-        scannedPaths,
-        violations,
-      };
     });
-  }
 
-  sanitizeReceipt<T extends Record<string, any>>(
+    yield* Effect.forEach(filesToScan, (file) => scanOneFile(this, file), {
+      concurrency: 1,
+    });
+
+    yield* maybeFailOnViolations(violations, options?.failOnViolation);
+
+    return {
+      isClean: violations.length === 0,
+      scannedAt: yield* Clock.currentTimeMillis,
+      scannedPaths,
+      violations,
+    };
+  });
+
+  sanitizeReceipt<T extends object>(
     receipt: T,
     protectedKeys: readonly string[] = [
       "privateKey",
@@ -222,7 +296,7 @@ export class PublicationBoundaryService {
       if (
         protectedKeys.some((pk) => key.toLowerCase().includes(pk.toLowerCase()))
       ) {
-        (copy as any)[key] = "[REDACTED]";
+        Object.assign(copy, { [key]: "[REDACTED]" });
       }
     }
     return copy;

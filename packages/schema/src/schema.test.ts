@@ -22,12 +22,13 @@ describe("@operon/schema", () => {
       unit: "mg/dL",
     });
 
-    const validReading = Schema.decodeUnknownSync(BloodGlucoseMgDl.schema)(120);
+    const decodeBloodGlucose = Schema.decodeUnknownSync(
+      BloodGlucoseMgDl.schema
+    );
+    const validReading = decodeBloodGlucose(120);
     expect(validReading).toBe(120);
 
-    expect(() =>
-      Schema.decodeUnknownSync(BloodGlucoseMgDl.schema)(10)
-    ).toThrow();
+    expect(() => decodeBloodGlucose(10)).toThrow();
   });
 
   it("defines an Object Type with typed properties and freshness budget", () => {

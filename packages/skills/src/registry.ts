@@ -38,52 +38,50 @@ export class SkillService extends Context.Service<
     const skills = new Map<string, SkillManifest>();
 
     return {
-      registerSkill: (skill: SkillManifest) =>
-        Effect.gen(function* () {
-          if (skill.minContract > kernelContract) {
-            return yield* Effect.fail(
-              new IncompatibleContractError({
-                kernelContract,
-                minContract: skill.minContract,
-                skillId: skill.id,
-              })
-            );
-          }
-          skills.set(skill.id, skill);
-        }),
+      registerSkill: Effect.fn("SkillRegistryService.registerSkill")(function* (
+        skill: SkillManifest
+      ) {
+        if (skill.minContract > kernelContract) {
+          return yield* new IncompatibleContractError({
+            kernelContract,
+            minContract: skill.minContract,
+            skillId: skill.id,
+          });
+        }
+        skills.set(skill.id, skill);
+      }),
 
-      getSkill: (id: string) =>
-        Effect.gen(function* () {
-          const skill = skills.get(id);
-          if (!skill) {
-            return yield* Effect.fail(new SkillNotFoundError({ skillId: id }));
-          }
-          return skill;
-        }),
+      getSkill: Effect.fn("SkillRegistryService.getSkill")(function* (
+        id: string
+      ) {
+        const skill = skills.get(id);
+        if (!skill) {
+          return yield* new SkillNotFoundError({ skillId: id });
+        }
+        return skill;
+      }),
 
       listSkills: () => Effect.succeed([...skills.values()]),
 
-      validateExecution: (
-        skillId: string,
-        availableTools: readonly string[],
-        subjectRoles: readonly string[]
-      ) =>
-        Effect.gen(function* () {
+      validateExecution: Effect.fn("SkillRegistryService.validateExecution")(
+        function* (
+          skillId: string,
+          availableTools: readonly string[],
+          subjectRoles: readonly string[]
+        ) {
           const skill = skills.get(skillId);
           if (!skill) {
-            return yield* Effect.fail(new SkillNotFoundError({ skillId }));
+            return yield* new SkillNotFoundError({ skillId });
           }
 
           const missingTools = skill.requiredTools.filter(
             (t: string) => !availableTools.includes(t)
           );
           if (missingTools.length > 0) {
-            return yield* Effect.fail(
-              new MissingToolError({
-                missingTools,
-                skillId,
-              })
-            );
+            return yield* new MissingToolError({
+              missingTools,
+              skillId,
+            });
           }
 
           if (skill.authorityPrerequisites.length > 0) {
@@ -93,18 +91,17 @@ export class SkillService extends Context.Service<
                 subjectRoles.includes(req)
               );
             if (!hasAuthority) {
-              return yield* Effect.fail(
-                new InsufficientAuthorityError({
-                  actualRoles: subjectRoles,
-                  requiredAuthorities: skill.authorityPrerequisites,
-                  skillId,
-                })
-              );
+              return yield* new InsufficientAuthorityError({
+                actualRoles: subjectRoles,
+                requiredAuthorities: skill.authorityPrerequisites,
+                skillId,
+              });
             }
           }
 
           return { allowed: true as const, skill };
-        }),
+        }
+      ),
     };
   }
 

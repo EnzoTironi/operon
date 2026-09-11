@@ -1,6 +1,6 @@
 import { createHash, sign, verify } from "node:crypto";
 
-import { Effect } from "effect";
+import { Effect, Exit } from "effect";
 
 export interface EvidenceEnvelope {
   readonly candidateDigest: string;
@@ -35,9 +35,196 @@ export interface EvidenceGateResult {
   readonly verifiedAt: number;
 }
 
-function computeDigest(data: unknown): string {
-  const json = JSON.stringify(data, Object.keys(data as any).sort());
+export type EnvelopePayload = Omit<
+  EvidenceEnvelope,
+  "signature" | "runnerPublicKey"
+>;
+
+function computeDigest(data: EnvelopePayload): string {
+  const json = JSON.stringify(data, Object.keys(data).toSorted());
   return createHash("sha256").update(json, "utf-8").digest("hex");
+}
+
+type CryptoVerifyOutcome =
+  | { readonly success: true }
+  | { readonly success: false; readonly reason: string };
+
+function getCasesCount(cases: EvidenceEnvelope["cases"] | undefined): number {
+  if (!cases) {
+    return 0;
+  }
+  return cases.length;
+}
+
+function buildEnvelopePayload(envelope: EvidenceEnvelope): EnvelopePayload {
+  return {
+    artifactDigests: envelope.artifactDigests,
+    candidateDigest: envelope.candidateDigest,
+    cases: envelope.cases,
+    catalogueDigest: envelope.catalogueDigest,
+    fixtureDigest: envelope.fixtureDigest,
+    policyDigest: envelope.policyDigest,
+    profileDigest: envelope.profileDigest,
+    runTimestamp: envelope.runTimestamp,
+    runnerIdentity: envelope.runnerIdentity,
+  };
+}
+
+function verifySignatureOutcome(
+  payloadDigest: string,
+  signature: string,
+  publicKeyPem: string
+): CryptoVerifyOutcome {
+  const verificationResult = Effect.try({
+    catch: String,
+    try: () =>
+      verify(
+        null,
+        Buffer.from(payloadDigest, "utf-8"),
+        publicKeyPem,
+        Buffer.from(signature, "hex")
+      ),
+  }).pipe(Effect.exit, Effect.runSync);
+
+  if (Exit.isFailure(verificationResult)) {
+    return {
+      reason: `Signature verification failed: ${String(verificationResult.cause)}`,
+      success: false,
+    };
+  }
+
+  if (!verificationResult.value) {
+    return {
+      reason: "Cryptographic signature does not match envelope payload digest",
+      success: false,
+    };
+  }
+
+  return { success: true };
+}
+
+function validateSignature(
+  envelope: EvidenceEnvelope,
+  publicKeyToUse: string | undefined,
+  now: number
+): EvidenceGateResult | null {
+  const casesCount = getCasesCount(envelope.cases);
+  if (!envelope.signature || !publicKeyToUse) {
+    return {
+      checkedCasesCount: casesCount,
+      reason: "Missing cryptographic signature or runner public key",
+      totalAssertions: 0,
+      verdict: "REJECTED_UNTRUSTED_BINDING",
+      verifiedAt: now,
+    };
+  }
+
+  const payloadToVerify = buildEnvelopePayload(envelope);
+  const payloadDigest = computeDigest(payloadToVerify);
+  const outcome = verifySignatureOutcome(
+    payloadDigest,
+    envelope.signature,
+    publicKeyToUse
+  );
+
+  if (!outcome.success) {
+    return {
+      checkedCasesCount: casesCount,
+      reason: outcome.reason,
+      totalAssertions: 0,
+      verdict: "REJECTED_CORRUPT_EVIDENCE",
+      verifiedAt: now,
+    };
+  }
+
+  return null;
+}
+
+type CasesValidationOutcome =
+  | { readonly totalAssertions: number; readonly valid: true }
+  | { readonly result: EvidenceGateResult; readonly valid: false };
+
+function validateEnvelopeCases(
+  cases: EvidenceEnvelope["cases"] | undefined,
+  now: number
+): CasesValidationOutcome {
+  if (!cases || cases.length === 0) {
+    return {
+      result: {
+        checkedCasesCount: 0,
+        reason: "Evidence envelope contains zero test cases",
+        totalAssertions: 0,
+        verdict: "REJECTED_INCOMPLETE_EVIDENCE",
+        verifiedAt: now,
+      },
+      valid: false,
+    };
+  }
+
+  const seenIds = new Set<string>();
+  let totalAssertions = 0;
+
+  for (const c of cases) {
+    if (seenIds.has(c.id)) {
+      return {
+        result: {
+          checkedCasesCount: cases.length,
+          reason: `Duplicate test case ID '${c.id}' detected in evidence envelope`,
+          totalAssertions,
+          verdict: "REJECTED_INCOMPLETE_EVIDENCE",
+          verifiedAt: now,
+        },
+        valid: false,
+      };
+    }
+    seenIds.add(c.id);
+
+    if (c.assertions <= 0) {
+      return {
+        result: {
+          checkedCasesCount: cases.length,
+          reason: `Test case '${c.id}' reported success with zero assertions`,
+          totalAssertions,
+          verdict: "REJECTED_ZERO_ASSERTIONS",
+          verifiedAt: now,
+        },
+        valid: false,
+      };
+    }
+
+    totalAssertions += c.assertions;
+  }
+
+  return { totalAssertions, valid: true };
+}
+
+function isIllegalArtifactPath(artPath: string): boolean {
+  return (
+    artPath.includes("..") ||
+    artPath.startsWith("/") ||
+    artPath.startsWith("\\")
+  );
+}
+
+function validateArtifactPaths(
+  artifactDigests: Record<string, string> | undefined,
+  casesCount: number,
+  totalAssertions: number,
+  now: number
+): EvidenceGateResult | null {
+  const paths = Object.keys(artifactDigests ?? {});
+  for (const artPath of paths) {
+    if (isIllegalArtifactPath(artPath)) {
+      return {
+        checkedCasesCount: casesCount,
+        reason: `Illegal path traversal detected in artifact digest key: '${artPath}'`,
+        totalAssertions,
+        verdict: "REJECTED_CORRUPT_EVIDENCE",
+        verifiedAt: now,
+      };
+    }
+  }
+  return null;
 }
 
 export function verifyEvidenceEnvelope(
@@ -45,129 +232,33 @@ export function verifyEvidenceEnvelope(
   trustedPublicKeyPem?: string
 ): EvidenceGateResult {
   const now = Date.now();
+  const publicKeyToUse = trustedPublicKeyPem ?? envelope.runnerPublicKey;
 
-  // 1. Signature check
-  if (
-    !envelope.signature ||
-    (!envelope.runnerPublicKey && !trustedPublicKeyPem)
-  ) {
-    return {
-      verdict: "REJECTED_UNTRUSTED_BINDING",
-      reason: "Missing cryptographic signature or runner public key",
-      checkedCasesCount: envelope.cases?.length ?? 0,
-      totalAssertions: 0,
-      verifiedAt: now,
-    };
+  const sigResult = validateSignature(envelope, publicKeyToUse, now);
+  if (sigResult !== null) {
+    return sigResult;
   }
 
-  const publicKeyToUse = trustedPublicKeyPem ?? envelope.runnerPublicKey!;
-
-  // 2. Compute canonical payload for verification
-  const payloadToVerify = {
-    candidateDigest: envelope.candidateDigest,
-    profileDigest: envelope.profileDigest,
-    catalogueDigest: envelope.catalogueDigest,
-    fixtureDigest: envelope.fixtureDigest,
-    policyDigest: envelope.policyDigest,
-    artifactDigests: envelope.artifactDigests,
-    runnerIdentity: envelope.runnerIdentity,
-    runTimestamp: envelope.runTimestamp,
-    cases: envelope.cases,
-  };
-
-  const payloadDigest = computeDigest(payloadToVerify);
-
-  const verificationResult = Effect.try({
-    try: () =>
-      verify(
-        null,
-        Buffer.from(payloadDigest, "utf-8"),
-        publicKeyToUse,
-        Buffer.from(envelope.signature, "hex")
-      ),
-    catch: (error) => error,
-  }).pipe(Effect.exit, Effect.runSync);
-
-  if (verificationResult._tag === "Failure") {
-    return {
-      checkedCasesCount: envelope.cases?.length ?? 0,
-      reason: `Signature verification failed: ${String(verificationResult.cause)}`,
-      totalAssertions: 0,
-      verdict: "REJECTED_CORRUPT_EVIDENCE",
-      verifiedAt: now,
-    };
+  const casesOutcome = validateEnvelopeCases(envelope.cases, now);
+  if (!casesOutcome.valid) {
+    return casesOutcome.result;
   }
 
-  if (!verificationResult.value) {
-    return {
-      verdict: "REJECTED_CORRUPT_EVIDENCE",
-      reason: "Cryptographic signature does not match envelope payload digest",
-      checkedCasesCount: envelope.cases?.length ?? 0,
-      totalAssertions: 0,
-      verifiedAt: now,
-    };
-  }
-
-  // 3. Completeness and assertions check
-  if (!envelope.cases || envelope.cases.length === 0) {
-    return {
-      verdict: "REJECTED_INCOMPLETE_EVIDENCE",
-      reason: "Evidence envelope contains zero test cases",
-      checkedCasesCount: 0,
-      totalAssertions: 0,
-      verifiedAt: now,
-    };
-  }
-
-  const seenIds = new Set<string>();
-  let totalAssertions = 0;
-
-  for (const c of envelope.cases) {
-    if (seenIds.has(c.id)) {
-      return {
-        verdict: "REJECTED_INCOMPLETE_EVIDENCE",
-        reason: `Duplicate test case ID '${c.id}' detected in evidence envelope`,
-        checkedCasesCount: envelope.cases.length,
-        totalAssertions,
-        verifiedAt: now,
-      };
-    }
-    seenIds.add(c.id);
-
-    if (c.assertions <= 0) {
-      return {
-        verdict: "REJECTED_ZERO_ASSERTIONS",
-        reason: `Test case '${c.id}' reported success with zero assertions`,
-        checkedCasesCount: envelope.cases.length,
-        totalAssertions,
-        verifiedAt: now,
-      };
-    }
-
-    totalAssertions += c.assertions;
-  }
-
-  // 4. Check for path traversal or malicious artifact paths
-  for (const artPath of Object.keys(envelope.artifactDigests || {})) {
-    if (
-      artPath.includes("..") ||
-      artPath.startsWith("/") ||
-      artPath.startsWith("\\")
-    ) {
-      return {
-        verdict: "REJECTED_CORRUPT_EVIDENCE",
-        reason: `Illegal path traversal detected in artifact digest key: '${artPath}'`,
-        checkedCasesCount: envelope.cases.length,
-        totalAssertions,
-        verifiedAt: now,
-      };
-    }
+  const casesCount = envelope.cases.length;
+  const pathResult = validateArtifactPaths(
+    envelope.artifactDigests,
+    casesCount,
+    casesOutcome.totalAssertions,
+    now
+  );
+  if (pathResult !== null) {
+    return pathResult;
   }
 
   return {
+    checkedCasesCount: casesCount,
+    totalAssertions: casesOutcome.totalAssertions,
     verdict: "READY_FOR_INDEPENDENT_RELEASE_REVIEW",
-    checkedCasesCount: envelope.cases.length,
-    totalAssertions,
     verifiedAt: now,
   };
 }

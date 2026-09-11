@@ -1,4 +1,7 @@
 import type { EntityTypology, RiskTier, Subject } from "@operon/schema";
+import type { Schema } from "effect";
+
+export type TelemetryContext = Record<string, Schema.Json>;
 
 export interface TelemetryConfig {
   readonly enabled?: boolean;

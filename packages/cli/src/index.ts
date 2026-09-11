@@ -1,5 +1,5 @@
 import { OperonTelemetryService } from "@operon/telemetry";
-import { Effect } from "effect";
+import { Clock, Effect } from "effect";
 
 import { runAction } from "./commands/action.js";
 import { runAssurance } from "./commands/assurance.js";
@@ -64,34 +64,16 @@ Examples:
 `);
 }
 
-function dispatchCommand(
-  command: string,
-  args: string[]
-): Effect.Effect<number, unknown, never> {
-  switch (command) {
-    case "doctor": {
-      if (args.includes("--help") || args.includes("-h")) {
-        console.log(`
+const DOCTOR_HELP = `
 Usage: operon doctor [--db <path>] [--json]
 
 Examples:
   operon doctor
   operon doctor --json
   operon doctor --db ./operon.db
-`);
-        return Effect.succeed(0);
-      }
-      return runDoctor({
-        dbPath: args.includes("--db")
-          ? args[args.indexOf("--db") + 1]
-          : undefined,
-        json: args.includes("--json"),
-      });
-    }
+`;
 
-    case "object": {
-      if (args.includes("--help") || args.includes("-h") || args.length === 1) {
-        console.log(`
+const OBJECT_HELP = `
 Usage:
   operon object get <typeId> <id> [--json] [--db <path>]
   operon object put --type <typeId> --id <id> --properties '<json>' [--version <n>] [--db <path>]
@@ -103,30 +85,18 @@ Examples:
   operon object put --type Patient --id P002 --properties '{"name":"Alice","egfr":70}'
   operon object query Patient P001 --valid-time 1789000000000 --json
   operon object explain Patient P001 --valid-time 1789000000000
-`);
-        return Effect.succeed(0);
-      }
-      return runObject(args.slice(1));
-    }
+`;
 
-    case "readiness": {
-      if (args.includes("--help") || args.includes("-h") || args.length === 1) {
-        console.log(`
+const READINESS_HELP = `
 Usage:
   operon readiness check <typeId> <id> [--json] [--db <path>]
 
 Examples:
   operon readiness check Patient P001
   operon readiness check Patient P001 --json
-`);
-        return Effect.succeed(0);
-      }
-      return runReadiness(args.slice(1));
-    }
+`;
 
-    case "action": {
-      if (args.includes("--help") || args.includes("-h") || args.length === 1) {
-        console.log(`
+const ACTION_HELP = `
 Usage:
   operon action list [--json]
   operon action prepare <actionId> [--params '<json>' | --stdin] [--grant-id <id>] [--agent-tier <1-4>] [--json]
@@ -142,15 +112,9 @@ Examples:
   operon action commit <preparedDigest> --approval-id <approvalId> --idempotency-key key-123 --json
   operon action status <operationId> --json
   operon action submit update_vitals --params '{"patientId":"P001","heartRate":72}' --agent-tier 4
-`);
-        return Effect.succeed(0);
-      }
-      return runAction(args.slice(1));
-    }
+`;
 
-    case "inbox": {
-      if (args.includes("--help") || args.includes("-h") || args.length === 1) {
-        console.log(`
+const INBOX_HELP = `
 Usage:
   operon inbox list [--json]
   operon inbox approve <proposalId> --reviewer <id> --role <role> [--evidence-hash <hash>] [--override <cat> --reason <text>] [--json]
@@ -161,15 +125,9 @@ Examples:
   operon inbox approve proposal_123 --reviewer dr_li --role physician
   operon inbox approve proposal_123 --reviewer dr_li --role physician --override clinical_discretion --reason "Adjusted for fasting"
   operon inbox reject proposal_123 --reviewer chief_eng --role engineer --reason "Valve pressure excessive"
-`);
-        return Effect.succeed(0);
-      }
-      return runInbox(args.slice(1));
-    }
+`;
 
-    case "audit": {
-      if (args.includes("--help") || args.includes("-h") || args.length === 1) {
-        console.log(`
+const AUDIT_HELP = `
 Usage:
   operon audit list [--limit <n>] [--json]
   operon audit verify [--json]
@@ -178,15 +136,9 @@ Examples:
   operon audit list --limit 10 --json
   operon audit verify
   operon audit verify --json
-`);
-        return Effect.succeed(0);
-      }
-      return runAudit(args.slice(1));
-    }
+`;
 
-    case "oms": {
-      if (args.includes("--help") || args.includes("-h") || args.length === 1) {
-        console.log(`
+const OMS_HELP = `
 Usage:
   operon oms branch create <branchName> --author <id> [--json]
   operon oms proposal create --branch <branchName> --title <title> --author <id> [--json]
@@ -198,45 +150,27 @@ Examples:
   operon oms proposal create --branch feature/telemetry --title "Add telemetry" --author arch_1
   operon oms proposal review prop_123 --reviewer doc_lead --verdict approve --comments "LGTM"
   operon oms proposal merge prop_123 --author lead_arch --require-specialist
-`);
-        return Effect.succeed(0);
-      }
-      return runOms(args.slice(1));
-    }
+`;
 
-    case "sandbox": {
-      if (args.includes("--help") || args.includes("-h") || args.length === 1) {
-        console.log(`
+const SANDBOX_HELP = `
 Usage:
   operon sandbox verify <modelId> [--inputs '<json>'] [--iterations <n>] [--json]
 
 Examples:
   operon sandbox verify predictive_vibration_model
   operon sandbox verify predictive_vibration_model --inputs '{"value":14.2}' --iterations 5 --json
-`);
-        return Effect.succeed(0);
-      }
-      return runSandbox(args.slice(1));
-    }
+`;
 
-    case "mcp": {
-      if (args.includes("--help") || args.includes("-h")) {
-        console.log(`
+const MCP_HELP = `
 Usage:
   operon mcp start [--agent-tier <1-4>] [--db <path>]
 
 Examples:
   operon mcp start
   operon mcp start --agent-tier 4
-`);
-        return Effect.succeed(0);
-      }
-      return runMcp(args.slice(1));
-    }
+`;
 
-    case "demo": {
-      if (args.includes("--help") || args.includes("-h") || args.length === 1) {
-        console.log(`
+const DEMO_HELP = `
 Usage:
   operon demo <healthcare|aviation|wastewater|sompo|education>
 
@@ -246,30 +180,18 @@ Examples:
   operon demo wastewater
   operon demo sompo
   operon demo education
-`);
-        return Effect.succeed(0);
-      }
-      return runDemo(args.slice(1));
-    }
+`;
 
-    case "telemetry": {
-      if (args.includes("--help") || args.includes("-h")) {
-        console.log(`
+const TELEMETRY_HELP = `
 Usage:
   operon telemetry status [--ping] [--json]
 
 Examples:
   operon telemetry status
   operon telemetry status --ping --json
-`);
-        return Effect.succeed(0);
-      }
-      return runTelemetry(args.slice(1));
-    }
+`;
 
-    case "skill": {
-      if (args.includes("--help") || args.includes("-h")) {
-        console.log(`
+const SKILL_HELP = `
 Usage:
   operon skill list [--json]
   operon skill get <skillId> [--json]
@@ -277,15 +199,9 @@ Usage:
 Examples:
   operon skill list --json
   operon skill get operon.skill.audit-investigation
-`);
-        return Effect.succeed(0);
-      }
-      return runSkill(args.slice(1));
-    }
+`;
 
-    case "recipe": {
-      if (args.includes("--help") || args.includes("-h")) {
-        console.log(`
+const RECIPE_HELP = `
 Usage:
   operon recipe list [--json]
   operon recipe get <recipeId> [--json]
@@ -295,15 +211,9 @@ Examples:
   operon recipe list --json
   operon recipe get operon.recipe.aviation-skywise
   operon recipe import aviation-skywise --json
-`);
-        return Effect.succeed(0);
-      }
-      return runRecipe(args.slice(1));
-    }
+`;
 
-    case "source": {
-      if (args.includes("--help") || args.includes("-h")) {
-        console.log(`
+const SOURCE_HELP = `
 Usage:
   operon source ingest --locator <loc> --media-type <mime> --payload '<json>' [--idempotency-key <k>] [--tenant <t>] [--json]
   operon source list [--tenant <t>] [--json]
@@ -314,15 +224,9 @@ Usage:
 Examples:
   operon source ingest --locator s3://lake/data.json --media-type application/json --payload '[{"id":"1"}]' --json
   operon source list --json
-`);
-        return Effect.succeed(0);
-      }
-      return runSource(args.slice(1));
-    }
+`;
 
-    case "reconcile": {
-      if (args.includes("--help") || args.includes("-h")) {
-        console.log(`
+const RECONCILE_HELP = `
 Usage:
   operon reconcile propose --source-system <sys> --source-key <key> --target-canonical <id> --action <link|merge|split> --confidence <float> [--reason <str>] [--original-ids <id1,id2>] [--idempotency-key <key>] [--json]
   operon reconcile resolve <proposalId> --decision-ref <ref> [--force-override] [--idempotency-key <key>] [--json]
@@ -333,30 +237,18 @@ Examples:
   operon reconcile propose --source-system crm --source-key c_101 --target-canonical cust_999 --action merge --confidence 0.95 --json
   operon reconcile resolve prop_123 --decision-ref dec_supervisor_1 --json
   operon reconcile list --json
-`);
-        return Effect.succeed(0);
-      }
-      return runReconcile(args.slice(1));
-    }
+`;
 
-    case "view": {
-      if (args.includes("--help") || args.includes("-h") || args.length === 1) {
-        console.log(`
+const VIEW_HELP = `
 Usage:
   operon view generate --title <title> --state <state> [--data '<json>' | --stdin] [--grant-id <id>] [--audience <aud>] [--format <format>] [--json]
 
 Examples:
   operon view generate --title "Patient Vitals" --state PROPOSED --data '{"patientId":"P001","heartRate":72}'
   operon view generate --title "Patient Overview" --state CONFIRMED --data '{"patientId":"P001"}' --json
-`);
-        return Effect.succeed(0);
-      }
-      return runView(args.slice(1));
-    }
+`;
 
-    case "assurance": {
-      if (args.includes("--help") || args.includes("-h") || args.length === 1) {
-        console.log(`
+const ASSURANCE_HELP = `
 Operon Assurance & Release Evaluation (Gate V0-F)
 
 Usage:
@@ -370,47 +262,141 @@ Examples:
   operon assurance mirror --participant metro_health --claim observed-action --json
   operon assurance scan packages --public-only --json
   operon assurance verify-receipt receipt.json --json
-`);
-        return Effect.succeed(0);
-      }
-      return runAssurance(args.slice(1));
-    }
+`;
 
-    default: {
-      console.error(`Error: Unknown command '${command}'\n`);
-      console.error(
-        "  Available commands: doctor, object, readiness, action, inbox, audit, oms, skill, recipe, source, reconcile, sandbox, view, assurance, mcp, telemetry, demo"
-      );
-      console.error("  Run 'operon --help' to see usage and examples.");
-      return Effect.succeed(1);
-    }
+function executeDoctor(args: string[]): Effect.Effect<number, unknown, never> {
+  const dbIdx = args.indexOf("--db");
+  const dbPath = dbIdx === -1 ? undefined : args[dbIdx + 1];
+  return runDoctor({
+    dbPath,
+    json: args.includes("--json"),
+  });
+}
+
+type CommandRunner = (args: string[]) => Effect.Effect<number, unknown, never>;
+
+const COMMAND_RUNNERS = {
+  action: (args) => runAction(args.slice(1)),
+  assurance: (args) => runAssurance(args.slice(1)),
+  audit: (args) => runAudit(args.slice(1)),
+  demo: (args) => runDemo(args.slice(1)),
+  doctor: (args) => executeDoctor(args),
+  inbox: (args) => runInbox(args.slice(1)),
+  mcp: (args) => runMcp(args.slice(1)),
+  object: (args) => runObject(args.slice(1)),
+  oms: (args) => runOms(args.slice(1)),
+  readiness: (args) => runReadiness(args.slice(1)),
+  recipe: (args) => runRecipe(args.slice(1)),
+  reconcile: (args) => runReconcile(args.slice(1)),
+  sandbox: (args) => runSandbox(args.slice(1)),
+  skill: (args) => runSkill(args.slice(1)),
+  source: (args) => runSource(args.slice(1)),
+  telemetry: (args) => runTelemetry(args.slice(1)),
+  view: (args) => runView(args.slice(1)),
+} as const satisfies Record<string, CommandRunner>;
+
+const COMMAND_HELP = {
+  action: ACTION_HELP,
+  assurance: ASSURANCE_HELP,
+  audit: AUDIT_HELP,
+  demo: DEMO_HELP,
+  doctor: DOCTOR_HELP,
+  inbox: INBOX_HELP,
+  mcp: MCP_HELP,
+  object: OBJECT_HELP,
+  oms: OMS_HELP,
+  readiness: READINESS_HELP,
+  recipe: RECIPE_HELP,
+  reconcile: RECONCILE_HELP,
+  sandbox: SANDBOX_HELP,
+  skill: SKILL_HELP,
+  source: SOURCE_HELP,
+  telemetry: TELEMETRY_HELP,
+  view: VIEW_HELP,
+} as const satisfies Record<string, string>;
+
+const REQUIRE_SUBCOMMAND_FOR_HELP = new Set([
+  "action",
+  "assurance",
+  "audit",
+  "demo",
+  "inbox",
+  "object",
+  "oms",
+  "readiness",
+  "sandbox",
+  "view",
+]);
+
+function shouldShowCommandHelp(command: string, args: string[]): boolean {
+  if (args.includes("--help") || args.includes("-h")) {
+    return true;
   }
+  return REQUIRE_SUBCOMMAND_FOR_HELP.has(command) && args.length === 1;
+}
+
+function handleUnknownCommand(
+  command: string
+): Effect.Effect<number, unknown, never> {
+  console.error(`Error: Unknown command '${command}'\n`);
+  console.error(
+    "  Available commands: doctor, object, readiness, action, inbox, audit, oms, skill, recipe, source, reconcile, sandbox, view, assurance, mcp, telemetry, demo"
+  );
+  console.error("  Run 'operon --help' to see usage and examples.");
+  return Effect.succeed(1);
+}
+
+function dispatchCommand(
+  command: string,
+  args: string[]
+): Effect.Effect<number, unknown, never> {
+  if (!Object.hasOwn(COMMAND_RUNNERS, command)) {
+    return handleUnknownCommand(command);
+  }
+  // SAFETY: command existence checked via Object.hasOwn
+  const cmdKey = command as keyof typeof COMMAND_RUNNERS;
+  if (shouldShowCommandHelp(command, args)) {
+    console.log(COMMAND_HELP[cmdKey]);
+    return Effect.succeed(0);
+  }
+  return COMMAND_RUNNERS[cmdKey](args);
+}
+
+const HELP_FLAGS = new Set(["--help", "-h"]);
+const VERSION_FLAGS = new Set(["--version", "-v"]);
+
+function hasFlag(args: readonly string[], flags: Set<string>): boolean {
+  return args.some((a) => flags.has(a));
+}
+
+function checkEarlyExit(args: readonly string[]): number | undefined {
+  if (hasFlag(args, VERSION_FLAGS)) {
+    console.log("operon 0.1.0");
+    return 0;
+  }
+  if (!args[0] || (hasFlag(args, HELP_FLAGS) && args.length === 1)) {
+    printHelp();
+    return 0;
+  }
+  return undefined;
 }
 
 export function runCli(
   argv: string[] = process.argv.slice(2)
 ): Effect.Effect<number, never, never> {
   const args = [...argv];
-  const command = args[0];
-  const isHelp =
-    args.includes("--help") || args.includes("-h") || args.length === 0;
-
-  if (args.includes("--version") || args.includes("-v")) {
-    console.log("operon 0.1.0");
-    return Effect.succeed(0);
+  const earlyCode = checkEarlyExit(args);
+  if (earlyCode !== undefined) {
+    return Effect.succeed(earlyCode);
   }
 
-  if (isHelp && !command) {
-    printHelp();
-    return Effect.succeed(0);
-  }
-
-  const startTime = Date.now();
+  const command = args[0] ?? "help";
   const telemetry = OperonTelemetryService.getInstance();
 
   return Effect.gen(function* () {
-    const handleCommandError = (error: unknown) => {
-      telemetry.captureError(error, { args, command });
+    const startTime = yield* Clock.currentTimeMillis;
+    const handleCommandError = (cause: unknown) => {
+      telemetry.captureError(cause, { args, command });
       return Effect.succeed(1);
     };
 
@@ -418,11 +404,12 @@ export function runCli(
       Effect.catch(handleCommandError)
     );
 
+    const endTime = yield* Clock.currentTimeMillis;
     telemetry.trackEvent({
       event: "operon_cli_command",
       properties: {
-        command: command || "help",
-        durationMs: Date.now() - startTime,
+        command,
+        durationMs: endTime - startTime,
         exitCode,
       },
     });
@@ -431,7 +418,7 @@ export function runCli(
 
     return exitCode;
   }).pipe(
-    Effect.annotateLogs({ cliCommand: command || "help" }),
+    Effect.annotateLogs({ cliCommand: command }),
     Effect.provide(telemetry.getLoggerLayer())
   );
 }

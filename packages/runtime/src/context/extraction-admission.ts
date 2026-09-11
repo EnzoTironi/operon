@@ -3,7 +3,7 @@ import type {
   ExtractedCandidateFact,
   TextCharSpan,
 } from "@operon/schema";
-import { Context, Effect, Layer } from "effect";
+import { Clock, Context, Effect, Layer } from "effect";
 
 import {
   FunctionPermissionDeniedError,
@@ -79,25 +79,25 @@ export const ExtractionAdmissionServiceLive = Layer.sync(
 
           const candidate = candidates.get(candidateId);
           if (!candidate) {
-            return yield* Effect.fail(
+            return yield* 
               new UnadmittedCandidateError({
                 candidateId,
                 message: `Candidate fact '${candidateId}' not found`,
                 status: "NOT_FOUND",
               })
-            );
+            ;
           }
 
           // Must be admitted by an authorized human role, not by automated agents (OPR-L2-005)
           if (!PERMITTED_HUMAN_ROLES.has(admittedByActorRole)) {
-            return yield* Effect.fail(
+            return yield* 
               new FunctionPermissionDeniedError({
                 callerId: admittedByActorId,
                 functionId: "admitCandidate",
                 message: `Actor '${admittedByActorId}' with role '${admittedByActorRole}' is not authorized to admit evidence; human admission role required`,
                 missingPermissions: ["HUMAN_ADMISSION_AUTHORITY"],
               })
-            );
+            ;
           }
 
           // Update candidate status
@@ -108,8 +108,9 @@ export const ExtractionAdmissionServiceLive = Layer.sync(
           candidates.set(candidateId, updatedCandidate);
 
           // Record admitted fact preserving extraction and edit lineage (OPR-L2-005.T02)
+          const now = yield* Clock.currentTimeMillis;
           const admittedFact: AdmittedFactRecord = {
-            admittedAt: Date.now(),
+            admittedAt: now,
             admittedByActorId,
             admittedFactId: `adm-${candidateId}`,
             admittedValue,
@@ -128,47 +129,46 @@ export const ExtractionAdmissionServiceLive = Layer.sync(
 
       createExtractionCandidate: Effect.fn(
         "ExtractionAdmissionService.createExtractionCandidate"
-      )((params) =>
-        Effect.sync(() => {
-          const candidate: ExtractedCandidateFact = {
-            candidateId: params.candidateId,
-            extractedAt: Date.now(),
-            extractedByActorId: params.extractedByActorId,
-            extractedValue: params.extractedValue,
-            sourceEvidenceId: params.sourceEvidenceId,
-            sourceSpan: params.sourceSpan,
-            sourceVersion: params.sourceVersion,
-            status: "PENDING", // Candidate starts in unconfirmed PENDING state (OPR-L2-005.T01)
-          };
+      )(function* (params) {
+        const now = yield* Clock.currentTimeMillis;
+        const candidate: ExtractedCandidateFact = {
+          candidateId: params.candidateId,
+          extractedAt: now,
+          extractedByActorId: params.extractedByActorId,
+          extractedValue: params.extractedValue,
+          sourceEvidenceId: params.sourceEvidenceId,
+          sourceSpan: params.sourceSpan,
+          sourceVersion: params.sourceVersion,
+          status: "PENDING", // Candidate starts in unconfirmed PENDING state (OPR-L2-005.T01)
+        };
 
-          candidates.set(params.candidateId, candidate);
-          return candidate;
-        })
-      ),
+        candidates.set(params.candidateId, candidate);
+        return candidate;
+      }),
 
       getAuthoritativeEvidence: Effect.fn(
         "ExtractionAdmissionService.getAuthoritativeEvidence"
       )(function* (candidateId: string) {
         const candidate = candidates.get(candidateId);
         if (!candidate || candidate.status !== "ADMITTED") {
-          return yield* Effect.fail(
+          return yield* 
             new UnadmittedCandidateError({
               candidateId,
               message: `Candidate '${candidateId}' is in '${candidate?.status ?? "UNKNOWN"}' state and cannot be used as authoritative evidence without human admission`,
               status: candidate?.status ?? "UNKNOWN",
             })
-          );
+          ;
         }
 
         const admitted = admittedFacts.get(candidateId);
         if (!admitted) {
-          return yield* Effect.fail(
+          return yield* 
             new UnadmittedCandidateError({
               candidateId,
               message: `Admitted record for candidate '${candidateId}' missing`,
               status: "CORRUPTED",
             })
-          );
+          ;
         }
 
         return admitted;
@@ -182,13 +182,13 @@ export const ExtractionAdmissionServiceLive = Layer.sync(
         function* (candidateId: string) {
           const candidate = candidates.get(candidateId);
           if (!candidate) {
-            return yield* Effect.fail(
+            return yield* 
               new UnadmittedCandidateError({
                 candidateId,
                 message: `Candidate '${candidateId}' not found`,
                 status: "NOT_FOUND",
               })
-            );
+            ;
           }
 
           candidates.set(candidateId, { ...candidate, status: "REJECTED" });

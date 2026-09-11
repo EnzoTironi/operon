@@ -5,7 +5,7 @@ import type {
   FencedEffectReceipt,
   WriterFencingLease,
 } from "@operon/schema";
-import { Effect } from "effect";
+import { Clock, Effect } from "effect";
 
 import {
   ProductionInMemoryAuthorityForbiddenError,
@@ -188,8 +188,9 @@ export class FencedWriterService {
 
     return Effect.gen(function* () {
       const result = yield* effectFn();
+      const now = yield* Clock.currentTimeMillis;
       const receipt: FencedEffectReceipt = {
-        dispatchedAt: new Date().toISOString(),
+        dispatchedAt: new Date(now).toISOString(),
         effectId: `effect-${randomUUID()}`,
         fencingToken: presentedToken,
         processId,

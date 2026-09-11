@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 
-import { Data, Effect } from "effect";
+import { Clock, Data, Effect, Predicate } from "effect";
 
 export type McpKeyRole = "consumer" | "builder";
 
@@ -28,7 +28,7 @@ export class McpSecurityError extends Data.TaggedError("McpSecurityError")<{
   readonly message: string;
 }> {
   constructor(args: string | { readonly message: string }) {
-    super(typeof args === "string" ? { message: args } : args);
+    super(Predicate.isString(args) ? { message: args } : args);
   }
 }
 
@@ -50,34 +50,34 @@ export class ApiKeyRegistry {
     });
   }
 
-  public validateKey(rawKey: string): Effect.Effect<McpKey, McpSecurityError> {
-    return Effect.suspend(() => {
+  public readonly validateKey = Effect.fn("ApiKeyRegistry.validateKey")(
+    function* (
+      this: ApiKeyRegistry,
+      rawKey: string
+    ): Effect.fn.Return<McpKey, McpSecurityError> {
       const keyHash = createHash("sha256").update(rawKey).digest("hex");
       const record = this.keys.get(keyHash);
       if (!record || !record.active) {
-        return Effect.fail(
-          new McpSecurityError(
-            "Invalid or revoked API key: credential not found in registry"
-          )
+        return yield* new McpSecurityError(
+          "Invalid or revoked API key: credential not found in registry"
         );
       }
-      if (record.expiresAt && Date.now() > record.expiresAt) {
-        return Effect.fail(
-          new McpSecurityError(
-            `API key '${record.keyId}' has expired at ${record.expiresAt}`
-          )
+      const now = yield* Clock.currentTimeMillis;
+      if (record.expiresAt && now > record.expiresAt) {
+        return yield* new McpSecurityError(
+          `API key '${record.keyId}' has expired at ${record.expiresAt}`
         );
       }
-      return Effect.succeed({
+      return {
         agentId: record.agentId,
         agentTier: record.agentTier,
         expiresAt: record.expiresAt,
         keyId: record.keyId,
         name: record.name,
         role: record.role,
-      });
-    });
-  }
+      };
+    }
+  );
 }
 
 export const defaultApiKeyRegistry = new ApiKeyRegistry();
@@ -167,7 +167,7 @@ export function assertBuilderKey(
   key: McpKey | string,
   registry: ApiKeyRegistry = defaultApiKeyRegistry
 ): Effect.Effect<McpKey, McpSecurityError> {
-  if (typeof key === "string") {
+  if (Predicate.isString(key)) {
     if (key.startsWith("ck_")) {
       return Effect.fail(
         new McpSecurityError(

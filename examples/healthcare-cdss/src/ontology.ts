@@ -1,4 +1,3 @@
-import type { ObjectTypeId } from "@operon/schema";
 import {
   defineActionType,
   defineLinkType,
@@ -114,10 +113,10 @@ export const AdjustInsulinDoseAction = defineActionType({
     {
       description:
         "Decision Readiness (Complete): Today's food intake must be structured and present",
-      evaluate: (params, context) =>
-        Effect.gen(function* evaluateFoodIntakeGuard() {
+      evaluate: Effect.fn("evaluateFoodIntakeGuard")(
+        function* (params, context) {
           const patient = yield* context.getObject(
-            "Patient" as ObjectTypeId,
+            PatientType.id,
             params.patientId
           );
           if (!patient) {
@@ -129,7 +128,7 @@ export const AdjustInsulinDoseAction = defineActionType({
           }
 
           const mealObs = yield* context.getObject(
-            "MealObservation" as ObjectTypeId,
+            MealObservationType.id,
             `meal-${params.patientId}`
           );
 
@@ -153,27 +152,28 @@ export const AdjustInsulinDoseAction = defineActionType({
           }
 
           return { passed: true, verdict: "allow" };
-        }),
+        }
+      ),
       id: "food_intake_completeness_guard",
     },
     {
       description:
         "Hypoglycemia Safety: Impaired renal function (eGFR < 60) combined with low intake (< 60%) requires dose <= 10U",
-      evaluate: (params, context) =>
-        Effect.gen(function* evaluateHypoglycemiaGuard() {
+      evaluate: Effect.fn("evaluateHypoglycemiaGuard")(
+        function* (params, context) {
           const patient = yield* context.getObject(
-            "Patient" as ObjectTypeId,
+            PatientType.id,
             params.patientId
           );
           const mealObs = yield* context.getObject(
-            "MealObservation" as ObjectTypeId,
+            MealObservationType.id,
             `meal-${params.patientId}`
           );
 
           if (patient && mealObs) {
-            const egfr = Number((patient.properties as any).eGFR);
-            const intake = Number((mealObs.properties as any).intakePercent);
-            const dose = Number((params as any).proposedDoseUnits);
+            const egfr = Number(patient.properties["eGFR"]);
+            const intake = Number(mealObs.properties["intakePercent"]);
+            const dose = params.proposedDoseUnits;
 
             if (egfr < 60 && intake < 60 && dose > 10) {
               return {
@@ -185,7 +185,8 @@ export const AdjustInsulinDoseAction = defineActionType({
           }
 
           return { passed: true, verdict: "allow" };
-        }),
+        }
+      ),
       id: "renal_intake_hypoglycemia_guard",
     },
   ],

@@ -34,20 +34,27 @@ export class TenantQuotaService {
     this.cellCapacity = options?.totalCellCapacity ?? 100;
   }
 
+  private getOrCreateState(tenantId: string): TenantRuntimeState {
+    let state = this.tenantStates.get(tenantId);
+    if (!state) {
+      state = {
+        activeMissions: 0,
+        recentRequestTimestamps: [],
+        spendCents: 0,
+        throttledCount: 0,
+      };
+      this.tenantStates.set(tenantId, state);
+    }
+    return state;
+  }
+
   /**
    * Registers or updates quota and locality policies for a tenant
    */
   registerTenant(quota: TenantQuotaPolicy, locality: LocalityPolicy): void {
     this.quotaPolicies.set(quota.tenantId, quota);
     this.localityPolicies.set(locality.tenantId, locality);
-    if (!this.tenantStates.has(quota.tenantId)) {
-      this.tenantStates.set(quota.tenantId, {
-        activeMissions: 0,
-        recentRequestTimestamps: [],
-        spendCents: 0,
-        throttledCount: 0,
-      });
-    }
+    this.getOrCreateState(quota.tenantId);
   }
 
   /**
@@ -73,7 +80,7 @@ export class TenantQuotaService {
       );
     }
 
-    const state = this.tenantStates.get(tenantId)!;
+    const state = this.getOrCreateState(tenantId);
     const now = params.currentTime ?? Date.now();
 
     // 1. Rate Limiting Check (sliding 60-second window)
@@ -197,7 +204,7 @@ export class TenantQuotaService {
       );
     }
 
-    const state = this.tenantStates.get(tenantId)!;
+    const state = this.getOrCreateState(tenantId);
     const projectedSpend = state.spendCents + amountCents;
 
     if (projectedSpend > policy.spendBudgetCents) {

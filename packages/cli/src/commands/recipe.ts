@@ -1,145 +1,203 @@
-import * as fs from "node:fs";
-
 import {
   AviationSkywisePack,
   BUILTIN_RECIPES,
   RecipeService,
 } from "@operon/recipes";
-import type { RecipePack } from "@operon/recipes";
+import type {
+  RecipeManifest,
+  RecipePack,
+  RecipeRegistryService,
+} from "@operon/recipes";
+import { parseJson } from "@operon/schema";
 import { SkillService } from "@operon/skills";
-import { Data, Effect } from "effect";
+import type { SkillRegistryService } from "@operon/skills";
+import { Data, Effect, Exit } from "effect";
+
+import { readTextFileSync } from "../fs-io.js";
+import { printCli, printCliError, printCliJson } from "../io.js";
 
 class RecipeReadError extends Data.TaggedError("RecipeReadError")<{
-  readonly path: string;
   readonly cause: unknown;
+  readonly path: string;
 }> {}
 
-export function runRecipe(
-  args: string[]
-): Effect.Effect<number, unknown, never> {
-  return Effect.gen(function* () {
-    const action = args[0];
-    const isJson = args.includes("--json");
+function printRecipeList(recipes: readonly RecipeManifest[]): void {
+  printCli(`Registered Recipes (${recipes.length}):`);
+  for (const r of recipes) {
+    printCli(`  - [${r.id}] ${r.name} (v${r.version})`);
+    printCli(`    ${r.description}`);
+    printCli(`    Author: ${r.author}`);
+    printCli(`    Skills: ${r.skills.join(", ")}`);
+    printCli(`    Digest: ${r.digest}`);
+  }
+}
 
-    const recipeService = RecipeService.make();
-    const skillService = SkillService.make();
+function printRecipeDetails(recipe: RecipeManifest): void {
+  printCli(`Recipe: ${recipe.name} (${recipe.id})`);
+  printCli(`Version: ${recipe.version}`);
+  printCli(`Author: ${recipe.author}`);
+  printCli(`Description: ${recipe.description}`);
+  printCli(`Ontologies: ${recipe.ontologies.join(", ")}`);
+  printCli(`Skills: ${recipe.skills.join(", ")}`);
+  printCli(`Digest: ${recipe.digest}`);
+}
 
-    for (const recipe of BUILTIN_RECIPES) {
-      yield* recipeService.registerRecipe(recipe);
-    }
+function printImportReceipt(receipt: {
+  readonly grantedAuthorityCount: number;
+  readonly ontologiesCount: number;
+  readonly recipeId: string;
+  readonly skillsCount: number;
+  readonly version: string;
+}): void {
+  printCli(
+    `Successfully imported recipe pack '${receipt.recipeId}' (v${receipt.version})`
+  );
+  printCli(`  Skills registered: ${receipt.skillsCount}`);
+  printCli(`  Ontology types declared: ${receipt.ontologiesCount}`);
+  printCli(
+    `  Granted authority count: ${receipt.grantedAuthorityCount} (S14 invariant: declarative only)`
+  );
+}
 
-    if (action === "list" || !action) {
-      const recipes = yield* recipeService.listRecipes();
-      if (isJson) {
-        console.log(JSON.stringify(recipes, null, 2));
-      } else {
-        console.log(`Registered Recipes (${recipes.length}):`);
-        for (const r of recipes) {
-          console.log(`  - [${r.id}] ${r.name} (v${r.version})`);
-          console.log(`    ${r.description}`);
-          console.log(`    Author: ${r.author}`);
-          console.log(`    Skills: ${r.skills.join(", ")}`);
-          console.log(`    Digest: ${r.digest}`);
-        }
-      }
-      return 0;
-    }
+const handleRecipeList = Effect.fn("handleRecipeList")(function* (
+  recipeService: RecipeRegistryService,
+  isJson: boolean
+) {
+  const recipes = yield* recipeService.listRecipes();
+  if (isJson) {
+    printCliJson(recipes);
+  } else {
+    printRecipeList(recipes);
+  }
+  return 0;
+});
 
-    if (action === "get") {
-      const recipeId = args[1];
-      if (!recipeId) {
-        console.error(
-          "Error: Missing recipe ID. Usage: operon recipe get <recipeId> [--json]"
-        );
-        return 1;
-      }
-      const recipe = yield* recipeService.getRecipe(recipeId).pipe(
-        Effect.catchTag("RecipeNotFoundError", (err) => {
-          console.error(`Error: Recipe '${err.recipeId}' not found.`);
-          return Effect.succeed(undefined);
-        })
-      );
-      if (!recipe) return 1;
-
-      if (isJson) {
-        console.log(JSON.stringify(recipe, null, 2));
-      } else {
-        console.log(`Recipe: ${recipe.name} (${recipe.id})`);
-        console.log(`Version: ${recipe.version}`);
-        console.log(`Author: ${recipe.author}`);
-        console.log(`Description: ${recipe.description}`);
-        console.log(`Ontologies: ${recipe.ontologies.join(", ")}`);
-        console.log(`Skills: ${recipe.skills.join(", ")}`);
-        console.log(`Digest: ${recipe.digest}`);
-      }
-      return 0;
-    }
-
-    if (action === "import") {
-      const pathOrBuiltin = args[1];
-      if (!pathOrBuiltin) {
-        console.error(
-          "Error: Missing path or recipe name. Usage: operon recipe import <path-or-builtin> [--json]"
-        );
-        return 1;
-      }
-
-      let pack: RecipePack;
-      if (
-        pathOrBuiltin === "aviation-skywise" ||
-        pathOrBuiltin === "operon.recipe.aviation-skywise"
-      ) {
-        pack = AviationSkywisePack;
-      } else {
-        const fileResult = yield* Effect.try({
-          try: () => {
-            const content = fs.readFileSync(pathOrBuiltin, "utf-8");
-            return JSON.parse(content) as RecipePack;
-          },
-          catch: (cause: unknown) =>
-            new RecipeReadError({ path: pathOrBuiltin, cause }),
-        }).pipe(Effect.exit);
-
-        if (fileResult._tag === "Failure") {
-          console.error(
-            `Error reading recipe file '${pathOrBuiltin}': ${String(fileResult.cause)}`
-          );
-          return 1;
-        }
-        pack = fileResult.value;
-      }
-
-      const receipt = yield* recipeService
-        .importRecipe(pack, skillService)
-        .pipe(
-          Effect.catchTag("CorruptRecipePackError", (err) => {
-            console.error(
-              `Error: Failed to import recipe pack '${err.recipeId}': ${err.reason}`
-            );
-            return Effect.succeed(undefined);
-          })
-        );
-
-      if (!receipt) return 1;
-
-      if (isJson) {
-        console.log(JSON.stringify(receipt, null, 2));
-      } else {
-        console.log(
-          `Successfully imported recipe pack '${receipt.recipeId}' (v${receipt.version})`
-        );
-        console.log(`  Skills registered: ${receipt.skillsCount}`);
-        console.log(`  Ontology types declared: ${receipt.ontologiesCount}`);
-        console.log(
-          `  Granted authority count: ${receipt.grantedAuthorityCount} (S14 invariant: declarative only)`
-        );
-      }
-      return 0;
-    }
-
-    console.error(
-      `Unknown recipe action: ${action}. Use 'list', 'get', or 'import'.`
+const handleRecipeGet = Effect.fn("handleRecipeGet")(function* (
+  recipeService: RecipeRegistryService,
+  recipeId: string | undefined,
+  isJson: boolean
+) {
+  if (!recipeId) {
+    printCliError(
+      "Error: Missing recipe ID. Usage: operon recipe get <recipeId> [--json]"
     );
     return 1;
+  }
+  const recipe = yield* recipeService.getRecipe(recipeId).pipe(
+    Effect.catchTag("RecipeNotFoundError", (err) => {
+      printCliError(`Error: Recipe '${err.recipeId}' not found.`);
+      return Effect.void as Effect.Effect<undefined>;
+    })
+  );
+  if (!recipe) {
+    return 1;
+  }
+
+  if (isJson) {
+    printCliJson(recipe);
+  } else {
+    printRecipeDetails(recipe);
+  }
+  return 0;
+});
+
+function loadRecipePack(
+  pathOrBuiltin: string
+): Effect.Effect<RecipePack, RecipeReadError> {
+  if (
+    pathOrBuiltin === "aviation-skywise" ||
+    pathOrBuiltin === "operon.recipe.aviation-skywise"
+  ) {
+    return Effect.succeed(AviationSkywisePack);
+  }
+  return Effect.try({
+    catch: (cause: unknown) =>
+      new RecipeReadError({ cause, path: pathOrBuiltin }),
+    try: () => {
+      const content = readTextFileSync(pathOrBuiltin);
+      // SAFETY: recipe pack JSON validated downstream by recipeService.importRecipe
+      return parseJson(content) as RecipePack;
+    },
   });
 }
+
+const handleRecipeImport = Effect.fn("handleRecipeImport")(function* (
+  recipeService: RecipeRegistryService,
+  skillService: SkillRegistryService,
+  pathOrBuiltin: string | undefined,
+  isJson: boolean
+) {
+  if (!pathOrBuiltin) {
+    printCliError(
+      "Error: Missing path or recipe name. Usage: operon recipe import <path-or-builtin> [--json]"
+    );
+    return 1;
+  }
+
+  const fileResult = yield* loadRecipePack(pathOrBuiltin).pipe(Effect.exit);
+  if (Exit.isFailure(fileResult)) {
+    printCliError(
+      `Error reading recipe file '${pathOrBuiltin}': ${String(fileResult.cause)}`
+    );
+    return 1;
+  }
+  const pack = fileResult.value;
+
+  const receipt = yield* recipeService.importRecipe(pack, skillService).pipe(
+    Effect.catchTag("CorruptRecipePackError", (err) => {
+      printCliError(
+        `Error: Failed to import recipe pack '${err.recipeId}': ${err.reason}`
+      );
+      return Effect.void as Effect.Effect<undefined>;
+    })
+  );
+
+  if (!receipt) {
+    return 1;
+  }
+
+  if (isJson) {
+    printCliJson(receipt);
+  } else {
+    printImportReceipt(receipt);
+  }
+  return 0;
+});
+
+export const runRecipe = Effect.fn("runRecipe")(function* (
+  args: string[]
+): Effect.fn.Return<number> {
+  const action = args[0];
+  const isJson = args.includes("--json");
+
+  const recipeService = RecipeService.make();
+  const skillService = SkillService.make();
+
+  yield* Effect.forEach(
+    BUILTIN_RECIPES,
+    (recipe) => recipeService.registerRecipe(recipe),
+    { concurrency: 1 }
+  );
+
+  if (action === "list" || !action) {
+    return yield* handleRecipeList(recipeService, isJson);
+  }
+
+  if (action === "get") {
+    return yield* handleRecipeGet(recipeService, args[1], isJson);
+  }
+
+  if (action === "import") {
+    return yield* handleRecipeImport(
+      recipeService,
+      skillService,
+      args[1],
+      isJson
+    );
+  }
+
+  printCliError(
+    `Unknown recipe action: ${action}. Use 'list', 'get', or 'import'.`
+  );
+  return 1;
+});

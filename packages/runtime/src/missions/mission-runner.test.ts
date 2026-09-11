@@ -617,16 +617,16 @@ describe("MissionRunnerService (S12 / OPR-FULL-021 & OPR-FULL-023)", () => {
 
       const program = Effect.gen(function* () {
         const runner = yield* MissionRunnerService;
-        return yield* runner.executePlanStep(
-          mandate,
-          plan,
-          "step-2",
-          worldState,
-          {
+        return yield* runner.executePlanStep({
+          context: {
             currentSpentBudget: 100,
             currentTime: 2000,
-          }
-        );
+          },
+          mandate,
+          plan,
+          stepId: "step-2",
+          worldState,
+        });
       }).pipe(Effect.provide(MissionRunnerServiceLive));
 
       const result = await Effect.runPromise(program);
@@ -665,9 +665,15 @@ describe("MissionRunnerService (S12 / OPR-FULL-021 & OPR-FULL-023)", () => {
       const program = Effect.gen(function* () {
         const runner = yield* MissionRunnerService;
         return yield* Effect.exit(
-          runner.executePlanStep(mandate, plan, "step-2", emptyWorldState, {
-            currentSpentBudget: 100,
-            currentTime: 2000,
+          runner.executePlanStep({
+            context: {
+              currentSpentBudget: 100,
+              currentTime: 2000,
+            },
+            mandate,
+            plan,
+            stepId: "step-2",
+            worldState: emptyWorldState,
           })
         );
       }).pipe(Effect.provide(MissionRunnerServiceLive));

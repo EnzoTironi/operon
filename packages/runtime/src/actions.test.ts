@@ -30,7 +30,9 @@ describe("Gate V0-E: Governed Action, Atomic Commit & OperonService (V0-CH-07, 0
       mutation: (params, ctx) =>
         Effect.gen(function* () {
           const obj = yield* ctx.getObject("Account" as any, params.targetId);
-          if (!obj) return [];
+          if (!obj) {
+            return [];
+          }
           const currentBalance = Number((obj.properties as any).balance ?? 0);
           return [
             {
@@ -98,20 +100,21 @@ describe("Gate V0-E: Governed Action, Atomic Commit & OperonService (V0-CH-07, 0
       objectStore,
       authorityService
     );
-    commitService = new AtomicCommitService(
-      actionTypesMap,
-      objectStore,
+    commitService = new AtomicCommitService({
+      actionTypes: actionTypesMap,
       auditStore,
-      authorityService
-    );
-    reconciliationService = new ReconciliationService();
-    operonService = new OperonServiceImpl(
-      actionService,
-      commitService,
       authorityService,
+      objectStore,
+    });
+    reconciliationService = new ReconciliationService();
+    operonService = new OperonServiceImpl({
+      actionService, // Note: OperonServiceOptions expects governedActionService
+      atomicCommitService: commitService,
+      authorityService,
+      governedActionService: actionService,
+      objectStore,
       reconciliationService,
-      objectStore
-    );
+    });
 
     // Seed test object
     await Effect.runPromise(
@@ -627,12 +630,12 @@ describe("Gate V0-E: Governed Action, Atomic Commit & OperonService (V0-CH-07, 0
         [testAction.id, testAction],
         [failingAction.id, failingAction],
       ]);
-      const localCommitService = new AtomicCommitService(
-        actionTypesMap,
-        objectStore,
+      const localCommitService = new AtomicCommitService({
+        actionTypes: actionTypesMap,
         auditStore,
-        authorityService
-      );
+        authorityService,
+        objectStore,
+      });
 
       const prepared = await Effect.runPromise(
         actionService.prepareAction({

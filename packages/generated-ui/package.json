@@ -17,7 +17,8 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@operon/schema": "workspace:*"
+    "@operon/schema": "workspace:*",
+    "effect": "4.0.0-rc.112"
   },
   "devDependencies": {
     "typescript": "^5.7.2",

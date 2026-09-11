@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+
 import { Schema } from "effect";
 
 /**
@@ -70,6 +72,21 @@ export const Provenance = Schema.Struct({
   ingestedAt: Schema.Number, // unix epoch ms
   recordedAt: Schema.Number, // valid-time epoch ms
   confidence: Schema.optionalKey(Schema.Number), // 0.0 to 1.0
+  propertyTimestamps: Schema.optionalKey(
+    Schema.Record(Schema.String, Schema.Number)
+  ),
 });
 export type Provenance = typeof Provenance.Type;
 export const ProvenanceSchema = Provenance;
+
+/**
+ * Generates a collision-resistant, time-ordered identifier with a given prefix.
+ * Centralized ID contract across Operon packages.
+ */
+export function generatePrefixedId(
+  prefix: string,
+  timestampMs: number = Date.now()
+): string {
+  const suffix = randomUUID().replaceAll("-", "").slice(0, 6);
+  return `${prefix}_${timestampMs}_${suffix}`;
+}

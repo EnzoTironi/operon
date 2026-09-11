@@ -1,6 +1,3 @@
-import * as fs from "node:fs";
-import path from "node:path";
-
 import {
   AccountableIngestionService,
   ActionInbox,
@@ -17,20 +14,30 @@ import {
   SandboxedModelRunner,
   SqlBitemporalStore,
 } from "@operon/runtime";
-import type { OperonService } from "@operon/runtime";
 import type {
-  ActionType,
-  LinkType,
-  ObjectType,
-  ObjectTypeId,
-  Subject,
-} from "@operon/schema";
+  DecisionRecord,
+  InMemoryAuditSnapshot,
+  InMemoryObjectSnapshot,
+  OperonService,
+  OverrideRecord,
+  SerializedProposal,
+} from "@operon/runtime";
 import {
   defineActionType,
   defineLinkType,
   defineObjectType,
+  parseJson,
+  serializeJson,
 } from "@operon/schema";
+import type { ActionType, LinkType, ObjectType, Subject } from "@operon/schema";
 import { Config, Effect, Option, Redacted, Schema } from "effect";
+
+import {
+  fileExistsSync,
+  joinPath,
+  readTextFileSync,
+  writeTextFileSync,
+} from "./fs-io.js";
 
 export const PatientType = defineObjectType({
   description: "Hospital patient undergoing medical treatment",
@@ -98,28 +105,26 @@ export const PatientObservationLink: LinkType = defineLinkType({
   targetTypeId: "Patient",
 });
 
-export const UpdateVitalsAction: ActionType = defineActionType({
+export const UpdateVitalsAction = defineActionType({
   defaultExecutionMode: "automated",
   description: "Record and update patient vital signs",
   id: "update_vitals",
   minimumAgentTier: 1,
   mutation: (params, ctx) =>
-    Effect.map(
-      ctx.getObject("Patient" as ObjectTypeId, params.patientId),
-      (p) =>
-        p
-          ? [
-              {
-                ...p,
-                lastModifiedAt: ctx.now,
-                properties: {
-                  ...p.properties,
-                  heartRate: params.heartRate,
-                },
-                version: p.version + 1,
+    Effect.map(ctx.getObject(PatientType.id, params.patientId), (p) =>
+      p
+        ? [
+            {
+              ...p,
+              lastModifiedAt: ctx.now,
+              properties: {
+                ...p.properties,
+                heartRate: params.heartRate,
               },
-            ]
-          : []
+              version: p.version + 1,
+            },
+          ]
+        : []
     ),
   name: "Update Vitals",
   parametersSchema: Schema.Struct({
@@ -130,29 +135,27 @@ export const UpdateVitalsAction: ActionType = defineActionType({
   targetObjectTypeId: "Patient",
 });
 
-export const SetValvePositionAction: ActionType = defineActionType({
+export const SetValvePositionAction = defineActionType({
   defaultExecutionMode: "proposal",
   description:
     "Adjust secondary clarifier return sludge valve opening percentage",
   id: "set_valve_position",
   minimumAgentTier: 2,
   mutation: (params, ctx) =>
-    Effect.map(
-      ctx.getObject("ClarifierTank" as ObjectTypeId, params.tankId),
-      (tank) =>
-        tank
-          ? [
-              {
-                ...tank,
-                lastModifiedAt: ctx.now,
-                properties: {
-                  ...tank.properties,
-                  openingPercent: params.openingPercent,
-                },
-                version: tank.version + 1,
+    Effect.map(ctx.getObject(ClarifierTankType.id, params.tankId), (tank) =>
+      tank
+        ? [
+            {
+              ...tank,
+              lastModifiedAt: ctx.now,
+              properties: {
+                ...tank.properties,
+                openingPercent: params.openingPercent,
               },
-            ]
-          : []
+              version: tank.version + 1,
+            },
+          ]
+        : []
     ),
   name: "Set Valve Position",
   parametersSchema: Schema.Struct({
@@ -163,28 +166,26 @@ export const SetValvePositionAction: ActionType = defineActionType({
   targetObjectTypeId: "ClarifierTank",
 });
 
-export const AdjustDoseAction: ActionType = defineActionType({
+export const AdjustDoseAction = defineActionType({
   defaultExecutionMode: "proposal",
   description: "Adjust clinical insulin dose for hospitalized patient",
   id: "adjust_dose",
   minimumAgentTier: 2,
   mutation: (params, ctx) =>
-    Effect.map(
-      ctx.getObject("Patient" as ObjectTypeId, params.patientId),
-      (patient) =>
-        patient
-          ? [
-              {
-                ...patient,
-                lastModifiedAt: ctx.now,
-                properties: {
-                  ...patient.properties,
-                  currentDose: params.recommendedDose,
-                },
-                version: patient.version + 1,
+    Effect.map(ctx.getObject(PatientType.id, params.patientId), (patient) =>
+      patient
+        ? [
+            {
+              ...patient,
+              lastModifiedAt: ctx.now,
+              properties: {
+                ...patient.properties,
+                currentDose: params.recommendedDose,
               },
-            ]
-          : []
+              version: patient.version + 1,
+            },
+          ]
+        : []
     ),
   name: "Adjust Dose",
   parametersSchema: Schema.Struct({
@@ -195,6 +196,8 @@ export const AdjustDoseAction: ActionType = defineActionType({
   targetObjectTypeId: "Patient",
 });
 
+export type RuntimeContext = OperonRuntimeContext;
+
 export interface OperonRuntimeContext {
   readonly objectStore: InMemoryObjectStore | SqlBitemporalStore;
   readonly auditStore: InMemoryAuditStore;
@@ -202,7 +205,7 @@ export interface OperonRuntimeContext {
   readonly oms: OntologyMetadataService;
   readonly securityEngine: DynamicSecurityEngine;
   readonly sandbox: SandboxedModelRunner;
-  readonly objectTypes: readonly ObjectType<any>[];
+  readonly objectTypes: readonly ObjectType[];
   readonly actionTypes: readonly ActionType[];
   readonly linkTypes: readonly LinkType[];
   readonly ingestion: AccountableIngestionService;
@@ -214,7 +217,267 @@ export interface OperonRuntimeContext {
   readonly close: () => void;
 }
 
-const noopClose = () => undefined;
+function registerDefaultModels(sandbox: SandboxedModelRunner): void {
+  sandbox.registerModel({
+    compute: (inputs) => {
+      const num = Number(inputs["value"]) || 0;
+      return Effect.succeed({
+        prediction: num * 1.5,
+        status: "computed",
+      });
+    },
+    isDeterministic: true,
+    modelId: "predictive_vibration_model",
+    requiredInputs: ["value"],
+    timeoutMs: 2000,
+    version: "1.0.0",
+  });
+}
+
+function resolveTargetDbPath(dbPath?: string): string | undefined {
+  if (dbPath) {
+    return dbPath;
+  }
+  if (process.env.OPERON_DATABASE_URL) {
+    return process.env.OPERON_DATABASE_URL;
+  }
+  const envDbUrl = Effect.runSync(
+    Effect.option(Config.redacted("OPERON_DATABASE_URL"))
+  );
+  return envDbUrl.pipe(Option.map(Redacted.value), Option.getOrUndefined);
+}
+
+function resolveStateFilePath(targetDbPath?: string): string {
+  const envStatePath = Effect.runSync(
+    Effect.option(Config.string("OPERON_STATE_PATH"))
+  );
+  const statePath = Option.getOrUndefined(envStatePath);
+  if (statePath) {
+    return statePath;
+  }
+  if (targetDbPath) {
+    return `${targetDbPath}.state.json`;
+  }
+  return joinPath(process.cwd(), ".operon-cli-state.json");
+}
+
+function isPersistenceEnabled(): boolean {
+  const envInMemory = Effect.runSync(
+    Effect.option(Config.string("OPERON_IN_MEMORY"))
+  );
+  return Option.getOrUndefined(envInMemory) !== "true";
+}
+
+interface DbStoreResult {
+  readonly objectStore: InMemoryObjectStore | SqlBitemporalStore;
+  readonly close: () => void;
+}
+
+function createDbStore(targetDbPath?: string): DbStoreResult {
+  if (targetDbPath) {
+    const driver = new NativeSqliteDriver(targetDbPath);
+    return {
+      close: () => driver.close(),
+      objectStore: new SqlBitemporalStore(driver, "sqlite"),
+    };
+  }
+  return {
+    close: () => {
+      // In-memory runtime context requires no persistence teardown
+    },
+    objectStore: new InMemoryObjectStore(),
+  };
+}
+
+async function seedDefaultObjects(
+  objectStore: InMemoryObjectStore | SqlBitemporalStore
+): Promise<void> {
+  const patient = await Effect.runPromise(
+    objectStore.getObject(PatientType.id, "P001")
+  );
+  if (patient) {
+    return;
+  }
+  const now = Date.now();
+  await Effect.runPromise(
+    objectStore.putObject({
+      id: "P001",
+      lastModifiedAt: now,
+      properties: {
+        currentDose: 14,
+        egfr: 52,
+        name: "Zhang Minghua",
+        room: "302-A",
+      },
+      typeId: PatientType.id,
+      version: 1,
+    })
+  );
+  await Effect.runPromise(
+    objectStore.putObject({
+      id: "tank-alpha",
+      lastModifiedAt: now,
+      properties: {
+        effluentTss: 12.5,
+        sludgeDepth: 1.8,
+        status: "normal",
+      },
+      typeId: ClarifierTankType.id,
+      version: 1,
+    })
+  );
+  await Effect.runPromise(
+    objectStore.putObject({
+      id: "F-WZNW",
+      lastModifiedAt: now,
+      properties: {
+        flightHours: 3420,
+        model: "A350-900",
+        tailNumber: "F-WZNW",
+        turbineVibration: 14.2,
+      },
+      typeId: AircraftTwinType.id,
+      version: 1,
+    })
+  );
+}
+
+interface CliStatePayload {
+  readonly atomicCommit?: Parameters<AtomicCommitService["importSnapshot"]>[0];
+  readonly authority?: Parameters<AuthorityService["importSnapshot"]>[0];
+  readonly audit?: InMemoryAuditSnapshot;
+  readonly decisions?: readonly DecisionRecord[];
+  readonly governedActions?: Parameters<
+    GovernedActionService["importSnapshot"]
+  >[0];
+  readonly ingestion?: Parameters<
+    AccountableIngestionService["importSnapshot"]
+  >[0];
+  readonly objects?: InMemoryObjectSnapshot;
+  readonly oms?: Parameters<OntologyMetadataService["importSnapshot"]>[0];
+  readonly overrides?: readonly OverrideRecord[];
+  readonly proposals?: readonly SerializedProposal[];
+  readonly reconciliation?: Parameters<
+    ReconciliationService["importSnapshot"]
+  >[0];
+}
+
+interface RuntimeStores {
+  readonly actionTypes: readonly ActionType[];
+  readonly atomicCommit: AtomicCommitService;
+  readonly auditStore: InMemoryAuditStore;
+  readonly authority: AuthorityService;
+  readonly governedActions: GovernedActionService;
+  readonly inbox: ActionInbox;
+  readonly ingestion: AccountableIngestionService;
+  readonly objectStore: InMemoryObjectStore | SqlBitemporalStore;
+  readonly oms: OntologyMetadataService;
+  readonly reconciliation: ReconciliationService;
+}
+
+function restoreAuditAndInbox(
+  data: CliStatePayload,
+  auditStore: InMemoryAuditStore,
+  inbox: ActionInbox,
+  actionTypes: readonly ActionType[]
+): void {
+  if (data.audit) {
+    auditStore.importSnapshot(data.audit);
+  } else if (data.decisions && data.decisions.length > 0) {
+    auditStore.importSnapshot({
+      decisions: data.decisions,
+      overrides: data.overrides,
+    });
+  }
+  if (data.proposals) {
+    inbox.restoreProposalSnapshots(data.proposals, actionTypes);
+  }
+}
+
+function restoreOntologyServices(
+  data: CliStatePayload,
+  stores: Pick<RuntimeStores, "ingestion" | "oms" | "reconciliation">
+): void {
+  if (data.oms) {
+    stores.oms.importSnapshot(data.oms);
+  }
+  if (data.ingestion) {
+    stores.ingestion.importSnapshot(data.ingestion);
+  }
+  if (data.reconciliation) {
+    stores.reconciliation.importSnapshot(data.reconciliation);
+  }
+}
+
+function restoreDomainServices(
+  data: CliStatePayload,
+  stores: Pick<RuntimeStores, "atomicCommit" | "authority" | "governedActions">
+): void {
+  if (data.authority) {
+    stores.authority.importSnapshot(data.authority);
+  }
+  if (data.governedActions) {
+    stores.governedActions.importSnapshot(data.governedActions);
+  }
+  if (data.atomicCommit) {
+    stores.atomicCommit.importSnapshot(data.atomicCommit);
+  }
+}
+
+function restoreRuntimeState(stateFile: string, stores: RuntimeStores): void {
+  if (!fileExistsSync(stateFile)) {
+    return;
+  }
+  try {
+    // SAFETY: stateFile is parsed as structured CliStatePayload for initialization
+    const data = parseJson(readTextFileSync(stateFile)) as CliStatePayload;
+    restoreAuditAndInbox(
+      data,
+      stores.auditStore,
+      stores.inbox,
+      stores.actionTypes
+    );
+    if (data.objects && stores.objectStore instanceof InMemoryObjectStore) {
+      stores.objectStore.importSnapshot(data.objects);
+    }
+    restoreOntologyServices(data, stores);
+    restoreDomainServices(data, stores);
+  } catch (error) {
+    console.error("DEBUG RESTORE ERROR:", error);
+  }
+}
+
+function persistRuntimeState(stateFile: string, stores: RuntimeStores): void {
+  try {
+    const payload: CliStatePayload = {
+      atomicCommit: stores.atomicCommit.exportSnapshot(),
+      audit: stores.auditStore.exportSnapshot(),
+      authority: stores.authority.exportSnapshot(),
+      decisions: stores.auditStore.exportSnapshot().decisions,
+      governedActions: stores.governedActions.exportSnapshot(),
+      ingestion: stores.ingestion.exportSnapshot(),
+      objects:
+        stores.objectStore instanceof InMemoryObjectStore
+          ? stores.objectStore.exportSnapshot()
+          : undefined,
+      oms: stores.oms.exportSnapshot(),
+      overrides: stores.auditStore.exportSnapshot().overrides,
+      proposals: stores.inbox.listProposalSnapshots(),
+      reconciliation: stores.reconciliation.exportSnapshot(),
+    };
+    writeTextFileSync(stateFile, serializeJson(payload));
+  } catch (error) {
+    console.error("DEBUG PERSIST ERROR:", error);
+  }
+}
+
+function isActionTypeArray(
+  actions: readonly object[]
+): actions is readonly ActionType[] {
+  return actions.every(
+    (a) => "id" in a && "parametersSchema" in a && "name" in a
+  );
+}
 
 export async function createRuntimeContext(
   dbPath?: string
@@ -223,103 +486,29 @@ export async function createRuntimeContext(
   const oms = new OntologyMetadataService();
   const securityEngine = new DynamicSecurityEngine();
   const sandbox = new SandboxedModelRunner();
-
-  // Register deterministic demo model
-  sandbox.registerModel({
-    compute: (inputs: Record<string, unknown>) =>
-      Effect.succeed({
-        prediction: ((inputs.value as number) || 0) * 1.5,
-        status: "computed",
-      }),
-    isDeterministic: true,
-    modelId: "predictive_vibration_model",
-    requiredInputs: ["value"],
-    timeoutMs: 2000,
-    version: "1.0.0",
-  });
+  registerDefaultModels(sandbox);
 
   const objectTypes = [PatientType, ClarifierTankType, AircraftTwinType];
-  const actionTypes = [
+  const rawActions = [
     UpdateVitalsAction,
     SetValvePositionAction,
     AdjustDoseAction,
   ];
+  const actionTypes: readonly ActionType[] = isActionTypeArray(rawActions)
+    ? rawActions
+    : [];
   const linkTypes = [PatientObservationLink];
 
-  let objectStore: InMemoryObjectStore | SqlBitemporalStore;
-  let close = noopClose;
-  const envDbUrl = Effect.runSync(
-    Effect.option(Config.redacted("OPERON_DATABASE_URL"))
-  );
-  const targetDbPath =
-    dbPath ||
-    process.env.OPERON_DATABASE_URL ||
-    envDbUrl.pipe(Option.map(Redacted.value), Option.getOrUndefined);
-
-  if (targetDbPath) {
-    const driver = new NativeSqliteDriver(targetDbPath);
-    objectStore = new SqlBitemporalStore(driver, "sqlite");
-    close = () => {
-      driver.close();
-    };
-  } else {
-    objectStore = new InMemoryObjectStore();
-  }
-
-  // Seed default objects if empty
-  const patient = await Effect.runPromise(
-    objectStore.getObject(PatientType.id, "P001")
-  );
-  if (!patient) {
-    await Effect.runPromise(
-      objectStore.putObject({
-        id: "P001",
-        lastModifiedAt: Date.now(),
-        properties: {
-          currentDose: 14,
-          egfr: 52,
-          name: "Zhang Minghua",
-          room: "302-A",
-        },
-        typeId: PatientType.id,
-        version: 1,
-      })
-    );
-    await Effect.runPromise(
-      objectStore.putObject({
-        id: "tank-alpha",
-        lastModifiedAt: Date.now(),
-        properties: {
-          effluentTss: 12.5,
-          sludgeDepth: 1.8,
-          status: "normal",
-        },
-        typeId: ClarifierTankType.id,
-        version: 1,
-      })
-    );
-    await Effect.runPromise(
-      objectStore.putObject({
-        id: "F-WZNW",
-        lastModifiedAt: Date.now(),
-        properties: {
-          flightHours: 3420,
-          model: "A350-900",
-          tailNumber: "F-WZNW",
-          turbineVibration: 14.2,
-        },
-        typeId: AircraftTwinType.id,
-        version: 1,
-      })
-    );
-  }
+  const targetDbPath = resolveTargetDbPath(dbPath);
+  const dbConfig = createDbStore(targetDbPath);
+  const objectStore = dbConfig.objectStore;
 
   const inbox = new ActionInbox(auditStore, objectStore);
   const ingestion = new AccountableIngestionService(objectStore);
   const reconciliation = ReconciliationService.make();
-
   const authority = new AuthorityService();
-  const actionTypesMap = new Map<string, ActionType<any>>();
+
+  const actionTypesMap = new Map<string, ActionType>();
   for (const a of actionTypes) {
     actionTypesMap.set(a.id, a);
   }
@@ -329,157 +518,54 @@ export async function createRuntimeContext(
     objectStore,
     authority
   );
-  const atomicCommit = new AtomicCommitService(
-    actionTypesMap,
-    objectStore,
+  const atomicCommit = new AtomicCommitService({
+    actionTypes: actionTypesMap,
     auditStore,
-    authority
-  );
-  const operonService = new OperonServiceImpl(
-    governedActions,
-    atomicCommit,
-    authority,
-    reconciliation,
-    objectStore
-  );
+    authorityService: authority,
+    objectStore,
+  });
+  const operonService = new OperonServiceImpl({
+    atomicCommitService: atomicCommit,
+    authorityService: authority,
+    governedActionService: governedActions,
+    objectStore,
+    reconciliationService: reconciliation,
+  });
 
-  const envStatePath = Effect.runSync(
-    Effect.option(Config.string("OPERON_STATE_PATH"))
-  );
-  const stateFile =
-    Option.getOrUndefined(envStatePath) ||
-    (targetDbPath
-      ? `${targetDbPath}.state.json`
-      : path.join(process.cwd(), ".operon-cli-state.json"));
-
-  const envInMemory = Effect.runSync(
-    Effect.option(Config.string("OPERON_IN_MEMORY"))
-  );
-  const isPersisted = Option.getOrUndefined(envInMemory) !== "true";
-
-  if (isPersisted && fs.existsSync(stateFile)) {
-    Effect.try(() => {
-      const data = JSON.parse(fs.readFileSync(stateFile, "utf-8"));
-      if (Array.isArray(data.decisions) && data.decisions.length > 0) {
-        const auditAny = auditStore as any;
-        auditAny.decisions.push(...data.decisions);
-        auditAny.lastHash = data.decisions.at(-1)?.recordHash;
-      }
-      if (Array.isArray(data.overrides)) {
-        const auditAny = auditStore as any;
-        auditAny.overrides.push(...data.overrides);
-      }
-      if (Array.isArray(data.proposals)) {
-        const proposalMap = (inbox as any).proposals as Map<string, any>;
-        for (const p of data.proposals) {
-          const actionType =
-            actionTypes.find((a) => a.id === p.actionTypeId) ??
-            UpdateVitalsAction;
-          proposalMap.set(p.id, {
-            claimedAt: p.claimedAt,
-            claimedBy: p.claimedBy,
-            createdAt: p.createdAt,
-            decisionRecord: p.decisionRecord,
-            evidenceHash: p.evidenceHash,
-            expiresAt: p.expiresAt,
-            id: p.id,
-            proposerId: p.proposerId,
-            status: p.status,
-            submission: {
-              actionType,
-              rawParameters: p.rawParameters,
-              security: p.security,
-            },
-          });
-        }
-      }
-      if (
-        Array.isArray(data.objects) &&
-        objectStore instanceof InMemoryObjectStore
-      ) {
-        for (const obj of data.objects) {
-          (objectStore as any).objects.set(`${obj.typeId}:${obj.id}`, obj);
-        }
-      }
-      if (data.oms) {
-        oms.importSnapshot(data.oms);
-      }
-      if (data.ingestion) {
-        ingestion.importSnapshot(data.ingestion);
-      }
-      if (data.reconciliation) {
-        reconciliation.importSnapshot(data.reconciliation);
-      }
-      if (data.authority) {
-        authority.importSnapshot(data.authority);
-      }
-      if (data.governedActions) {
-        governedActions.importSnapshot(data.governedActions);
-      }
-      if (data.atomicCommit) {
-        atomicCommit.importSnapshot(data.atomicCommit);
-      }
-    }).pipe(Effect.ignore, Effect.runSync);
-  }
-
-  const enhancedClose = () => {
-    close();
-    if (isPersisted) {
-      Effect.try(() => {
-        const proposalMap = (inbox as any).proposals as Map<string, any>;
-        const proposalsToSave = proposalMap
-          ? [...proposalMap.values()].map((item) => ({
-              actionTypeId: item.submission?.actionType?.id,
-              claimedAt: item.claimedAt,
-              claimedBy: item.claimedBy,
-              createdAt: item.createdAt,
-              decisionRecord: item.decisionRecord,
-              evidenceHash: item.evidenceHash,
-              expiresAt: item.expiresAt,
-              id: item.id,
-              proposerId: item.proposerId,
-              rawParameters: item.submission?.rawParameters,
-              security: item.submission?.security,
-              status: item.status,
-            }))
-          : [];
-
-        const payload = {
-          atomicCommit: atomicCommit.exportSnapshot(),
-          authority: authority.exportSnapshot(),
-          decisions: (auditStore as any).decisions ?? [],
-          governedActions: governedActions.exportSnapshot(),
-          ingestion: ingestion.exportSnapshot(),
-          objects:
-            objectStore instanceof InMemoryObjectStore
-              ? [...(objectStore as any).objects.values()]
-              : undefined,
-          oms: oms.exportSnapshot(),
-          overrides: (auditStore as any).overrides ?? [],
-          proposals: proposalsToSave,
-          reconciliation: reconciliation.exportSnapshot(),
-        };
-
-        fs.writeFileSync(stateFile, JSON.stringify(payload, null, 2), "utf-8");
-      }).pipe(Effect.ignore, Effect.runSync);
-    }
-  };
-
-  return {
+  const stateFile = resolveStateFilePath(targetDbPath);
+  const isPersisted = isPersistenceEnabled();
+  const stores: RuntimeStores = {
     actionTypes,
     atomicCommit,
     auditStore,
     authority,
-    close: enhancedClose,
     governedActions,
     inbox,
     ingestion,
-    linkTypes,
     objectStore,
-    objectTypes,
     oms,
-    operonService,
     reconciliation,
+  };
+
+  if (isPersisted) {
+    restoreRuntimeState(stateFile, stores);
+  }
+
+  await seedDefaultObjects(objectStore);
+
+  const enhancedClose = () => {
+    if (isPersisted) {
+      persistRuntimeState(stateFile, stores);
+    }
+    dbConfig.close();
+  };
+
+  return {
+    ...stores,
+    close: enhancedClose,
+    linkTypes,
+    objectTypes,
+    operonService,
     sandbox,
     securityEngine,
   };

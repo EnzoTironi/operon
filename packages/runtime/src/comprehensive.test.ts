@@ -321,7 +321,7 @@ describe("Kernel-Level Comprehensive & Non-Tautological Coverage", () => {
       const middleware = new HttpAuthMiddleware(verifier);
 
       const missingRes = await Effect.runPromise(
-        middleware.authenticateHeader(undefined).pipe(Effect.result)
+        middleware.authenticateHeader().pipe(Effect.result)
       );
       expect(missingRes._tag).toBe("Failure");
 
@@ -1088,7 +1088,7 @@ describe("Kernel-Level Comprehensive & Non-Tautological Coverage", () => {
               version: 1,
             }),
           ],
-          { concurrency: "unbounded" }
+          { concurrency: 3 }
         )
       );
 
@@ -1205,7 +1205,9 @@ describe("Kernel-Level Comprehensive & Non-Tautological Coverage", () => {
         executeWritePipeline(submission, store, audit)
       );
       expect(pipeRes.status).toBe("proposed");
-      if (pipeRes.status !== "proposed") return;
+      if (pipeRes.status !== "proposed") {
+        return;
+      }
 
       const propItem = inbox.addProposal(submission, pipeRes.decisionRecord);
 
@@ -1651,11 +1653,13 @@ describe("Kernel-Level Comprehensive & Non-Tautological Coverage", () => {
           addedActionTypes: [],
           addedLinkTypes: [
             defineLinkType({
+              cardinality: "one-to-many",
               description: "Link pointing to missing type",
               id: "BadLink",
-              name: "Bad Link",
-              sourceObjectTypeId: "Document",
-              targetObjectTypeId: "NonExistentType",
+              sourceToTargetName: "target",
+              sourceTypeId: "Document",
+              targetToSourceName: "source",
+              targetTypeId: "NonExistentType",
             }),
           ],
           addedObjectTypes: [],
@@ -1727,7 +1731,7 @@ describe("Kernel-Level Comprehensive & Non-Tautological Coverage", () => {
               version: 1,
             }),
           ],
-          { concurrency: "unbounded" }
+          { concurrency: 2 }
         )
       );
 
@@ -2041,7 +2045,7 @@ describe("Kernel-Level Comprehensive & Non-Tautological Coverage", () => {
               version: 1,
             })
           ),
-          { concurrency: "unbounded" }
+          { concurrency: 5 }
         )
       );
 
@@ -2052,7 +2056,7 @@ describe("Kernel-Level Comprehensive & Non-Tautological Coverage", () => {
               balance: 100 * i,
             })
           ),
-          { concurrency: "unbounded" }
+          { concurrency: 5 }
         )
       );
 

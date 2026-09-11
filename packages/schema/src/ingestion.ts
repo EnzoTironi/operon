@@ -22,7 +22,7 @@ export const SourceArtifact = Schema.Struct({
   batchId: Schema.String,
   tenantId: Schema.optionalKey(Schema.String),
   environmentId: Schema.optionalKey(Schema.String),
-  rawPayload: Schema.Unknown,
+  rawPayload: Schema.Json,
 });
 export type SourceArtifact = typeof SourceArtifact.Type;
 export const SourceArtifactSchema = SourceArtifact;
@@ -53,7 +53,7 @@ export const CandidateRecordProvenance = Schema.Struct({
 export const CandidateRecord = Schema.Struct({
   rawRecordId: Schema.String,
   targetObjectTypeId: ObjectTypeId,
-  properties: Schema.Record(Schema.String, Schema.Unknown),
+  properties: Schema.Record(Schema.String, Schema.Json),
   confidence: Schema.Number,
   provenance: CandidateRecordProvenance,
 });
@@ -91,6 +91,8 @@ export const IngestionReceipt = Schema.Struct({
 export type IngestionReceipt = typeof IngestionReceipt.Type;
 export const IngestionReceiptSchema = IngestionReceipt;
 
-export function computeSourceDigest(payload: unknown): string {
+export type SourcePayload = Schema.Json;
+
+export function computeSourceDigest(payload: SourcePayload): string {
   return computeCanonicalDigest(payload);
 }

@@ -7,7 +7,7 @@ import type {
   MustAnswerTemplate,
   ObjectInstance,
 } from "@operon/schema";
-import { Context, Effect, Layer } from "effect";
+import { Context, Effect, Layer, Match } from "effect";
 
 import {
   CitationResolutionError,
@@ -67,7 +67,9 @@ export class L2ContextVerifierService extends Context.Service<
 >()("operon/runtime/L2ContextVerifierService") {}
 
 function valuesEqual(a: unknown, b: unknown): boolean {
-  if (a === b) return true;
+  if (a === b) {
+    return true;
+  }
   if (
     typeof a === "object" &&
     typeof b === "object" &&
@@ -275,28 +277,35 @@ export const L2ContextVerifierServiceLive = Layer.sync(
       )(function* (citations, registeredEvidence) {
         const results = resolveCitationsInternal(citations, registeredEvidence);
 
-        for (const res of results) {
-          if (res.status !== "RESOLVED_SUPPORTED") {
-            const cit = citations.find((c) => c.citationId === res.citationId);
-            const claimId = cit?.claimId ?? "unknown";
-            return yield* Effect.fail(
-              new CitationResolutionError({
-                citationId: res.citationId,
-                claimId,
-                message: `Citation resolution failed: ${res.details}`,
-                reason:
-                  res.status === "NOT_FOUND"
-                    ? "EVIDENCE_NOT_FOUND"
-                    : res.status === "INACCESSIBLE"
-                      ? "EVIDENCE_INACCESSIBLE"
-                      : res.status === "VERSION_MISMATCH"
-                        ? "VERSION_MISMATCH"
-                        : res.status === "SPAN_OUT_OF_BOUNDS"
-                          ? "SPAN_OUT_OF_BOUNDS"
-                          : "SEMANTIC_MISMATCH",
-              })
-            );
-          }
+        const failedResult = results.find(
+          (res) => res.status !== "RESOLVED_SUPPORTED"
+        );
+        if (failedResult) {
+          const cit = citations.find(
+            (c) => c.citationId === failedResult.citationId
+          );
+          const claimId = cit?.claimId ?? "unknown";
+          return yield* new CitationResolutionError({
+            citationId: failedResult.citationId,
+            claimId,
+            message: `Citation resolution failed: ${failedResult.details}`,
+            reason: Match.value(failedResult.status).pipe(
+              Match.when("NOT_FOUND", () => "EVIDENCE_NOT_FOUND" as const),
+              Match.when(
+                "INACCESSIBLE",
+                () => "EVIDENCE_INACCESSIBLE" as const
+              ),
+              Match.when(
+                "VERSION_MISMATCH",
+                () => "VERSION_MISMATCH" as const
+              ),
+              Match.when(
+                "SPAN_OUT_OF_BOUNDS",
+                () => "SPAN_OUT_OF_BOUNDS" as const
+              ),
+              Match.orElse(() => "SEMANTIC_MISMATCH" as const)
+            ),
+          });
         }
 
         return results;
@@ -319,13 +328,13 @@ export const L2ContextVerifierServiceLive = Layer.sync(
             omitted.push("missing_evidence_warnings");
           }
 
-          return yield* Effect.fail(
+          return yield* 
             new CompletenessCheckFailedError({
               message: `Output failed completeness check for template '${template.templateId}': omitted [${omitted.join(", ")}]`,
               omittedRequirements: omitted,
               templateId: template.templateId,
             })
-          );
+          ;
         }
 
         return result;
@@ -339,32 +348,36 @@ export const L2ContextVerifierServiceLive = Layer.sync(
           registeredContext
         );
 
-        for (const v of verdicts) {
-          if (v.status !== "VERIFIED") {
-            const assertion = assertions.find(
-              (a) => a.assertionId === v.assertionId
-            );
-            const entityId = assertion?.entityId ?? "unknown";
-            const property = assertion?.property ?? "unknown";
+        const failedVerdict = verdicts.find((v) => v.status !== "VERIFIED");
+        if (failedVerdict) {
+          const assertion = assertions.find(
+            (a) => a.assertionId === failedVerdict.assertionId
+          );
+          const entityId = assertion?.entityId ?? "unknown";
+          const property = assertion?.property ?? "unknown";
 
-            return yield* Effect.fail(
-              new L2ContextMismatchError({
-                assertionId: v.assertionId,
-                details: v.details,
-                entityId,
-                message: `L2 Context verification failed for entity '${entityId}', property '${property}': ${v.details}`,
-                property,
-                reason:
-                  v.status === "OBJECT_NOT_FOUND"
-                    ? "OBJECT_NOT_FOUND"
-                    : v.status === "PROPERTY_ABSENT"
-                      ? "PROPERTY_ABSENT"
-                      : v.status === "VERSION_MISMATCH"
-                        ? "VERSION_MISMATCH"
-                        : "VALUE_MISMATCH",
-              })
-            );
-          }
+          return yield* new L2ContextMismatchError({
+            assertionId: failedVerdict.assertionId,
+            details: failedVerdict.details,
+            entityId,
+            message: `L2 Context verification failed for entity '${entityId}', property '${property}': ${failedVerdict.details}`,
+            property,
+            reason: Match.value(failedVerdict.status).pipe(
+              Match.when(
+                "OBJECT_NOT_FOUND",
+                () => "OBJECT_NOT_FOUND" as const
+              ),
+              Match.when(
+                "PROPERTY_ABSENT",
+                () => "PROPERTY_ABSENT" as const
+              ),
+              Match.when(
+                "VERSION_MISMATCH",
+                () => "VERSION_MISMATCH" as const
+              ),
+              Match.orElse(() => "VALUE_MISMATCH" as const)
+            ),
+          });
         }
 
         return verdicts;

@@ -75,7 +75,9 @@ describe("Kernel-Level Chaos Engineering: Linearizability & Concurrency", () => 
           stagedLogic: (params, ctx) =>
             Effect.gen(function* () {
               const obj = yield* ctx.getObject(targetType, accountId);
-              if (!obj) return [];
+              if (!obj) {
+                return [];
+              }
               const currentProps = obj.properties as {
                 balance: number;
                 updateCount: number;
@@ -104,7 +106,7 @@ describe("Kernel-Level Chaos Engineering: Linearizability & Concurrency", () => 
     );
 
     const results = await Effect.runPromise(
-      Effect.all(fiberEffects, { concurrency: "unbounded" })
+      Effect.all(fiberEffects, { concurrency })
     );
 
     const successes = results.filter((r) => r === "SUCCESS").length;
@@ -229,7 +231,7 @@ describe("Kernel-Level Chaos Engineering: Funnel Streaming Under Out-of-Order Ch
         events.map((ev) =>
           funnel.ingestStreamRecord("pipe-chaos-telemetry", ev)
         ),
-        { concurrency: "unbounded" }
+        { concurrency: 50 }
       )
     );
 
@@ -237,7 +239,7 @@ describe("Kernel-Level Chaos Engineering: Funnel Streaming Under Out-of-Order Ch
     const storedSensors = await Effect.runPromise(
       Effect.all(
         sensors.map((sid) => store.getObject(targetType, sid)),
-        { concurrency: "unbounded" }
+        { concurrency: 50 }
       )
     );
 

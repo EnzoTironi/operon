@@ -18,13 +18,15 @@ export const ConflictResolutionPolicy = Schema.Literals([
 export type ConflictResolutionPolicy = typeof ConflictResolutionPolicy.Type;
 export const ConflictResolutionPolicySchema = ConflictResolutionPolicy;
 
+export type TransformedPropertyValue = Schema.Json | undefined;
+
 /**
  * Transform expression or function from source field to target property
  */
 export interface PropertyMapping {
   readonly sourceField: string;
   readonly targetPropertyName: string;
-  readonly transform?: (value: unknown) => unknown;
+  readonly transform?: (value: Schema.Json) => TransformedPropertyValue;
 }
 
 /**

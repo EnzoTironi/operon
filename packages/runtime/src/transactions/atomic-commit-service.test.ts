@@ -50,7 +50,9 @@ describe("AtomicCommitService S08 / V1-05 Normative Binary Acceptance Suite", ()
       mutation: (params, ctx) =>
         Effect.gen(function* () {
           const obj = yield* ctx.getObject(AccountType.id, params.targetId);
-          if (!obj) return [];
+          if (!obj) {
+            return [];
+          }
           const currentBalance = Number((obj.properties as any).balance ?? 0);
           return [
             {
@@ -88,7 +90,9 @@ describe("AtomicCommitService S08 / V1-05 Normative Binary Acceptance Suite", ()
       mutation: (params, ctx) =>
         Effect.gen(function* () {
           const obj = yield* ctx.getObject(AccountType.id, params.targetId);
-          if (!obj) return [];
+          if (!obj) {
+            return [];
+          }
           const currentBalance = Number((obj.properties as any).balance ?? 0);
           return [
             {
@@ -142,12 +146,12 @@ describe("AtomicCommitService S08 / V1-05 Normative Binary Acceptance Suite", ()
       [FlakyAction.id, FlakyAction],
     ]);
 
-    commitService = new AtomicCommitService(
-      actionTypesMap,
-      objectStore,
+    commitService = new AtomicCommitService({
+      actionTypes: actionTypesMap,
       auditStore,
-      authorityService
-    );
+      authorityService,
+      objectStore,
+    });
 
     await Effect.runPromise(
       objectStore.putObject({
@@ -302,12 +306,12 @@ describe("AtomicCommitService S08 / V1-05 Normative Binary Acceptance Suite", ()
         })
       );
 
-    const faultCommitService = new AtomicCommitService(
-      new Map([[TransferAction.id, TransferAction]]),
+    const faultCommitService = new AtomicCommitService({
+      actionTypes: new Map([[TransferAction.id, TransferAction]]),
+      auditStore: crashingAuditStore,
+      authorityService,
       objectStore,
-      crashingAuditStore,
-      authorityService
-    );
+    });
 
     const { prepared, approval } = await prepareAndApprove(
       "transfer_balance",
@@ -390,13 +394,13 @@ describe("AtomicCommitService S08 / V1-05 Normative Binary Acceptance Suite", ()
     expect(snapshot.consumedApprovalIds).toContain(approval.id);
 
     // Recreate fresh service and restore snapshot
-    const restoredCommitService = new AtomicCommitService(
-      new Map([[TransferAction.id, TransferAction]]),
-      objectStore,
+    const restoredCommitService = new AtomicCommitService({
+      actionTypes: new Map([[TransferAction.id, TransferAction]]),
       auditStore,
       authorityService,
-      snapshot
-    );
+      initialSnapshot: snapshot,
+      objectStore,
+    });
 
     // Query receipt
     const restoredReceipt = await Effect.runPromise(

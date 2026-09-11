@@ -1,4 +1,4 @@
-import { Effect } from "effect";
+import { Clock, Effect } from "effect";
 
 import {
   InsufficientInventoryError,
@@ -31,6 +31,22 @@ export interface PackageQualificationVerdict {
   readonly verdict: "DEFICIENT" | "QUALIFIED";
 }
 
+function collectPackageDeficiencies(
+  candidate: PackageCandidate
+): readonly string[] {
+  const checks: readonly [boolean, string][] = [
+    [
+      candidate.isOnlySchemasAndScreens,
+      "PACKAGE_CONTAINS_ONLY_SCHEMAS_AND_SCREENS",
+    ],
+    [!candidate.hasExecutableTests, "MISSING_EXECUTABLE_TESTS"],
+    [!candidate.hasOperationalIndicators, "MISSING_OPERATIONAL_INDICATORS"],
+    [!candidate.hasMigrationPlan, "MISSING_MIGRATION_PLAN"],
+    [!candidate.hasDomainDefinitions, "MISSING_DOMAIN_DEFINITIONS"],
+  ];
+  return checks.flatMap(([failed, message]) => (failed ? [message] : []));
+}
+
 /**
  * Evaluates whether a domain package satisfies production readiness and ERP/QMS equivalence (OPR-FULL-041)
  */
@@ -38,26 +54,8 @@ export function evaluatePackageQualification(
   candidate: PackageCandidate
 ): Effect.Effect<PackageQualificationVerdict, never> {
   return Effect.sync(() => {
-    const missing: string[] = [];
-
-    if (candidate.isOnlySchemasAndScreens) {
-      missing.push("PACKAGE_CONTAINS_ONLY_SCHEMAS_AND_SCREENS");
-    }
-    if (!candidate.hasExecutableTests) {
-      missing.push("MISSING_EXECUTABLE_TESTS");
-    }
-    if (!candidate.hasOperationalIndicators) {
-      missing.push("MISSING_OPERATIONAL_INDICATORS");
-    }
-    if (!candidate.hasMigrationPlan) {
-      missing.push("MISSING_MIGRATION_PLAN");
-    }
-    if (!candidate.hasDomainDefinitions) {
-      missing.push("MISSING_DOMAIN_DEFINITIONS");
-    }
-
-    const isQualified =
-      missing.length === 0 && !candidate.isOnlySchemasAndScreens;
+    const missing = collectPackageDeficiencies(candidate);
+    const isQualified = missing.length === 0;
 
     return {
       erpQmsEquivalenceClaimAllowed: isQualified,
@@ -72,25 +70,26 @@ export function evaluatePackageQualification(
 /**
  * Asserts production readiness, failing with PackageNotProductionReadyError if deficient (OPR-FULL-041)
  */
-export function assertPackageProductionReady(
+export const assertPackageProductionReady = Effect.fn(
+  "assertPackageProductionReady"
+)(function* (
   candidate: PackageCandidate
-): Effect.Effect<PackageQualificationVerdict, PackageNotProductionReadyError> {
-  return Effect.gen(function* () {
-    const verdict = yield* evaluatePackageQualification(candidate);
+): Effect.fn.Return<
+  PackageQualificationVerdict,
+  PackageNotProductionReadyError
+> {
+  const verdict = yield* evaluatePackageQualification(candidate);
 
-    if (verdict.verdict === "DEFICIENT") {
-      return yield* Effect.fail(
-        new PackageNotProductionReadyError({
-          missingInvariants: verdict.missingInvariants,
-          packageId: candidate.packageId,
-          reason: `Package '${candidate.packageId}' is not ready for production: ${verdict.missingInvariants.join(", ")}. ERP/QMS equivalence denied.`,
-        })
-      );
-    }
+  if (verdict.verdict === "DEFICIENT") {
+    return yield* new PackageNotProductionReadyError({
+      missingInvariants: verdict.missingInvariants,
+      packageId: candidate.packageId,
+      reason: `Package '${candidate.packageId}' is not ready for production: ${verdict.missingInvariants.join(", ")}. ERP/QMS equivalence denied.`,
+    });
+  }
 
-    return verdict;
-  });
-}
+  return verdict;
+});
 
 /**
  * Parameters for Order to Cash composition journey J1 (OPR-FULL-039)
@@ -120,6 +119,7 @@ export interface OrderToCashResult {
   readonly operationId: string;
   readonly reservationId: string;
   readonly settlementId: string;
+  readonly shipmentId: string;
   readonly status: "SETTLED";
   readonly totalAmount: number;
 }
@@ -127,11 +127,11 @@ export interface OrderToCashResult {
 /**
  * Executes Order to Cash journey J1 over shared kernel contracts and identity (OPR-FULL-039)
  */
-export function executeOrderToCashJourney(
-  params: OrderToCashParams
-): Effect.Effect<OrderToCashResult, never> {
-  return Effect.sync(() => {
-    const timestamp = Date.now();
+export const executeOrderToCashJourney = Effect.fn("executeOrderToCashJourney")(
+  function* (
+    params: OrderToCashParams
+  ): Effect.fn.Return<OrderToCashResult, never> {
+    const timestamp = yield* Clock.currentTimeMillis;
     const operationId = `op-otc-${timestamp}`;
 
     let total = 0;
@@ -157,8 +157,8 @@ export function executeOrderToCashJourney(
       status: "SETTLED",
       totalAmount: total,
     };
-  });
-}
+  }
+);
 
 /**
  * Inventory stock state for atomic reservation invariant (OPR-FULL-040)
@@ -171,33 +171,31 @@ export interface InventoryStockState {
 /**
  * Atomically reserves inventory and enforces stock non-negativity invariant (OPR-FULL-040)
  */
-export function reserveInventoryWithAtomicInvariant(
+export const reserveInventoryWithAtomicInvariant = Effect.fn(
+  "reserveInventoryWithAtomicInvariant"
+)(function* (
   stockState: InventoryStockState,
   request: { readonly quantity: number; readonly reservationId: string }
-): Effect.Effect<
+): Effect.fn.Return<
   { readonly remainingStock: number; readonly reservedQuantity: number },
   InsufficientInventoryError
 > {
-  return Effect.gen(function* () {
-    if (request.quantity > stockState.availableQuantity) {
-      return yield* Effect.fail(
-        new InsufficientInventoryError({
-          availableQuantity: stockState.availableQuantity,
-          itemId: stockState.itemId,
-          message: `Cannot reserve ${request.quantity} units of item '${stockState.itemId}': only ${stockState.availableQuantity} available. Impossible negative inventory prevented.`,
-          requestedQuantity: request.quantity,
-        })
-      );
-    }
+  if (request.quantity > stockState.availableQuantity) {
+    return yield* new InsufficientInventoryError({
+      availableQuantity: stockState.availableQuantity,
+      itemId: stockState.itemId,
+      message: `Cannot reserve ${request.quantity} units of item '${stockState.itemId}': only ${stockState.availableQuantity} available. Impossible negative inventory prevented.`,
+      requestedQuantity: request.quantity,
+    });
+  }
 
-    stockState.availableQuantity -= request.quantity;
+  stockState.availableQuantity -= request.quantity;
 
-    return {
-      remainingStock: stockState.availableQuantity,
-      reservedQuantity: request.quantity,
-    };
-  });
-}
+  return {
+    remainingStock: stockState.availableQuantity,
+    reservedQuantity: request.quantity,
+  };
+});
 
 /**
  * Cutover fence state for legacy system migration (OPR-FULL-042)
@@ -227,28 +225,26 @@ export function initializeCutoverFence(params: {
 /**
  * Validates writer authority against cutover fence, rejecting fenced writers (OPR-FULL-042)
  */
-export function verifyWriterPermitted(
-  fence: CutoverFenceState,
-  writerId: string
-): Effect.Effect<
-  { readonly permitted: true; readonly writerId: string },
-  WriterFencedError
-> {
-  return Effect.gen(function* () {
+export const verifyWriterPermitted = Effect.fn("verifyWriterPermitted")(
+  function* (
+    fence: CutoverFenceState,
+    writerId: string
+  ): Effect.fn.Return<
+    { readonly permitted: true; readonly writerId: string },
+    WriterFencedError
+  > {
     if (fence.fenceActive && writerId !== fence.authorizedWriterId) {
-      return yield* Effect.fail(
-        new WriterFencedError({
-          cutoverTimestamp: fence.cutoverTimestamp,
-          entityId: fence.entityId,
-          message: `Writer '${writerId}' is fenced: authority for entity '${fence.entityId}' cut over to '${fence.authorizedWriterId}' at ${fence.cutoverTimestamp}. Updates rejected.`,
-          writerId,
-        })
-      );
+      return yield* new WriterFencedError({
+        cutoverTimestamp: fence.cutoverTimestamp,
+        entityId: fence.entityId,
+        message: `Writer '${writerId}' is fenced: authority for entity '${fence.entityId}' cut over to '${fence.authorizedWriterId}' at ${fence.cutoverTimestamp}. Updates rejected.`,
+        writerId,
+      });
     }
 
     return { permitted: true, writerId };
-  });
-}
+  }
+);
 
 /**
  * Plant topology node for industrial water / wastewater plants (OPR-WW-001)
@@ -257,6 +253,18 @@ export interface TopologyNode {
   readonly id: string;
   readonly name: string;
   readonly downstreamNodeIds: readonly string[];
+}
+
+function getDownstreamQueueItems(
+  nodeId: string,
+  depth: number,
+  nodes: ReadonlyMap<string, TopologyNode>
+): readonly { readonly depth: number; readonly id: string }[] {
+  const node = nodes.get(nodeId);
+  if (!node) {
+    return [];
+  }
+  return node.downstreamNodeIds.map((id) => ({ depth: depth + 1, id }));
 }
 
 /**
@@ -286,7 +294,9 @@ export function traversePlantTopologyBounded(params: {
 
     while (queue.length > 0) {
       const current = queue.shift();
-      if (!current) break;
+      if (!current) {
+        break;
+      }
 
       depth = Math.max(depth, current.depth);
 
@@ -298,12 +308,9 @@ export function traversePlantTopologyBounded(params: {
       visited.add(current.id);
 
       if (current.depth < maxDepth) {
-        const node = params.nodes.get(current.id);
-        if (node) {
-          for (const downstreamId of node.downstreamNodeIds) {
-            queue.push({ depth: current.depth + 1, id: downstreamId });
-          }
-        }
+        queue.push(
+          ...getDownstreamQueueItems(current.id, current.depth, params.nodes)
+        );
       }
     }
 
@@ -325,6 +332,25 @@ export interface CandidateClinicalFact {
   readonly sourceSpan: string;
 }
 
+function extractMatchedClinicalFact(
+  text: string,
+  regex: RegExp,
+  factKey: string,
+  group: string
+): CandidateClinicalFact | undefined {
+  const match = regex.exec(text);
+  const val = match?.groups?.[group];
+  if (!match || !val) {
+    return undefined;
+  }
+  return {
+    factKey,
+    factValue: val,
+    requiresHumanConfirmation: true,
+    sourceSpan: match[0],
+  };
+}
+
 /**
  * Extracts clinical facts from handoff note with span linking and human confirmation (OPR-HC-001)
  */
@@ -344,25 +370,23 @@ export function extractClinicalHandoffCandidates(
     const promptInjectionDetected = hostilePattern.test(noteText);
 
     const candidates: CandidateClinicalFact[] = [];
-
-    const hrMatch = /hr[:\s]+(?<hr>\d+)/iu.exec(noteText);
-    if (hrMatch?.groups?.hr) {
-      candidates.push({
-        factKey: "heartRate",
-        factValue: hrMatch.groups.hr,
-        requiresHumanConfirmation: true,
-        sourceSpan: hrMatch[0],
-      });
+    const hr = extractMatchedClinicalFact(
+      noteText,
+      /hr[:\s]+(?<hr>\d+)/iu,
+      "heartRate",
+      "hr"
+    );
+    if (hr) {
+      candidates.push(hr);
     }
-
-    const bpMatch = /bp[:\s]+(?<bp>\d+\/\d+)/iu.exec(noteText);
-    if (bpMatch?.groups?.bp) {
-      candidates.push({
-        factKey: "bloodPressure",
-        factValue: bpMatch.groups.bp,
-        requiresHumanConfirmation: true,
-        sourceSpan: bpMatch[0],
-      });
+    const bp = extractMatchedClinicalFact(
+      noteText,
+      /bp[:\s]+(?<bp>\d+\/\d+)/iu,
+      "bloodPressure",
+      "bp"
+    );
+    if (bp) {
+      candidates.push(bp);
     }
 
     return {

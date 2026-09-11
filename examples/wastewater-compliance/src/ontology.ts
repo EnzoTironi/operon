@@ -199,8 +199,8 @@ export const ProposeSetpointChangeAction = defineActionType({
     {
       id: "sensor-calibration-guard",
       description: "DO sensor must be calibrated within 30 days",
-      evaluate: (params, context) =>
-        Effect.gen(function* () {
+      evaluate: Effect.fn("evaluateSensorCalibrationGuard")(
+        function* (params, context) {
           const sensor = yield* context.getObject(
             "DOSensor" as ObjectTypeId,
             `sensor-${params.tankId}`
@@ -216,14 +216,15 @@ export const ProposeSetpointChangeAction = defineActionType({
             };
           }
           return { passed: true, verdict: "allow" };
-        }),
+        }
+      ),
     },
     {
       id: "epa-compliance-margin-guard",
       description:
         "Predicted effluent COD must not exceed 90% of PermitVersion limit (10% safety margin)",
-      evaluate: (params, context) =>
-        Effect.gen(function* () {
+      evaluate: Effect.fn("evaluateEpaComplianceMarginGuard")(
+        function* (params, context) {
           const permit = yield* context.getObject(
             "PermitVersion" as ObjectTypeId,
             "EPA-NPDES-2026"
@@ -241,7 +242,8 @@ export const ProposeSetpointChangeAction = defineActionType({
             };
           }
           return { passed: true, verdict: "allow" };
-        }),
+        }
+      ),
     },
   ],
 });
@@ -271,7 +273,7 @@ export const ApproveSetpointChangeAction = defineActionType({
       description:
         "Approved DO must be within physiological biological envelope",
       evaluate: (params) => {
-        const approvedDO = Number((params as any).approvedDO);
+        const approvedDO = params.approvedDO;
         return Effect.succeed(
           approvedDO >= 0.5 && approvedDO <= 6
             ? { passed: true, verdict: "allow" }
@@ -306,21 +308,20 @@ export const ApplySetpointChangeAction = defineActionType({
     {
       id: "tank-operating",
       description: "Tank must be in operating status",
-      evaluate: (params, context) =>
-        Effect.gen(function* () {
-          const tank = yield* context.getObject(
-            "AerationTank" as ObjectTypeId,
-            params.tankId
-          );
-          if (tank?.properties.operatingStatus !== "operating") {
-            return {
-              passed: false,
-              verdict: "deny",
-              failureReason: `Tank ${params.tankId} is not in operating state.`,
-            };
-          }
-          return { passed: true, verdict: "allow" };
-        }),
+      evaluate: Effect.fn("evaluateTankOperating")(function* (params, context) {
+        const tank = yield* context.getObject(
+          "AerationTank" as ObjectTypeId,
+          params.tankId
+        );
+        if (tank?.properties.operatingStatus !== "operating") {
+          return {
+            passed: false,
+            verdict: "deny",
+            failureReason: `Tank ${params.tankId} is not in operating state.`,
+          };
+        }
+        return { passed: true, verdict: "allow" };
+      }),
     },
   ],
   sideEffects: [

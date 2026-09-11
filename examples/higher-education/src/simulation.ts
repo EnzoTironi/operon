@@ -189,7 +189,9 @@ export async function runHigherEducationSimulation() {
       },
       timestamp: Date.now(),
     },
-    stagedLogic: (params: any) =>
+    stagedLogic: (
+      params: typeof SubmitWaiverRequestAction.parametersSchema.Type
+    ) =>
       Effect.succeed([
         {
           id: params.requestId,
@@ -236,7 +238,9 @@ export async function runHigherEducationSimulation() {
       },
       timestamp: Date.now(),
     },
-    stagedLogic: (params: any) =>
+    stagedLogic: (
+      params: typeof SubmitWaiverRequestAction.parametersSchema.Type
+    ) =>
       Effect.succeed([
         {
           id: params.requestId,

@@ -1,4 +1,4 @@
-import { computeCanonicalDigest } from "@operon/schema";
+import { computeCanonicalDigest, generatePrefixedId } from "@operon/schema";
 import type {
   ExactQueryRequest,
   IdentityResolutionAction,
@@ -7,18 +7,17 @@ import type {
   ObjectTypeId,
   QueryCoverage,
   ResolutionReceipt,
-  WorldView,
 } from "@operon/schema";
-import { Context, Effect } from "effect";
+import { Clock, Context, Effect } from "effect";
 
 import type { BitemporalObjectStore } from "./bitemporal-store.js";
 import { IdempotencyConflictError } from "./errors.js";
 import type { ObjectStore } from "./object-store.js";
-import type { AmbiguousIdentityError } from "./reconciliation-errors.js";
 import {
   IdentityResolutionNotFoundError,
   StaleDependencyError,
 } from "./reconciliation-errors.js";
+import type { BitemporalQueryOptions } from "./sql-store.js";
 import { SqlSchemaGenerator } from "./sql-store.js";
 
 export interface CanonicalIdentityRecord {
@@ -66,6 +65,204 @@ export interface ReconciliationSnapshot {
   }[];
 }
 
+interface ResolutionState {
+  readonly canonicalRegistry: Map<string, CanonicalIdentityRecord>;
+  readonly idempotency: Map<
+    string,
+    { readonly payloadDigest: string; readonly receipt: ResolutionReceipt }
+  >;
+  readonly proposals: Map<string, IdentityResolutionProposal>;
+  readonly receipts: Map<string, ResolutionReceipt>;
+  readonly sourceKeyToCanonical: Map<string, string>;
+}
+
+function checkIdempotencyResolution(
+  idempotency: Map<
+    string,
+    { readonly payloadDigest: string; readonly receipt: ResolutionReceipt }
+  >,
+  proposalId: string,
+  decisionRef: string,
+  options?: ResolveIdentityOptions
+): Effect.Effect<ResolutionReceipt | null, IdempotencyConflictError> {
+  if (!options?.idempotencyKey) {
+    return Effect.succeed(null);
+  }
+  const payloadDigest = computeCanonicalDigest({
+    decisionRef,
+    forceOverride: options.forceOverride ?? false,
+    proposalId,
+  });
+  const existing = idempotency.get(options.idempotencyKey);
+  if (!existing) {
+    return Effect.succeed(null);
+  }
+  if (existing.payloadDigest === payloadDigest) {
+    return Effect.succeed(existing.receipt);
+  }
+  return new IdempotencyConflictError({
+    idempotencyKey: options.idempotencyKey,
+    message: `Identity resolution conflict for proposal '${proposalId}' on idempotency key '${options.idempotencyKey}'`,
+  });
+}
+
+interface RecordAmbiguousOptions {
+  readonly proposal: IdentityResolutionProposal;
+  readonly proposalId: string;
+  readonly decisionRef: string;
+  readonly now: number;
+  readonly resolutionId: string;
+  readonly options?: ResolveIdentityOptions;
+}
+
+function recordAmbiguousResolution(
+  params: RecordAmbiguousOptions,
+  state: ResolutionState
+): ResolutionReceipt {
+  const { proposal, proposalId, decisionRef, now, resolutionId, options } =
+    params;
+  const ambiguousReceipt: ResolutionReceipt = {
+    action: proposal.action,
+    appliedAt: now,
+    canonicalId: proposal.targetCanonicalId,
+    decisionRef,
+    historicalReferences: [],
+    idempotencyKey: options?.idempotencyKey ?? null,
+    invalidatedProjections: [],
+    previousCanonicalId: null,
+    proposalId,
+    resolutionId,
+    status: "unresolved_ambiguous",
+  };
+
+  state.proposals.set(proposalId, {
+    ...proposal,
+    status: "unresolved_ambiguous",
+  });
+  state.receipts.set(resolutionId, ambiguousReceipt);
+
+  if (options?.idempotencyKey) {
+    const payloadDigest = computeCanonicalDigest({
+      decisionRef,
+      forceOverride: options.forceOverride ?? false,
+      proposalId,
+    });
+    state.idempotency.set(options.idempotencyKey, {
+      payloadDigest,
+      receipt: ambiguousReceipt,
+    });
+  }
+
+  return ambiguousReceipt;
+}
+
+interface ApplyResolutionHistoryParams {
+  readonly proposal: IdentityResolutionProposal;
+  readonly proposalId: string;
+  readonly decisionRef: string;
+  readonly now: number;
+}
+
+function applyMergeHistory(
+  params: ApplyResolutionHistoryParams,
+  state: ResolutionState
+): { historicalReferences: string[]; invalidatedProjections: string[] } {
+  const { canonicalRegistry, sourceKeyToCanonical } = state;
+  const { proposal, decisionRef, now } = params;
+  const canonicalId = proposal.targetCanonicalId;
+  const previousCanonicalId =
+    sourceKeyToCanonical.get(proposal.sourceKey) ?? null;
+  const record = canonicalRegistry.get(canonicalId) ?? {
+    canonicalId,
+    history: [],
+    sourceKeys: new Set<string>(),
+  };
+
+  const updatedHistory = [
+    ...record.history,
+    {
+      action: proposal.action,
+      decisionRef,
+      sourceKey: proposal.sourceKey,
+      timestamp: now,
+    },
+  ];
+
+  record.sourceKeys.add(proposal.sourceKey);
+  canonicalRegistry.set(canonicalId, {
+    canonicalId,
+    history: updatedHistory,
+    sourceKeys: record.sourceKeys,
+  });
+  sourceKeyToCanonical.set(proposal.sourceKey, canonicalId);
+
+  const historicalReferences = [
+    proposal.sourceKey,
+    ...(previousCanonicalId ? [previousCanonicalId] : []),
+    ...record.history.map(
+      (h: {
+        readonly action: IdentityResolutionAction;
+        readonly decisionRef: string;
+        readonly sourceKey: string;
+        readonly timestamp: number;
+      }) => `${h.action}:${h.sourceKey}@${h.timestamp}`
+    ),
+  ];
+
+  const invalidatedProjections = [
+    `projection:${proposal.sourceSystem}:${proposal.sourceKey}`,
+    `projection:canonical:${canonicalId}`,
+  ];
+
+  return { historicalReferences, invalidatedProjections };
+}
+
+function applySplitHistory(
+  params: ApplyResolutionHistoryParams,
+  state: ResolutionState
+): { historicalReferences: string[]; invalidatedProjections: string[] } {
+  const { canonicalRegistry, sourceKeyToCanonical } = state;
+  const { proposal, proposalId, decisionRef, now } = params;
+  const canonicalId = proposal.targetCanonicalId;
+  const previousCanonicalId =
+    sourceKeyToCanonical.get(proposal.sourceKey) ?? null;
+  const record = canonicalRegistry.get(canonicalId);
+  if (record) {
+    record.sourceKeys.delete(proposal.sourceKey);
+    const updatedHistory = [
+      ...record.history,
+      {
+        action: "split" as const,
+        decisionRef,
+        sourceKey: proposal.sourceKey,
+        timestamp: now,
+      },
+    ];
+    canonicalRegistry.set(canonicalId, {
+      ...record,
+      history: updatedHistory,
+    });
+  }
+  sourceKeyToCanonical.delete(proposal.sourceKey);
+
+  const originalIds = proposal.splitDetails?.originalIds ?? [
+    proposal.sourceKey,
+  ];
+  const historicalReferences = [
+    ...originalIds,
+    ...(previousCanonicalId ? [previousCanonicalId] : []),
+    `split_event:${proposalId}@${now}`,
+  ];
+
+  const invalidatedProjections = [
+    `projection:${proposal.sourceSystem}:${proposal.sourceKey}`,
+    `projection:canonical:${canonicalId}`,
+    `projection:split:${proposalId}`,
+  ];
+
+  return { historicalReferences, invalidatedProjections };
+}
+
 /**
  * ReconciliationService
  * Implements S03 (distinct evidence, claims, admitted state) and
@@ -102,7 +299,10 @@ export class ReconciliationService {
   /**
    * Propose an identity resolution (deterministic or language-model matching)
    */
-  proposeIdentityResolution(
+  proposeIdentityResolution = Effect.fn(
+    "ReconciliationService.proposeIdentityResolution"
+  )(function* (
+    this: ReconciliationService,
     proposal: Omit<
       IdentityResolutionProposal,
       "status" | "proposedAt" | "tenantId" | "environmentId" | "idempotencyKey"
@@ -113,29 +313,28 @@ export class ReconciliationService {
       readonly environmentId?: string;
       readonly idempotencyKey?: string | null;
     }
-  ): Effect.Effect<IdentityResolutionProposal> {
-    return Effect.sync(() => {
-      const fullProposal: IdentityResolutionProposal = {
-        action: proposal.action,
-        confidence: proposal.confidence,
-        environmentId:
-          proposal.environmentId || this.defaultEnvironmentId || "default",
-        evidence: proposal.evidence,
-        idempotencyKey: proposal.idempotencyKey ?? null,
-        proposalId: proposal.proposalId,
-        proposedAt: proposal.proposedAt ?? Date.now(),
-        sourceKey: proposal.sourceKey,
-        sourceSystem: proposal.sourceSystem,
-        splitDetails: proposal.splitDetails ?? null,
-        status: proposal.status ?? "proposed",
-        targetCanonicalId: proposal.targetCanonicalId,
-        tenantId: proposal.tenantId || this.defaultTenantId || "default",
-      };
+  ): Effect.fn.Return<IdentityResolutionProposal, never> {
+    const now = yield* Clock.currentTimeMillis;
+    const fullProposal: IdentityResolutionProposal = {
+      action: proposal.action,
+      confidence: proposal.confidence,
+      environmentId:
+        proposal.environmentId || this.defaultEnvironmentId || "default",
+      evidence: proposal.evidence,
+      idempotencyKey: proposal.idempotencyKey ?? null,
+      proposalId: proposal.proposalId,
+      proposedAt: proposal.proposedAt ?? now,
+      sourceKey: proposal.sourceKey,
+      sourceSystem: proposal.sourceSystem,
+      splitDetails: proposal.splitDetails ?? null,
+      status: proposal.status ?? "proposed",
+      targetCanonicalId: proposal.targetCanonicalId,
+      tenantId: proposal.tenantId || this.defaultTenantId || "default",
+    };
 
-      this.proposals.set(fullProposal.proposalId, fullProposal);
-      return fullProposal;
-    });
-  }
+    this.proposals.set(fullProposal.proposalId, fullProposal);
+    return fullProposal;
+  });
 
   /**
    * Get an identity resolution proposal by ID with non-disclosure on tenant mismatch
@@ -167,7 +366,9 @@ export class ReconciliationService {
   ): Effect.Effect<readonly IdentityResolutionProposal[]> {
     const expectedTenant = tenantId ?? this.defaultTenantId;
     const all = [...this.proposals.values()];
-    if (!expectedTenant) return Effect.succeed(all);
+    if (!expectedTenant) {
+      return Effect.succeed(all);
+    }
     return Effect.succeed(all.filter((p) => p.tenantId === expectedTenant));
   }
 
@@ -181,26 +382,31 @@ export class ReconciliationService {
    * 4. Idempotency replay vs conflict check.
    * 5. Tenant non-disclosure on mismatch.
    */
-  resolveIdentity(
-    proposalId: string,
-    decisionRef: string,
-    options?: ResolveIdentityOptions
-  ): Effect.Effect<
-    ResolutionReceipt,
-    | IdentityResolutionNotFoundError
-    | IdempotencyConflictError
-    | AmbiguousIdentityError
-  > {
-    const {
-      canonicalRegistry,
-      confidenceThreshold,
-      defaultTenantId,
-      idempotency,
-      proposals,
-      receipts,
-      sourceKeyToCanonical,
-    } = this;
-    return Effect.gen(function* () {
+  resolveIdentity = Effect.fn("ReconciliationService.resolveIdentity")(
+    function* (
+      this: ReconciliationService,
+      proposalId: string,
+      decisionRef: string,
+      options?: ResolveIdentityOptions
+    ) {
+      const {
+        canonicalRegistry,
+        confidenceThreshold,
+        defaultTenantId,
+        idempotency,
+        proposals,
+        receipts,
+        sourceKeyToCanonical,
+      } = this;
+
+      const state: ResolutionState = {
+        canonicalRegistry,
+        idempotency,
+        proposals,
+        receipts,
+        sourceKeyToCanonical,
+      };
+
       const expectedTenant = options?.tenantId ?? defaultTenantId;
       const proposal = proposals.get(proposalId);
 
@@ -209,74 +415,32 @@ export class ReconciliationService {
         !proposal ||
         (expectedTenant && proposal.tenantId !== expectedTenant)
       ) {
-        return yield* Effect.fail(
-          new IdentityResolutionNotFoundError({ proposalId })
-        );
+        return yield* new IdentityResolutionNotFoundError({ proposalId });
       }
 
       // Idempotency validation
-      if (options?.idempotencyKey) {
-        const payloadDigest = computeCanonicalDigest({
-          decisionRef,
-          forceOverride: options.forceOverride ?? false,
-          proposalId,
-        });
-        const existing = idempotency.get(options.idempotencyKey);
-        if (existing) {
-          if (existing.payloadDigest === payloadDigest) {
-            return existing.receipt;
-          }
-          return yield* Effect.fail(
-            new IdempotencyConflictError({
-              idempotencyKey: options.idempotencyKey,
-              message: `Identity resolution conflict for proposal '${proposalId}' on idempotency key '${options.idempotencyKey}'`,
-            })
-          );
-        }
+      const existingReceipt = yield* checkIdempotencyResolution(
+        idempotency,
+        proposalId,
+        decisionRef,
+        options
+      );
+      if (existingReceipt) {
+        return existingReceipt;
       }
 
-      const now = Date.now();
-      const resolutionId = `res_${now}_${Math.random().toString(36).slice(2, 8)}`;
+      const now = yield* Clock.currentTimeMillis;
+      const resolutionId = generatePrefixedId("res", now);
 
       // INVARIANT 1: Ambiguous identities stay unresolved unless explicit forceOverride is granted
       if (
         proposal.confidence < confidenceThreshold &&
         !options?.forceOverride
       ) {
-        const ambiguousReceipt: ResolutionReceipt = {
-          action: proposal.action,
-          appliedAt: now,
-          canonicalId: proposal.targetCanonicalId,
-          decisionRef,
-          historicalReferences: [],
-          idempotencyKey: options?.idempotencyKey ?? null,
-          invalidatedProjections: [],
-          previousCanonicalId: null,
-          proposalId,
-          resolutionId,
-          status: "unresolved_ambiguous",
-        };
-
-        const updatedProposal: IdentityResolutionProposal = {
-          ...proposal,
-          status: "unresolved_ambiguous",
-        };
-        proposals.set(proposalId, updatedProposal);
-        receipts.set(resolutionId, ambiguousReceipt);
-
-        if (options?.idempotencyKey) {
-          const payloadDigest = computeCanonicalDigest({
-            decisionRef,
-            forceOverride: options.forceOverride ?? false,
-            proposalId,
-          });
-          idempotency.set(options.idempotencyKey, {
-            payloadDigest,
-            receipt: ambiguousReceipt,
-          });
-        }
-
-        return ambiguousReceipt;
+        return recordAmbiguousResolution(
+          { decisionRef, now, options, proposal, proposalId, resolutionId },
+          state
+        );
       }
 
       // INVARIANT 2 & 3: Merge/split correction preserves history & invalidates projections
@@ -284,86 +448,21 @@ export class ReconciliationService {
         sourceKeyToCanonical.get(proposal.sourceKey) ?? null;
       let historicalReferences: string[] = [];
       let invalidatedProjections: string[] = [];
+      const historyParams: ApplyResolutionHistoryParams = {
+        decisionRef,
+        now,
+        proposal,
+        proposalId,
+      };
 
       if (proposal.action === "merge" || proposal.action === "link") {
-        const canonicalId = proposal.targetCanonicalId;
-        const record = canonicalRegistry.get(canonicalId) ?? {
-          canonicalId,
-          history: [],
-          sourceKeys: new Set<string>(),
-        };
-
-        const updatedHistory = [
-          ...record.history,
-          {
-            action: proposal.action,
-            decisionRef,
-            sourceKey: proposal.sourceKey,
-            timestamp: now,
-          },
-        ];
-
-        record.sourceKeys.add(proposal.sourceKey);
-        canonicalRegistry.set(canonicalId, {
-          canonicalId,
-          history: updatedHistory,
-          sourceKeys: record.sourceKeys,
-        });
-        sourceKeyToCanonical.set(proposal.sourceKey, canonicalId);
-
-        historicalReferences = [
-          proposal.sourceKey,
-          ...(previousCanonicalId ? [previousCanonicalId] : []),
-          ...record.history.map(
-            (h: {
-              readonly action: IdentityResolutionAction;
-              readonly decisionRef: string;
-              readonly timestamp: number;
-              readonly sourceKey: string;
-            }) => `${h.action}:${h.sourceKey}@${h.timestamp}`
-          ),
-        ];
-
-        invalidatedProjections = [
-          `projection:${proposal.sourceSystem}:${proposal.sourceKey}`,
-          `projection:canonical:${canonicalId}`,
-        ];
+        const mergeResult = applyMergeHistory(historyParams, state);
+        historicalReferences = mergeResult.historicalReferences;
+        invalidatedProjections = mergeResult.invalidatedProjections;
       } else if (proposal.action === "split") {
-        // Splitting two mistakenly merged entities per S03
-        const canonicalId = proposal.targetCanonicalId;
-        const record = canonicalRegistry.get(canonicalId);
-        if (record) {
-          record.sourceKeys.delete(proposal.sourceKey);
-          const updatedHistory = [
-            ...record.history,
-            {
-              action: "split" as const,
-              decisionRef,
-              sourceKey: proposal.sourceKey,
-              timestamp: now,
-            },
-          ];
-          canonicalRegistry.set(canonicalId, {
-            ...record,
-            history: updatedHistory,
-          });
-        }
-        sourceKeyToCanonical.delete(proposal.sourceKey);
-
-        const originalIds = proposal.splitDetails?.originalIds ?? [
-          proposal.sourceKey,
-        ];
-        historicalReferences = [
-          ...originalIds,
-          ...(previousCanonicalId ? [previousCanonicalId] : []),
-          `split_event:${proposalId}@${now}`,
-        ];
-
-        invalidatedProjections = [
-          `projection:${proposal.sourceSystem}:${proposal.sourceKey}`,
-          `projection:canonical:${canonicalId}`,
-          `projection:split:${proposalId}`,
-        ];
+        const splitResult = applySplitHistory(historyParams, state);
+        historicalReferences = splitResult.historicalReferences;
+        invalidatedProjections = splitResult.invalidatedProjections;
       }
 
       const receipt: ResolutionReceipt = {
@@ -380,11 +479,10 @@ export class ReconciliationService {
         status: "resolved",
       };
 
-      const updatedProposal: IdentityResolutionProposal = {
+      proposals.set(proposalId, {
         ...proposal,
         status: "resolved",
-      };
-      proposals.set(proposalId, updatedProposal);
+      });
       receipts.set(resolutionId, receipt);
 
       if (options?.idempotencyKey) {
@@ -400,129 +498,105 @@ export class ReconciliationService {
       }
 
       return receipt;
-    });
-  }
+    }
+  );
 
   /**
    * Execute an exact bitemporal query under a WorldView per S04
    */
-  query(
+  query = Effect.fn("ReconciliationService.query")(function* (
+    this: ReconciliationService,
     request: ExactQueryRequest,
     objectStore: ObjectStore,
     options?: QueryOptions
-  ): Effect.Effect<
-    {
-      readonly rows: readonly ObjectInstance[];
-      readonly coverage: QueryCoverage;
-      readonly worldView: WorldView;
-      readonly cursor: string | null;
-    },
-    StaleDependencyError
-  > {
-    return Effect.gen(function* () {
-      const { worldView, queryId, params } = request;
+  ) {
+    const { worldView, queryId, params } = request;
 
-      // Freshness check: check if validTime is past max permitted staleness
-      const maxStalenessMs =
-        options?.maxStalenessMs ??
-        (params.maxStalenessMs as number | undefined);
-      const ageMs = Math.max(0, worldView.pinnedAt - worldView.validTime);
+    // Freshness check: check if validTime is past max permitted staleness
+    const maxStalenessMs =
+      options?.maxStalenessMs ?? (params.maxStalenessMs as number | undefined);
+    const ageMs = Math.max(0, worldView.pinnedAt - worldView.validTime);
 
-      let isStale = false;
-      if (maxStalenessMs !== undefined && ageMs > maxStalenessMs) {
-        isStale = true;
-        if (options?.failOnStale) {
-          return yield* Effect.fail(
-            new StaleDependencyError({
-              ageMs,
-              dependencyId: queryId,
-              maxStalenessMs,
-              queryId,
-            })
-          );
-        }
-      }
-
-      // Query from object store
-      // If store is BitemporalObjectStore, use asOfValidTime
-      const typeId = queryId as ObjectTypeId;
-      let allObjects = yield* objectStore.findObjects(typeId);
-
-      // Filter by asOfValidTime if store supports bitemporal timeline
-      if (
-        "asOfValidTime" in objectStore &&
-        typeof (objectStore as any).asOfValidTime === "function"
-      ) {
-        const bitempStore = objectStore as BitemporalObjectStore;
-        const validObjects: ObjectInstance[] = [];
-        for (const obj of allObjects) {
-          const matched = yield* bitempStore.asOfValidTime(
-            typeId,
-            obj.id,
-            worldView.validTime
-          );
-          if (matched) {
-            validObjects.push(matched);
-          }
-        }
-        allObjects = validObjects;
-      }
-
-      // Apply predicate filter if provided
-      if (options?.predicate) {
-        allObjects = allObjects.filter(options.predicate);
-      }
-
-      // Apply parameter matching (e.g. key-value property matches)
-      const paramKeys = Object.keys(params).filter(
-        (k) => k !== "maxStalenessMs" && k !== "limit" && k !== "cursor"
-      );
-      if (paramKeys.length > 0) {
-        allObjects = allObjects.filter((obj) => {
-          const props = obj.properties as Record<string, unknown>;
-          return paramKeys.every((k) => {
-            if (k === "id") {
-              return obj.id === params[k] || props[k] === params[k];
-            }
-            return props[k] === params[k];
-          });
+    let isStale = false;
+    if (maxStalenessMs !== undefined && ageMs > maxStalenessMs) {
+      isStale = true;
+      if (options?.failOnStale) {
+        return yield* new StaleDependencyError({
+          ageMs,
+          dependencyId: queryId,
+          maxStalenessMs,
+          queryId,
         });
       }
+    }
 
-      const coverage: QueryCoverage = {
-        completeness: isStale ? "stale" : "complete",
-        evidenceDigests: worldView.evidenceCoverage,
-        isStale,
-        maxValidTime: worldView.validTime,
-        minValidTime: worldView.validTime,
-      };
+    // Query from object store
+    // If store is BitemporalObjectStore, use asOfValidTime
+    const typeId = queryId as ObjectTypeId;
+    let allObjects = yield* objectStore.findObjects(typeId);
 
-      return {
-        coverage,
-        cursor: null,
-        rows: allObjects,
-        worldView,
-      };
-    });
-  }
+    // Filter by asOfValidTime if store supports bitemporal timeline
+    if (
+      "asOfValidTime" in objectStore &&
+      typeof (objectStore as Record<string, unknown>).asOfValidTime ===
+        "function"
+    ) {
+      const bitempStore = objectStore as BitemporalObjectStore;
+      const validObjects = yield* Effect.forEach(
+        allObjects,
+        (obj) => bitempStore.asOfValidTime(typeId, obj.id, worldView.validTime),
+        { concurrency: 10 }
+      );
+      allObjects = validObjects.filter(
+        (matched): matched is ObjectInstance => matched !== undefined
+      );
+    }
+
+    // Apply predicate filter if provided
+    if (options?.predicate) {
+      allObjects = allObjects.filter(options.predicate);
+    }
+
+    // Apply parameter matching (e.g. key-value property matches)
+    const paramKeys = Object.keys(params).filter(
+      (k) => k !== "maxStalenessMs" && k !== "limit" && k !== "cursor"
+    );
+    if (paramKeys.length > 0) {
+      allObjects = allObjects.filter((obj) => {
+        const props = obj.properties as Record<string, unknown>;
+        return paramKeys.every((k) => {
+          if (k === "id") {
+            return obj.id === params[k] || props[k] === params[k];
+          }
+          return props[k] === params[k];
+        });
+      });
+    }
+
+    const coverage: QueryCoverage = {
+      completeness: isStale ? "stale" : "complete",
+      evidenceDigests: worldView.evidenceCoverage,
+      isStale,
+      maxValidTime: worldView.validTime,
+      minValidTime: worldView.validTime,
+    };
+
+    return {
+      coverage,
+      cursor: null,
+      rows: allObjects,
+      worldView,
+    };
+  });
 
   /**
    * Explain a bitemporal point query (compiles plan without executing) per S04
    */
-  explainQuery(
-    typeId: string,
-    id: string,
-    validTime: number,
-    txTime: number,
-    dialect: "postgres" | "sqlite" = "sqlite"
-  ): { readonly sql: string; readonly params: readonly unknown[] } {
-    return SqlSchemaGenerator.compileBitemporalQuery(
-      typeId,
-      id,
-      validTime,
-      txTime,
-      dialect
-    );
+  explainQuery(options: BitemporalQueryOptions): {
+    readonly sql: string;
+    readonly params: readonly unknown[];
+  } {
+    return SqlSchemaGenerator.compileBitemporalQuery(options);
   }
 
   /**

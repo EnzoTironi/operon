@@ -1,6 +1,7 @@
 import type {
   MultiDatasetObjectMapping,
   ObjectInstance,
+  ObjectProperties,
   RestrictedView,
   Subject,
 } from "@operon/schema";
@@ -52,10 +53,8 @@ export class DynamicSecurityEngine {
       return instance;
     }
 
-    const projectedProps: Record<string, unknown> = {};
-    for (const [propName, val] of Object.entries(
-      instance.properties as Record<string, unknown>
-    )) {
+    const projectedProps: ObjectProperties = {};
+    for (const [propName, val] of Object.entries(instance.properties)) {
       const classification = mdo.propertyClassifications[propName] ?? "public";
       const authorizedRoles =
         mdo.authorizedRolesPerClassification[classification] ?? [];
@@ -65,12 +64,9 @@ export class DynamicSecurityEngine {
         subject.roles.includes("admin") ||
         subject.roles.some((r) => authorizedRoles.includes(r));
 
-      if (isAuthorized) {
-        projectedProps[propName] = val;
-      } else {
-        // Redact
-        projectedProps[propName] = "[REDACTED_BY_SECURITY_POLICY]";
-      }
+      projectedProps[propName] = isAuthorized
+        ? val
+        : "[REDACTED_BY_SECURITY_POLICY]";
     }
 
     return {

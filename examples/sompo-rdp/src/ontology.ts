@@ -236,8 +236,8 @@ export const DispatchEmergencyCareAction = defineActionType({
     {
       id: "resident-exists",
       description: "Resident must exist in the ontology",
-      evaluate: (params, context) =>
-        Effect.gen(function* () {
+      evaluate: Effect.fn("evaluateResidentExists")(
+        function* (params, context) {
           const resident = yield* context.getObject(
             "CareResident" as ObjectTypeId,
             params.residentId
@@ -250,7 +250,8 @@ export const DispatchEmergencyCareAction = defineActionType({
             };
           }
           return { passed: true, verdict: "allow" };
-        }),
+        }
+      ),
     },
   ],
   sideEffects: [
@@ -314,7 +315,7 @@ export const ApproveClaimPayoutAction = defineActionType({
         "Claims > ¥5,000,000 require Special Investigation Unit (SIU) committee sign-off",
       evaluate: (params) =>
         Effect.succeed(
-          params.approvedAmountJpy > 5000000
+          params.approvedAmountJpy > 5_000_000
             ? {
                 passed: false,
                 verdict: "review", // Escalate to Action Inbox / Approvals App!
@@ -336,8 +337,10 @@ export const RegionRestrictedView: RestrictedView = {
   description: "Adjusters can only see claims within their region",
   objectTypeId: "InsuranceClaim",
   predicate: (instance: ObjectInstance, subject: Subject) => {
-    if (subject.roles.includes("admin")) return true;
-    const userRegion = (subject.metadata as any)?.assignedRegion;
+    if (subject.roles.includes("admin")) {
+      return true;
+    }
+    const userRegion = subject.metadata?.assignedRegion;
     return instance.properties.branchRegion === userRegion;
   },
 };

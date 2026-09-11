@@ -8,7 +8,7 @@ import {
   InMemoryObjectStore,
   OntologyMetadataService,
 } from "@operon/runtime";
-import { defineActionType } from "@operon/schema";
+import { defineActionType, parseJson } from "@operon/schema";
 import { Effect, Schema } from "effect";
 import { describe, expect, it } from "vitest";
 
@@ -59,7 +59,7 @@ describe("Independent MCP approval trust-boundary validation", () => {
             Effect.promise(() => client.close()),
             Effect.promise(() => server.close()),
           ],
-          { concurrency: "unbounded" }
+          { concurrency: 2 }
         )
       );
 
@@ -70,7 +70,10 @@ describe("Independent MCP approval trust-boundary validation", () => {
         })
       );
       expect(proposed.isError).toBeFalsy();
-      const body = JSON.parse(proposed.content[0].text);
+      const body = parseJson(proposed.content[0].text) as {
+        readonly proposalId: string;
+        readonly status: string;
+      };
       expect(body.status).toBe("PROPOSAL_CREATED");
       yield* Effect.promise(() =>
         client.callTool({

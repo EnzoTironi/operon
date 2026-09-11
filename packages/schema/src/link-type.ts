@@ -34,9 +34,9 @@ export function defineLinkType(config: {
 }): LinkType {
   return {
     ...config,
-    id: config.id as LinkTypeId,
-    sourceTypeId: config.sourceTypeId as ObjectTypeId,
-    targetTypeId: config.targetTypeId as ObjectTypeId,
+    id: LinkTypeId.make(config.id),
+    sourceTypeId: ObjectTypeId.make(config.sourceTypeId),
+    targetTypeId: ObjectTypeId.make(config.targetTypeId),
   };
 }
 

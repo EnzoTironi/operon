@@ -80,18 +80,20 @@ const VALID_EFFECT_CLASSES = new Set([
   "external_side_effect",
 ]);
 
-/**
- * Validates and compiles a SourceSet into an immutable, reproducible Candidate with diagnostics.
- */
-export function validateAndCompile(source: SourceSet): {
+export interface CompilationResult {
   readonly candidate?: Candidate;
   readonly diagnostics: readonly Diagnostic[];
   readonly success: boolean;
-} {
-  const diagnostics: Diagnostic[] = [];
+}
 
-  // 1. Validate schema version
-  if (!SUPPORTED_SCHEMA_VERSIONS.includes(source.schemaVersion as any)) {
+export interface CompileResult {
+  readonly candidate?: Candidate;
+  readonly diagnostics: readonly Diagnostic[];
+}
+
+function validateSchemaAndPrecedence(source: SourceSet): readonly Diagnostic[] {
+  const diagnostics: Diagnostic[] = [];
+  if (!SUPPORTED_SCHEMA_VERSIONS.some((v) => v === source.schemaVersion)) {
     diagnostics.push({
       code: "UNKNOWN_SCHEMA_VERSION",
       message: `Unknown schema version '${source.schemaVersion}'. Supported versions are: ${SUPPORTED_SCHEMA_VERSIONS.join(", ")}`,
@@ -100,7 +102,6 @@ export function validateAndCompile(source: SourceSet): {
     });
   }
 
-  // 2. Validate source precedence order
   if (source.precedence) {
     const isExact =
       source.precedence.length === CANONICAL_SOURCE_PRECEDENCE.length &&
@@ -116,49 +117,82 @@ export function validateAndCompile(source: SourceSet): {
       });
     }
   }
+  return diagnostics;
+}
 
-  // 3. Validate type definitions
-  const declaredTypeIds = new Set<string>();
-  const typePropertyMap = new Map<string, Set<string>>();
+interface TypeValidationResult {
+  readonly declaredTypeIds: Set<string>;
+  readonly diagnostics: readonly Diagnostic[];
+  readonly typePropertyMap: Map<string, Set<string>>;
+}
 
-  for (const t of source.definitions.types) {
-    if (declaredTypeIds.has(t.id)) {
-      diagnostics.push({
+function validateSingleType(
+  t: SourceSet["definitions"]["types"][number],
+  declaredTypeIds: Set<string>,
+  typePropertyMap: Map<string, Set<string>>
+): readonly Diagnostic[] {
+  if (declaredTypeIds.has(t.id)) {
+    return [
+      {
         code: "DUPLICATE_TYPE_ID",
         message: `Duplicate type definition id '${t.id}'`,
         path: `types.${t.id}`,
         severity: "error",
-      });
-      continue;
-    }
-    declaredTypeIds.add(t.id);
+      },
+    ];
+  }
+  declaredTypeIds.add(t.id);
 
-    const propNames = new Set(Object.keys(t.properties));
-    typePropertyMap.set(t.id, propNames);
+  const diagnostics: Diagnostic[] = [];
+  const propNames = new Set(Object.keys(t.properties));
+  typePropertyMap.set(t.id, propNames);
 
-    if (!propNames.has(t.primaryKey)) {
+  if (!propNames.has(t.primaryKey)) {
+    diagnostics.push({
+      code: "INVALID_PRIMARY_KEY",
+      message: `Type '${t.id}' declares primary key '${t.primaryKey}' which is missing from its properties`,
+      path: `types.${t.id}.primaryKey`,
+      severity: "error",
+    });
+  }
+
+  for (const [propName, propDef] of Object.entries(t.properties)) {
+    if (!VALID_PROPERTY_TYPES.has(propDef.type)) {
       diagnostics.push({
-        code: "INVALID_PRIMARY_KEY",
-        message: `Type '${t.id}' declares primary key '${t.primaryKey}' which is missing from its properties`,
-        path: `types.${t.id}.primaryKey`,
+        code: "INVALID_PROPERTY_TYPE",
+        message: `Property '${propName}' in type '${t.id}' has invalid type '${propDef.type}'`,
+        path: `types.${t.id}.properties.${propName}`,
         severity: "error",
       });
     }
-
-    for (const [propName, propDef] of Object.entries(t.properties)) {
-      if (!VALID_PROPERTY_TYPES.has(propDef.type)) {
-        diagnostics.push({
-          code: "INVALID_PROPERTY_TYPE",
-          message: `Property '${propName}' in type '${t.id}' has invalid type '${propDef.type}'`,
-          path: `types.${t.id}.properties.${propName}`,
-          severity: "error",
-        });
-      }
-    }
   }
 
-  // 4. Validate links
-  for (const l of source.definitions.links) {
+  return diagnostics;
+}
+
+function validateTypes(
+  types: SourceSet["definitions"]["types"]
+): TypeValidationResult {
+  const declaredTypeIds = new Set<string>();
+  const typePropertyMap = new Map<string, Set<string>>();
+  const diagnostics: Diagnostic[] = [];
+
+  for (const t of types) {
+    diagnostics.push(
+      ...validateSingleType(t, declaredTypeIds, typePropertyMap)
+    );
+  }
+
+  return { declaredTypeIds, diagnostics, typePropertyMap };
+}
+
+function validateLinksAndQueries(
+  links: SourceSet["definitions"]["links"],
+  queries: SourceSet["definitions"]["queries"],
+  declaredTypeIds: ReadonlySet<string>
+): readonly Diagnostic[] {
+  const diagnostics: Diagnostic[] = [];
+  for (const l of links) {
     if (!declaredTypeIds.has(l.sourceTypeId)) {
       diagnostics.push({
         code: "UNDEFINED_TYPE",
@@ -176,9 +210,7 @@ export function validateAndCompile(source: SourceSet): {
       });
     }
   }
-
-  // 5. Validate queries
-  for (const q of source.definitions.queries) {
+  for (const q of queries) {
     if (!declaredTypeIds.has(q.returnTypeId)) {
       diagnostics.push({
         code: "UNDEFINED_TYPE",
@@ -188,9 +220,14 @@ export function validateAndCompile(source: SourceSet): {
       });
     }
   }
+  return diagnostics;
+}
 
-  // 6. Validate actions
-  for (const a of source.definitions.actions) {
+function validateActions(
+  actions: SourceSet["definitions"]["actions"]
+): readonly Diagnostic[] {
+  const diagnostics: Diagnostic[] = [];
+  for (const a of actions) {
     if (!VALID_EFFECT_CLASSES.has(a.effectClass)) {
       diagnostics.push({
         code: "INVALID_EFFECT_CLASS",
@@ -208,9 +245,14 @@ export function validateAndCompile(source: SourceSet): {
       });
     }
   }
+  return diagnostics;
+}
 
-  // 7. Validate policies
-  for (const p of source.definitions.policies) {
+function validatePolicies(
+  policies: SourceSet["definitions"]["policies"]
+): readonly Diagnostic[] {
+  const diagnostics: Diagnostic[] = [];
+  for (const p of policies) {
     if (!p.ruleExpression || p.ruleExpression.trim().length === 0) {
       diagnostics.push({
         code: "EMPTY_RULE_EXPRESSION",
@@ -220,46 +262,53 @@ export function validateAndCompile(source: SourceSet): {
       });
     }
   }
+  return diagnostics;
+}
 
-  // 8. Validate freshness rules
-  for (const f of source.definitions.freshness) {
-    if (declaredTypeIds.has(f.typeId)) {
-      const props = typePropertyMap.get(f.typeId);
-      if (props && !props.has(f.propertyName)) {
-        diagnostics.push({
-          code: "UNDEFINED_TYPE",
-          message: `Freshness rule references property '${f.propertyName}' not found in type '${f.typeId}'`,
-          path: `freshness.${f.typeId}.${f.propertyName}`,
-          severity: "error",
-        });
-      }
-    } else {
-      diagnostics.push({
-        code: "UNDEFINED_TYPE",
-        message: `Freshness rule references undefined typeId '${f.typeId}'`,
-        path: `freshness.${f.typeId}.${f.propertyName}`,
-        severity: "error",
-      });
-    }
-    if (f.maxStalenessMs <= 0) {
-      diagnostics.push({
-        code: "INVALID_FRESHNESS_BUDGET",
-        message: `Freshness maxStalenessMs must be > 0 for '${f.typeId}.${f.propertyName}'`,
-        path: `freshness.${f.typeId}.${f.propertyName}.maxStalenessMs`,
-        severity: "error",
-      });
-    }
+function checkFreshnessRule(
+  f: SourceSet["definitions"]["freshness"][number],
+  declaredTypeIds: ReadonlySet<string>,
+  typePropertyMap: ReadonlyMap<string, Set<string>>
+): readonly Diagnostic[] {
+  const diagnostics: Diagnostic[] = [];
+  const props = typePropertyMap.get(f.typeId);
+  if (!declaredTypeIds.has(f.typeId) || (props && !props.has(f.propertyName))) {
+    const msg = declaredTypeIds.has(f.typeId)
+      ? `Freshness rule references property '${f.propertyName}' not found in type '${f.typeId}'`
+      : `Freshness rule references undefined typeId '${f.typeId}'`;
+    diagnostics.push({
+      code: "UNDEFINED_TYPE",
+      message: msg,
+      path: `freshness.${f.typeId}.${f.propertyName}`,
+      severity: "error",
+    });
   }
-
-  const hasErrors = diagnostics.some((d) => d.severity === "error");
-  if (hasErrors) {
-    return {
-      diagnostics,
-      success: false,
-    };
+  if (f.maxStalenessMs <= 0) {
+    diagnostics.push({
+      code: "INVALID_FRESHNESS_BUDGET",
+      message: `Freshness maxStalenessMs must be > 0 for '${f.typeId}.${f.propertyName}'`,
+      path: `freshness.${f.typeId}.${f.propertyName}.maxStalenessMs`,
+      severity: "error",
+    });
   }
+  return diagnostics;
+}
 
-  // Deterministic compilation and hashing
+function validateFreshness(
+  freshness: SourceSet["definitions"]["freshness"],
+  declaredTypeIds: ReadonlySet<string>,
+  typePropertyMap: ReadonlyMap<string, Set<string>>
+): readonly Diagnostic[] {
+  const diagnostics: Diagnostic[] = [];
+  for (const f of freshness) {
+    diagnostics.push(
+      ...checkFreshnessRule(f, declaredTypeIds, typePropertyMap)
+    );
+  }
+  return diagnostics;
+}
+
+function buildCandidate(source: SourceSet): Candidate {
   const contractsDigest = computeCanonicalDigest(source.definitions);
   const profile: Profile = source.profile ?? "local";
   const runtimeVersions: RuntimeVersions =
@@ -274,7 +323,7 @@ export function validateAndCompile(source: SourceSet): {
     tree: source.tree,
   });
 
-  const candidate: Candidate = {
+  return {
     candidateDigest,
     candidateId: `cand_${candidateDigest.slice(0, 16)}`,
     config: source.config,
@@ -282,12 +331,43 @@ export function validateAndCompile(source: SourceSet): {
     lock: source.lock,
     profile,
     runtimeVersions,
-    timestamp: 0, // Deterministic timestamp fixed at 0 for candidate identity reproducibility
+    timestamp: 0,
     tree: source.tree,
   };
+}
+
+/**
+ * Validates and compiles a SourceSet into an immutable, reproducible Candidate with diagnostics.
+ */
+export function validateAndCompile(source: SourceSet): CompilationResult {
+  const typesResult = validateTypes(source.definitions.types);
+  const diagnostics: Diagnostic[] = [
+    ...validateSchemaAndPrecedence(source),
+    ...typesResult.diagnostics,
+    ...validateLinksAndQueries(
+      source.definitions.links,
+      source.definitions.queries,
+      typesResult.declaredTypeIds
+    ),
+    ...validateActions(source.definitions.actions),
+    ...validatePolicies(source.definitions.policies),
+    ...validateFreshness(
+      source.definitions.freshness,
+      typesResult.declaredTypeIds,
+      typesResult.typePropertyMap
+    ),
+  ];
+
+  const hasErrors = diagnostics.some((d) => d.severity === "error");
+  if (hasErrors) {
+    return {
+      diagnostics,
+      success: false,
+    };
+  }
 
   return {
-    candidate,
+    candidate: buildCandidate(source),
     diagnostics,
     success: true,
   };
@@ -296,10 +376,7 @@ export function validateAndCompile(source: SourceSet): {
 /**
  * Pure function compilation conforming to V1-01 sketch
  */
-export function compile(source: SourceSet): {
-  readonly candidate?: Candidate;
-  readonly diagnostics: readonly Diagnostic[];
-} {
+export function compile(source: SourceSet): CompileResult {
   const result = validateAndCompile(source);
   return {
     candidate: result.candidate,
@@ -310,58 +387,52 @@ export function compile(source: SourceSet): {
 /**
  * Effect-based candidate compilation with narrow error channel
  */
-export function compileCandidate(source: SourceSet): Effect.Effect<
+export const compileCandidate = Effect.fn("compileCandidate")(function* (
+  source: SourceSet
+): Effect.fn.Return<
   {
     readonly candidate: Candidate;
     readonly diagnostics: readonly Diagnostic[];
   },
   SourcePrecedenceViolationError | UnknownSchemaVersionError | CompilationError
 > {
-  return Effect.gen(function* () {
-    const result = validateAndCompile(source);
+  const result = validateAndCompile(source);
 
-    if (!result.success || !result.candidate) {
-      const precedenceError = result.diagnostics.find(
-        (d) => d.code === "SOURCE_PRECEDENCE_VIOLATION"
-      );
-      if (precedenceError) {
-        return yield* Effect.fail(
-          new SourcePrecedenceViolationError({
-            declaredOrder: source.precedence ?? [],
-            expectedOrder: CANONICAL_SOURCE_PRECEDENCE,
-            message: precedenceError.message,
-          })
-        );
-      }
-
-      const versionError = result.diagnostics.find(
-        (d) => d.code === "UNKNOWN_SCHEMA_VERSION"
-      );
-      if (versionError) {
-        return yield* Effect.fail(
-          new UnknownSchemaVersionError({
-            supportedVersions: SUPPORTED_SCHEMA_VERSIONS,
-            version: source.schemaVersion,
-          })
-        );
-      }
-
-      const errorMessages = result.diagnostics
-        .filter((d) => d.severity === "error")
-        .map((d) => `[${d.code}] ${d.message}`);
-
-      return yield* Effect.fail(
-        new CompilationError({
-          diagnostics: result.diagnostics,
-          errors: errorMessages,
-          message: `Candidate compilation failed with ${errorMessages.length} error(s): ${errorMessages.join("; ")}`,
-        })
-      );
+  if (!result.success || !result.candidate) {
+    const precedenceError = result.diagnostics.find(
+      (d) => d.code === "SOURCE_PRECEDENCE_VIOLATION"
+    );
+    if (precedenceError) {
+      return yield* new SourcePrecedenceViolationError({
+        declaredOrder: source.precedence ?? [],
+        expectedOrder: CANONICAL_SOURCE_PRECEDENCE,
+        message: precedenceError.message,
+      });
     }
 
-    return {
-      candidate: result.candidate,
+    const versionError = result.diagnostics.find(
+      (d) => d.code === "UNKNOWN_SCHEMA_VERSION"
+    );
+    if (versionError) {
+      return yield* new UnknownSchemaVersionError({
+        supportedVersions: SUPPORTED_SCHEMA_VERSIONS,
+        version: source.schemaVersion,
+      });
+    }
+
+    const errorMessages = result.diagnostics
+      .filter((d) => d.severity === "error")
+      .map((d) => `[${d.code}] ${d.message}`);
+
+    return yield* new CompilationError({
       diagnostics: result.diagnostics,
-    };
-  });
-}
+      errors: errorMessages,
+      message: `Candidate compilation failed with ${errorMessages.length} error(s): ${errorMessages.join("; ")}`,
+    });
+  }
+
+  return {
+    candidate: result.candidate,
+    diagnostics: result.diagnostics,
+  };
+});

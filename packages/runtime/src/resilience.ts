@@ -1,4 +1,4 @@
-import { Data, Effect, Ref } from "effect";
+import { Clock, Data, Effect, Ref } from "effect";
 
 export class CircuitBreakerOpenError extends Data.TaggedError(
   "CircuitBreakerOpenError"
@@ -33,16 +33,18 @@ interface InternalBreakerState {
  * Enterprise Circuit Breaker (Chapter 17: Incident Response & Failure Modes)
  * Protects downstream systems (ERP, SCADA, EHR) and gracefully degrades.
  */
+const defaultCircuitBreakerConfig: CircuitBreakerConfig = {
+  failureThreshold: 5,
+  recoveryTimeoutMs: 10_000,
+  successThreshold: 2,
+};
+
 export class CircuitBreaker {
   private readonly stateRef: Ref.Ref<InternalBreakerState>;
 
   constructor(
     readonly name: string,
-    private readonly config: CircuitBreakerConfig = {
-      failureThreshold: 5,
-      recoveryTimeoutMs: 10000,
-      successThreshold: 2,
-    }
+    private readonly config: CircuitBreakerConfig = defaultCircuitBreakerConfig
   ) {
     this.stateRef = Ref.makeUnsafe<InternalBreakerState>({
       failureCount: 0,
@@ -63,68 +65,71 @@ export class CircuitBreaker {
     return current.state;
   }
 
-  execute<A, E>(
+  readonly execute = Effect.fn("CircuitBreaker.execute")(function* <A, E>(
+    this: CircuitBreaker,
     effect: Effect.Effect<A, E>
-  ): Effect.Effect<A, E | CircuitBreakerOpenError> {
-    return Effect.gen({ self: this }, function* () {
-      const currentState = yield* Ref.modify(this.stateRef, (current) => {
-        if (
-          current.state === "open" &&
-          Date.now() - current.lastFailureTime > this.config.recoveryTimeoutMs
-        ) {
-          const next: InternalBreakerState = {
-            ...current,
-            state: "half_open",
-          };
-          return [next.state, next];
-        }
-        return [current.state, current];
-      });
-
-      if (currentState === "open") {
-        return yield* Effect.fail(
-          new CircuitBreakerOpenError({
-            message: `Circuit breaker '${this.name}' is OPEN. Requests shed.`,
-            name: this.name,
-          })
-        );
+  ): Effect.fn.Return<A, E | CircuitBreakerOpenError> {
+    const now = yield* Clock.currentTimeMillis;
+    const currentState = yield* Ref.modify(this.stateRef, (current) => {
+      if (
+        current.state === "open" &&
+        now - current.lastFailureTime > this.config.recoveryTimeoutMs
+      ) {
+        const next: InternalBreakerState = {
+          ...current,
+          state: "half_open",
+        };
+        return [next.state, next];
       }
-
-      const result = yield* effect.pipe(
-        Effect.tap(() =>
-          Ref.update(this.stateRef, (current): InternalBreakerState => {
-            if (current.state === "half_open") {
-              const newSuccessCount = current.successCount + 1;
-              if (newSuccessCount >= this.config.successThreshold) {
-                return {
-                  ...current,
-                  failureCount: 0,
-                  state: "closed",
-                  successCount: 0,
-                };
-              }
-              return { ...current, successCount: newSuccessCount };
-            }
-            return { ...current, failureCount: 0 };
-          })
-        ),
-        Effect.tapError(() =>
-          Ref.update(this.stateRef, (current): InternalBreakerState => {
-            const newFailureCount = current.failureCount + 1;
-            const shouldOpen = newFailureCount >= this.config.failureThreshold;
-            return {
-              ...current,
-              failureCount: newFailureCount,
-              lastFailureTime: Date.now(),
-              state: shouldOpen ? "open" : current.state,
-            };
-          })
-        )
-      );
-
-      return result;
+      return [current.state, current];
     });
-  }
+
+    if (currentState === "open") {
+      return yield* new CircuitBreakerOpenError({
+        message: `Circuit breaker '${this.name}' is OPEN. Requests shed.`,
+        name: this.name,
+      });
+    }
+
+    const recordFailure = Effect.fn("CircuitBreaker.recordFailure")(function* (
+      breaker: CircuitBreaker
+    ) {
+      const errNow = yield* Clock.currentTimeMillis;
+      yield* Ref.update(breaker.stateRef, (current): InternalBreakerState => {
+        const newFailureCount = current.failureCount + 1;
+        const shouldOpen = newFailureCount >= breaker.config.failureThreshold;
+        return {
+          ...current,
+          failureCount: newFailureCount,
+          lastFailureTime: errNow,
+          state: shouldOpen ? "open" : current.state,
+        };
+      });
+    });
+
+    const result = yield* effect.pipe(
+      Effect.tap(() =>
+        Ref.update(this.stateRef, (current): InternalBreakerState => {
+          if (current.state === "half_open") {
+            const newSuccessCount = current.successCount + 1;
+            if (newSuccessCount >= this.config.successThreshold) {
+              return {
+                ...current,
+                failureCount: 0,
+                state: "closed",
+                successCount: 0,
+              };
+            }
+            return { ...current, successCount: newSuccessCount };
+          }
+          return { ...current, failureCount: 0 };
+        })
+      ),
+      Effect.tapError(() => recordFailure(this))
+    );
+
+    return result;
+  });
 }
 
 export type DegradeMode =
@@ -150,53 +155,50 @@ export class DegradeModeManager {
     });
   }
 
-  assertActionPermitted(options: {
-    readonly isVetoOrOverride?: boolean;
-    readonly isCritical?: boolean;
-  }): Effect.Effect<void, DegradedModeViolationError> {
-    return Effect.gen({ self: this }, function* () {
-      if (this.currentMode === "normal") {
-        return;
-      }
+  readonly assertActionPermitted = Effect.fn(
+    "DegradeModeManager.assertActionPermitted"
+  )(function* (
+    this: DegradeModeManager,
+    options: {
+      readonly isVetoOrOverride?: boolean;
+      readonly isCritical?: boolean;
+    }
+  ): Effect.fn.Return<void, DegradedModeViolationError> {
+    if (this.currentMode === "normal") {
+      return;
+    }
 
-      if (this.currentMode === "read_only") {
-        return yield* Effect.fail(
-          new DegradedModeViolationError({
-            mode: this.currentMode,
-            message:
-              "System is in read_only degrade mode. All operational writes are paused.",
-          })
-        );
-      }
+    if (this.currentMode === "read_only") {
+      return yield* new DegradedModeViolationError({
+        mode: this.currentMode,
+        message:
+          "System is in read_only degrade mode. All operational writes are paused.",
+      });
+    }
 
-      if (this.currentMode === "veto_only") {
-        if (!options.isVetoOrOverride) {
-          return yield* Effect.fail(
-            new DegradedModeViolationError({
-              mode: this.currentMode,
-              message:
-                "System is in veto_only degrade mode. Only emergency human vetoes/overrides are permitted.",
-            })
-          );
-        }
-        return;
+    if (this.currentMode === "veto_only") {
+      if (!options.isVetoOrOverride) {
+        return yield* new DegradedModeViolationError({
+          mode: this.currentMode,
+          message:
+            "System is in veto_only degrade mode. Only emergency human vetoes/overrides are permitted.",
+        });
       }
+      return;
+    }
 
-      if (
-        this.currentMode === "critical_only" &&
-        !options.isCritical &&
-        !options.isVetoOrOverride
-      ) {
-        return yield* Effect.fail(
-          new DegradedModeViolationError({
-            mode: this.currentMode,
-            message:
-              "System is in critical_only degrade mode. Non-critical background actions are shed.",
-          })
-        );
-      }
-    });
-  }
+    if (
+      this.currentMode === "critical_only" &&
+      !options.isCritical &&
+      !options.isVetoOrOverride
+    ) {
+      return yield* new DegradedModeViolationError({
+        mode: this.currentMode,
+        message:
+          "System is in critical_only degrade mode. Non-critical background actions are shed.",
+      });
+    }
+  });
 }
 
 export interface ComponentHealth {
@@ -235,15 +237,21 @@ export class SystemHealthMap {
       let hasUnhealthy = false;
       let hasDegraded = false;
 
-      for (const [name, probe] of this.probes.entries()) {
-        const health = yield* probe();
-        components[name] = health;
-        if (health.status === "unhealthy") {
-          hasUnhealthy = true;
-        } else if (health.status === "degraded") {
-          hasDegraded = true;
-        }
-      }
+      yield* Effect.forEach(
+        [...this.probes.entries()],
+        Effect.fn("AdaptiveResilienceService.checkProbe")(
+          function* ([name, probe]) {
+            const health = yield* probe();
+            components[name] = health;
+            if (health.status === "unhealthy") {
+              hasUnhealthy = true;
+            } else if (health.status === "degraded") {
+              hasDegraded = true;
+            }
+          }
+        ),
+        { concurrency: 1 }
+      );
 
       let overall: "healthy" | "degraded" | "critical" = "healthy";
       if (hasUnhealthy) {
@@ -256,7 +264,7 @@ export class SystemHealthMap {
         overall,
         activeDegradeMode: this.degradeManager.getMode(),
         components,
-        timestamp: Date.now(),
+        timestamp: yield* Clock.currentTimeMillis,
       };
     });
   }

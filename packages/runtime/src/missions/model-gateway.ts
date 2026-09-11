@@ -1,10 +1,11 @@
+import { serializeJson } from "@operon/schema";
 import type {
   ModelEvaluationCase,
   ModelEvaluationReport,
   ModelRoutingConfig,
 } from "@operon/schema";
 import { OperonTelemetryService } from "@operon/telemetry";
-import { Context, Effect, Layer } from "effect";
+import { Clock, Context, Effect, Exit, Layer } from "effect";
 
 import {
   ModelGatewayExecutionError,
@@ -91,7 +92,7 @@ export const ModelGatewayServiceLive = Layer.sync(ModelGatewayService, () => {
             `Model candidate '${candidateModelId}' is not registered in gateway`
           );
           return {
-            evaluatedAt: Date.now(),
+            evaluatedAt: yield* Clock.currentTimeMillis,
             failures,
             modelId: candidateModelId,
             passed: false,
@@ -102,46 +103,50 @@ export const ModelGatewayServiceLive = Layer.sync(ModelGatewayService, () => {
 
         let passedCases = 0;
 
-        for (const testCase of suite) {
-          const runExit = yield* Effect.exit(
-            entry.runner(testCase.inputPayload)
-          );
-          const runResult =
-            runExit._tag === "Success"
-              ? runExit.value
-              : ({ error: String(runExit.cause) } as Record<string, unknown>);
-
-          let casePassed = true;
-
-          // 1. Action prediction check
-          if (runResult.action !== testCase.expectedAction) {
-            failures.push(
-              `Case '${testCase.caseId}': expected action '${testCase.expectedAction}', received '${String(runResult.action)}'`
+        yield* Effect.forEach(
+          suite,
+          Effect.fn("ModelGatewayService.evalTestCase")(function* (testCase) {
+            const runExit = yield* Effect.exit(
+              entry.runner(testCase.inputPayload)
             );
-            casePassed = false;
-          }
+            const runResult = Exit.isSuccess(runExit)
+              ? runExit.value
+              : // SAFETY: Error fallback payload for model evaluation failure
+                ({ error: String(runExit.cause) } as Record<string, unknown>);
 
-          // 2. Data policy check (forbidden output patterns / leaks)
-          const outputString = JSON.stringify(runResult);
-          for (const pattern of testCase.forbiddenOutputPatterns) {
-            if (outputString.includes(pattern)) {
+            let casePassed = true;
+
+            // 1. Action prediction check
+            if (runResult.action !== testCase.expectedAction) {
               failures.push(
-                `Case '${testCase.caseId}': output exposed forbidden pattern '${pattern}'`
+                `Case '${testCase.caseId}': expected action '${testCase.expectedAction}', received '${String(runResult.action)}'`
               );
               casePassed = false;
             }
-          }
 
-          if (casePassed) {
-            passedCases += 1;
-          }
-        }
+            // 2. Data policy check (forbidden output patterns / leaks)
+            const outputString = serializeJson(runResult);
+            for (const pattern of testCase.forbiddenOutputPatterns) {
+              if (outputString.includes(pattern)) {
+                failures.push(
+                  `Case '${testCase.caseId}': output exposed forbidden pattern '${pattern}'`
+                );
+                casePassed = false;
+              }
+            }
+
+            if (casePassed) {
+              passedCases += 1;
+            }
+          }),
+          { concurrency: 1 }
+        );
 
         const score = suite.length > 0 ? passedCases / suite.length : 1;
         const passed = failures.length === 0;
 
         return {
-          evaluatedAt: Date.now(),
+          evaluatedAt: yield* Clock.currentTimeMillis,
           failures,
           modelId: candidateModelId,
           passed,
@@ -172,17 +177,17 @@ export const ModelGatewayServiceLive = Layer.sync(ModelGatewayService, () => {
         }
 
         if (!primary) {
-          return yield* Effect.fail(
+          return yield* 
             new ModelGatewayExecutionError({
               message: `No model found for routing key '${routingKey}'`,
               routingKey,
             })
-          );
+          ;
         }
 
         const primaryAttempt = yield* Effect.exit(primary.runner(input));
 
-        if (primaryAttempt._tag === "Success") {
+        if (Exit.isSuccess(primaryAttempt)) {
           return primaryAttempt.value;
         }
 
@@ -206,13 +211,13 @@ export const ModelGatewayServiceLive = Layer.sync(ModelGatewayService, () => {
           }
         }
 
-        return yield* Effect.fail(
+        return yield* 
           new ModelGatewayExecutionError({
             message: `Primary model '${primary.config.modelId}' failed and no functional fallback succeeded: ${String(primaryAttempt.cause)}`,
             modelId: primary.config.modelId,
             routingKey,
           })
-        );
+        ;
       }
     ),
 
@@ -227,7 +232,7 @@ export const ModelGatewayServiceLive = Layer.sync(ModelGatewayService, () => {
       // When a new model candidate fails the benchmark or data exposure suite,
       // production routing is NOT changed.
       if (!report.passed || report.score < 1) {
-        return yield* Effect.fail(
+        return yield* 
           new ModelPromotionDeniedError({
             candidateModelId,
             currentProductionModelId: activeProductionModelId,
@@ -235,7 +240,7 @@ export const ModelGatewayServiceLive = Layer.sync(ModelGatewayService, () => {
             message: `Promotion of candidate '${candidateModelId}' denied: benchmark score ${report.score} < 1.0 (${report.failures.length} failures). Production routing unchanged (${activeProductionModelId}).`,
             reason: "BENCHMARK_FAILURE",
           })
-        );
+        ;
       }
 
       activeProductionModelId = candidateModelId;
@@ -298,7 +303,7 @@ export const ModelGatewayServiceLive = Layer.sync(ModelGatewayService, () => {
           deficiencies.push(...readiness.consistent.contradictions);
         }
 
-        return yield* Effect.fail(
+        return yield* 
           new ReadinessDeficientError({
             actionId,
             contextFidelityScore: modelOutput.contextFidelity,
@@ -306,7 +311,7 @@ export const ModelGatewayServiceLive = Layer.sync(ModelGatewayService, () => {
             message: `Action '${actionId}' rejected: Context fidelity score (${modelOutput.contextFidelity}) does not authorize action with deficient state readiness on '${objectId}': ${deficiencies.join("; ")}`,
             objectId,
           })
-        );
+        ;
       }
 
       return Effect.void;

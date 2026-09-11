@@ -1,26 +1,38 @@
 import type {
+  ActionDef,
+  ActionParameters,
   ActionType,
+  ActionTypeId,
   ApprovalsPolicy,
   CandidateChangeSet,
   CandidateReceipt,
   DefinitionArtifact,
   DefinitionRelease,
+  FreshnessDef,
   InterfaceType,
   LinkCardinality,
+  LinkDef,
   LinkType,
   LinkTypeId,
   ObjectType,
   ObjectTypeId,
   OntologyBranch,
   OntologyProposal,
+  PropertyDefinition,
   ProposalChangeSet,
   ProposalReview,
   PublicationReceipt,
+  QueryDef,
   RiskTier,
   Subject,
+  TypeDef,
 } from "@operon/schema";
-import { canonicalJson, computeCanonicalDigest } from "@operon/schema";
-import { Data, Effect } from "effect";
+import {
+  canonicalJson,
+  computeCanonicalDigest,
+  generatePrefixedId,
+} from "@operon/schema";
+import { Clock, Data, Effect, Schema } from "effect";
 
 import type { AgentContext } from "./auth.js";
 import {
@@ -59,7 +71,7 @@ export class ApprovalsPolicyViolationError extends Data.TaggedError(
 export interface BranchSchemaDelta {
   readonly objectTypes: Map<string, ObjectType>;
   readonly linkTypes: Map<string, LinkType>;
-  readonly actionTypes: Map<string, ActionType<any>>;
+  readonly actionTypes: Map<string, ActionType<ActionParameters>>;
   readonly interfaceTypes: Map<string, InterfaceType>;
 }
 
@@ -81,6 +93,430 @@ export interface ContextOptions {
  * Maximum artifact size boundary (10MB) per V0-CH-02 open fork decision
  */
 const MAX_ARTIFACT_BYTES = 10 * 1024 * 1024;
+
+const defaultApprovalsPolicy: ApprovalsPolicy = {
+  requireComplianceReview: false,
+  requireDomainSpecialistReview: false,
+  requiredMinApprovals: 1,
+};
+
+const cardinalityMap: Record<"1:1" | "1:N" | "N:N", LinkCardinality> = {
+  "1:1": "one-to-one",
+  "1:N": "one-to-many",
+  "N:N": "many-to-many",
+};
+
+const riskTierMap: Record<"low" | "moderate" | "high" | "critical", RiskTier> =
+  {
+    critical: "critical",
+    high: "high",
+    low: "low",
+    moderate: "medium",
+  };
+
+function validateCandidateTypes(
+  types: readonly TypeDef[],
+  errors: string[]
+): void {
+  for (const t of types) {
+    if (!t.properties[t.primaryKey]) {
+      errors.push(
+        `TypeDef '${t.id}' specifies primaryKey '${t.primaryKey}' which is missing in declared properties.`
+      );
+    }
+  }
+}
+
+function validateCandidateLinks(
+  links: readonly LinkDef[],
+  declaredTypeIds: ReadonlySet<string>,
+  branchSchema: BranchSchemaDelta,
+  errors: string[]
+): void {
+  for (const l of links) {
+    const sourceExists =
+      declaredTypeIds.has(l.sourceTypeId) ||
+      branchSchema.objectTypes.has(l.sourceTypeId);
+    const targetExists =
+      declaredTypeIds.has(l.targetTypeId) ||
+      branchSchema.objectTypes.has(l.targetTypeId);
+
+    if (!sourceExists) {
+      errors.push(
+        `LinkDef '${l.id}' references undefined sourceTypeId '${l.sourceTypeId}'.`
+      );
+    }
+    if (!targetExists) {
+      errors.push(
+        `LinkDef '${l.id}' references undefined targetTypeId '${l.targetTypeId}'.`
+      );
+    }
+  }
+}
+
+function validateCandidateQueries(
+  queries: readonly QueryDef[],
+  declaredTypeIds: ReadonlySet<string>,
+  branchSchema: BranchSchemaDelta,
+  errors: string[]
+): void {
+  for (const q of queries) {
+    const returnTypeExists =
+      declaredTypeIds.has(q.returnTypeId) ||
+      branchSchema.objectTypes.has(q.returnTypeId);
+    if (!returnTypeExists) {
+      errors.push(
+        `QueryDef '${q.id}' references undefined returnTypeId '${q.returnTypeId}'.`
+      );
+    }
+  }
+}
+
+function validateCandidateActions(
+  actions: readonly ActionDef[],
+  errors: string[]
+): void {
+  for (const a of actions) {
+    if (
+      a.effectClass !== "read_only" &&
+      a.effectClass !== "state_mutation" &&
+      a.effectClass !== "external_side_effect"
+    ) {
+      errors.push(
+        `ActionDef '${a.id}' has invalid or unsafe effectClass '${a.effectClass}'.`
+      );
+    }
+  }
+}
+
+function validateCandidateFreshness(
+  freshness: readonly FreshnessDef[],
+  types: readonly TypeDef[],
+  branchSchema: BranchSchemaDelta,
+  errors: string[]
+): void {
+  for (const f of freshness) {
+    const typeDef =
+      types.find((t) => t.id === f.typeId) ??
+      branchSchema.objectTypes.get(f.typeId);
+    if (!typeDef) {
+      errors.push(`FreshnessDef references undefined typeId '${f.typeId}'.`);
+      continue;
+    }
+    const hasProp =
+      "properties" in typeDef &&
+      Boolean((typeDef.properties as Record<string, unknown>)[f.propertyName]);
+    if (!hasProp) {
+      errors.push(
+        `FreshnessDef references undefined property '${f.propertyName}' on type '${f.typeId}'.`
+      );
+    }
+  }
+}
+
+function validateCandidateArtifact(
+  artifact: DefinitionArtifact,
+  branchSchema: BranchSchemaDelta
+): readonly string[] {
+  const errors: string[] = [];
+  const declaredTypeIds = new Set(artifact.types.map((t) => t.id));
+
+  validateCandidateTypes(artifact.types, errors);
+  validateCandidateLinks(artifact.links, declaredTypeIds, branchSchema, errors);
+  validateCandidateQueries(
+    artifact.queries,
+    declaredTypeIds,
+    branchSchema,
+    errors
+  );
+  validateCandidateActions(artifact.actions, errors);
+  validateCandidateFreshness(
+    artifact.freshness,
+    artifact.types,
+    branchSchema,
+    errors
+  );
+
+  return errors;
+}
+
+function applyArtifactToBranchSchema(
+  artifact: DefinitionArtifact,
+  branchSchema: BranchSchemaDelta
+): void {
+  for (const t of artifact.types) {
+    const properties: Record<string, PropertyDefinition<unknown>> = {};
+    for (const [key, p] of Object.entries(t.properties)) {
+      properties[key] = {
+        description: p.description ?? p.name,
+        required: p.required ?? false,
+        schema: Schema.Unknown,
+      };
+    }
+    branchSchema.objectTypes.set(t.id, {
+      description: t.description ?? t.name,
+      id: t.id as ObjectTypeId,
+      name: t.name,
+      primaryKey: t.primaryKey,
+      properties,
+      typology: (t.typology ?? "master") as ObjectType["typology"],
+    });
+  }
+
+  for (const l of artifact.links) {
+    branchSchema.linkTypes.set(l.id, {
+      cardinality: cardinalityMap[l.cardinality],
+      description: l.name,
+      id: l.id as LinkTypeId,
+      sourceToTargetName: l.name,
+      sourceTypeId: l.sourceTypeId as ObjectTypeId,
+      targetToSourceName: `${l.name}Inverse`,
+      targetTypeId: l.targetTypeId as ObjectTypeId,
+    });
+  }
+
+  for (const a of artifact.actions) {
+    branchSchema.actionTypes.set(a.id, {
+      defaultExecutionMode: "automated",
+      description: a.description ?? a.name,
+      id: a.id as ActionTypeId,
+      minimumAgentTier: 4,
+      name: a.name,
+      parametersSchema: Schema.Record(Schema.String, Schema.Json),
+      riskTier: riskTierMap[a.riskTier],
+      submissionCriteria: [],
+    });
+  }
+}
+
+function validateArtifactPreconditions(options: {
+  readonly artifact: DefinitionArtifact;
+  readonly branch: OntologyBranch;
+  readonly expectedRevision?: number;
+  readonly crashInject?: boolean;
+}): Effect.Effect<void, ArtifactSizeExceededError | CompilationError> {
+  const canonicalStr = canonicalJson(options.artifact);
+  const actualBytes = Buffer.byteLength(canonicalStr, "utf-8");
+  if (actualBytes > MAX_ARTIFACT_BYTES) {
+    return new ArtifactSizeExceededError({
+      actualBytes,
+      maxAllowedBytes: MAX_ARTIFACT_BYTES,
+    });
+  }
+  if (
+    options.expectedRevision !== undefined &&
+    options.branch.revision !== undefined &&
+    options.branch.revision !== options.expectedRevision
+  ) {
+    return new CompilationError({
+      errors: [
+        `Expected branch revision ${options.expectedRevision}, but found ${options.branch.revision}`,
+      ],
+      message: "Branch revision mismatch (concurrent modification)",
+    });
+  }
+  if (options.crashInject) {
+    return new CompilationError({
+      errors: ["CRASH_INJECTION_TRIGGERED"],
+      message: "Simulated crash fault injected before state mutation",
+    });
+  }
+  return Effect.void;
+}
+
+function checkCandidateIdempotency(
+  existing:
+    | {
+        readonly branch: string;
+        readonly digest: string;
+        readonly receipt: CandidateReceipt;
+      }
+    | undefined,
+  branch: string,
+  candidateDigest: string,
+  idempotencyKey: string
+): Effect.Effect<CandidateReceipt | undefined, IdempotencyConflictError> {
+  if (!existing) {
+    return Effect.void as Effect.Effect<undefined>;
+  }
+  if (existing.branch !== branch || existing.digest !== candidateDigest) {
+    return new IdempotencyConflictError({
+      idempotencyKey,
+      message: `Idempotency key '${idempotencyKey}' was previously submitted with different branch or artifact`,
+    });
+  }
+  return Effect.succeed(existing.receipt);
+}
+
+function validateCandidateArtifactOrError(
+  artifact: DefinitionArtifact,
+  branchSchema: BranchSchemaDelta
+): Effect.Effect<void, CompilationError> {
+  const errors = validateCandidateArtifact(artifact, branchSchema);
+  if (errors.length > 0) {
+    return new CompilationError({
+      errors: [...errors],
+      message: `Artifact validation failed with ${errors.length} error(s)`,
+    });
+  }
+  return Effect.void;
+}
+
+function validateProposalApprovals(
+  proposal: OntologyProposal,
+  policy: ApprovalsPolicy
+): Effect.Effect<void, ApprovalsPolicyViolationError> {
+  if (
+    proposal.status === "rejected" ||
+    proposal.reviews.some((r) => r.verdict === "reject")
+  ) {
+    return new ApprovalsPolicyViolationError({
+      proposalId: proposal.id,
+      reason: "Proposal has been rejected and cannot be merged",
+    });
+  }
+
+  const approvals = proposal.reviews.filter((r) => r.verdict === "approve");
+  if (approvals.length < policy.requiredMinApprovals) {
+    return new ApprovalsPolicyViolationError({
+      proposalId: proposal.id,
+      reason: `Requires at least ${policy.requiredMinApprovals} approvals; found ${approvals.length}`,
+    });
+  }
+
+  if (policy.requireComplianceReview) {
+    const complianceApproved = approvals.some((a) =>
+      a.reviewer.roles.includes("compliance_officer")
+    );
+    if (!complianceApproved) {
+      return new ApprovalsPolicyViolationError({
+        proposalId: proposal.id,
+        reason: "Requires sign-off from a compliance officer",
+      });
+    }
+  }
+
+  if (policy.requireDomainSpecialistReview) {
+    const specialistApproved = approvals.some(
+      (a) =>
+        a.reviewer.roles.includes("specialist") ||
+        a.reviewer.roles.includes("domain_specialist")
+    );
+    if (!specialistApproved) {
+      return new ApprovalsPolicyViolationError({
+        proposalId: proposal.id,
+        reason: "Requires sign-off from a domain specialist",
+      });
+    }
+  }
+
+  return Effect.void;
+}
+
+function applyProposalChangesToSchema(
+  targetSchema: BranchSchemaDelta,
+  changeSet: ProposalChangeSet
+): void {
+  for (const ot of changeSet.addedObjectTypes) {
+    targetSchema.objectTypes.set(ot.id, ot);
+  }
+  for (const ot of changeSet.modifiedObjectTypes) {
+    targetSchema.objectTypes.set(ot.id, ot);
+  }
+  for (const id of changeSet.deletedObjectTypeIds) {
+    targetSchema.objectTypes.delete(id);
+  }
+
+  for (const lt of changeSet.addedLinkTypes) {
+    targetSchema.linkTypes.set(lt.id, lt);
+  }
+  for (const lt of changeSet.modifiedLinkTypes) {
+    targetSchema.linkTypes.set(lt.id, lt);
+  }
+  for (const id of changeSet.deletedLinkTypeIds) {
+    targetSchema.linkTypes.delete(id);
+  }
+
+  for (const at of changeSet.addedActionTypes) {
+    targetSchema.actionTypes.set(at.id, at);
+  }
+  for (const at of changeSet.modifiedActionTypes) {
+    targetSchema.actionTypes.set(at.id, at);
+  }
+  for (const id of changeSet.deletedActionTypeIds) {
+    targetSchema.actionTypes.delete(id);
+  }
+}
+
+function validateExpectedReleaseCas(
+  activeRelease: DefinitionRelease | null,
+  expected: {
+    readonly digest?: string;
+    readonly kind: "none" | "digest" | "release";
+  }
+): Effect.Effect<void, ReleaseConflictError> {
+  if (expected.kind === "none") {
+    if (activeRelease !== null) {
+      return new ReleaseConflictError({
+        actualDigest: activeRelease.canonicalDigest,
+        expectedDigest: undefined,
+        message:
+          "Expected no active release (initial publication), but an active release already exists",
+      });
+    }
+    return Effect.void;
+  }
+  if (activeRelease === null) {
+    return new ReleaseConflictError({
+      actualDigest: undefined,
+      expectedDigest: expected.digest,
+      message: "Expected existing release, but no release is currently active",
+    });
+  }
+  if (expected.digest && activeRelease.canonicalDigest !== expected.digest) {
+    return new ReleaseConflictError({
+      actualDigest: activeRelease.canonicalDigest,
+      expectedDigest: expected.digest,
+      message: `Active release digest '${activeRelease.canonicalDigest}' does not match expected digest '${expected.digest}'`,
+    });
+  }
+  return Effect.void;
+}
+
+function populateMap<K, V>(map: Map<K, V>, source: unknown): void {
+  if (Array.isArray(source)) {
+    map.clear();
+    for (const [k, v] of source as readonly [K, V][]) {
+      map.set(k, v);
+    }
+  }
+}
+
+function populateBranchSchemas(
+  map: Map<string, BranchSchemaDelta>,
+  source: unknown
+): void {
+  if (!Array.isArray(source)) {
+    return;
+  }
+  map.clear();
+  for (const [k, v] of source as readonly [
+    string,
+    {
+      readonly actionTypes: readonly [string, ActionType<ActionParameters>][];
+      readonly interfaceTypes: readonly [string, InterfaceType][];
+      readonly linkTypes: readonly [string, LinkType][];
+      readonly objectTypes: readonly [string, ObjectType][];
+    },
+  ][]) {
+    map.set(k, {
+      actionTypes: new Map(v.actionTypes),
+      interfaceTypes: new Map(v.interfaceTypes),
+      linkTypes: new Map(v.linkTypes),
+      objectTypes: new Map(v.objectTypes),
+    });
+  }
+}
 
 /**
  * OMS (Ontology Metadata Service)
@@ -139,7 +575,9 @@ export class OntologyMetadataService {
   private checkContext(
     context?: ContextOptions | AgentContext
   ): Effect.Effect<void, AuthorizationError> {
-    if (!context) return Effect.void;
+    if (!context) {
+      return Effect.void;
+    }
     const ctx: AgentContext | undefined =
       "actorId" in context ? context : context.agentContext;
     const expectedTenantId =
@@ -149,36 +587,36 @@ export class OntologyMetadataService {
         ? context.expectedEnvironmentId
         : undefined;
 
-    if (!ctx) return Effect.void;
+    if (!ctx) {
+      return Effect.void;
+    }
     if (
       (expectedTenantId && ctx.tenantId !== expectedTenantId) ||
       (expectedEnvironmentId && ctx.environmentId !== expectedEnvironmentId)
     ) {
-      return Effect.fail(new AuthorizationError({ reason: "Access denied" }));
+      return new AuthorizationError({ reason: "Access denied" });
     }
     return Effect.void;
   }
 
-  // Branch Management
-  createBranch(
-    name: string,
-    author: Subject,
-    parentBranchId = "main",
-    context?: ContextOptions | AgentContext
-  ): Effect.Effect<OntologyBranch, BranchNotFoundError | AuthorizationError> {
-    return Effect.gen({ self: this }, function* () {
+  readonly createBranch = Effect.fn("OntologyMetadataService.createBranch")(
+    function* (
+      this: OntologyMetadataService,
+      name: string,
+      author: Subject,
+      parentBranchId = "main",
+      context?: ContextOptions | AgentContext
+    ) {
       yield* this.checkContext(context);
 
       const parentSchema = this.branchSchemas.get(parentBranchId);
       const parentBranch = this.branches.get(parentBranchId);
       if (!parentSchema || !parentBranch) {
-        return yield* Effect.fail(
-          new BranchNotFoundError({ branchName: parentBranchId })
-        );
+        return yield* new BranchNotFoundError({ branchName: parentBranchId });
       }
 
       const branch: OntologyBranch = {
-        createdAt: Date.now(),
+        createdAt: yield* Clock.currentTimeMillis,
         createdBy: author,
         id: name,
         isMain: false,
@@ -196,33 +634,33 @@ export class OntologyMetadataService {
       });
 
       return branch;
-    });
-  }
+    }
+  );
 
-  getBranch(
-    name: string,
-    context?: ContextOptions | AgentContext
-  ): Effect.Effect<OntologyBranch, BranchNotFoundError | AuthorizationError> {
-    return Effect.gen({ self: this }, function* () {
+  readonly getBranch = Effect.fn("OntologyMetadataService.getBranch")(
+    function* (
+      this: OntologyMetadataService,
+      name: string,
+      context?: ContextOptions | AgentContext
+    ) {
       yield* this.checkContext(context);
       const branch = this.branches.get(name);
       if (!branch) {
-        return yield* Effect.fail(
-          new BranchNotFoundError({ branchName: name })
-        );
+        return yield* new BranchNotFoundError({ branchName: name });
       }
       return branch;
-    });
-  }
+    }
+  );
 
-  listBranches(
-    context?: ContextOptions | AgentContext
-  ): Effect.Effect<readonly OntologyBranch[], AuthorizationError> {
-    return Effect.gen({ self: this }, function* () {
+  readonly listBranches = Effect.fn("OntologyMetadataService.listBranches")(
+    function* (
+      this: OntologyMetadataService,
+      context?: ContextOptions | AgentContext
+    ) {
       yield* this.checkContext(context);
       return [...this.branches.values()];
-    });
-  }
+    }
+  );
 
   // Schema Registration on Branch
   registerObjectType(
@@ -231,7 +669,7 @@ export class OntologyMetadataService {
   ): Effect.Effect<void, BranchNotFoundError> {
     const schema = this.branchSchemas.get(branchName);
     if (!schema) {
-      return Effect.fail(new BranchNotFoundError({ branchName }));
+      return new BranchNotFoundError({ branchName });
     }
     schema.objectTypes.set(objectType.id, objectType);
     return Effect.void;
@@ -243,7 +681,7 @@ export class OntologyMetadataService {
   ): Effect.Effect<void, BranchNotFoundError> {
     const schema = this.branchSchemas.get(branchName);
     if (!schema) {
-      return Effect.fail(new BranchNotFoundError({ branchName }));
+      return new BranchNotFoundError({ branchName });
     }
     schema.linkTypes.set(linkType.id, linkType);
     return Effect.void;
@@ -251,216 +689,84 @@ export class OntologyMetadataService {
 
   registerActionType(
     branchName: string,
-    actionType: ActionType<any>
+    actionType: ActionType<ActionParameters>
   ): Effect.Effect<void, BranchNotFoundError> {
     const schema = this.branchSchemas.get(branchName);
     if (!schema) {
-      return Effect.fail(new BranchNotFoundError({ branchName }));
+      return new BranchNotFoundError({ branchName });
     }
     schema.actionTypes.set(actionType.id, actionType);
     return Effect.void;
   }
 
-  getSchema(
-    branchName = "main",
-    context?: ContextOptions | AgentContext
-  ): Effect.Effect<
-    BranchSchemaDelta,
-    BranchNotFoundError | AuthorizationError
-  > {
-    return Effect.gen({ self: this }, function* () {
+  readonly getSchema = Effect.fn("OntologyMetadataService.getSchema")(
+    function* (
+      this: OntologyMetadataService,
+      branchName = "main",
+      context?: ContextOptions | AgentContext
+    ) {
       yield* this.checkContext(context);
       const schema = this.branchSchemas.get(branchName);
       if (!schema) {
-        return yield* Effect.fail(new BranchNotFoundError({ branchName }));
+        return yield* new BranchNotFoundError({ branchName });
       }
       return schema;
-    });
-  }
+    }
+  );
 
   // V0-CH-02: Apply Definition Artifact atomically to a branch
-  applyArtifact(options: {
-    readonly branch: string;
-    readonly artifact: DefinitionArtifact;
-    readonly expectedRevision?: number;
-    readonly idempotencyKey?: string;
-    readonly agentContext?: AgentContext;
-    readonly expectedTenantId?: string;
-    readonly expectedEnvironmentId?: string;
-    readonly crashInject?: boolean;
-  }): Effect.Effect<
-    CandidateReceipt,
-    | BranchNotFoundError
-    | AuthorizationError
-    | ArtifactSizeExceededError
-    | IdempotencyConflictError
-    | CompilationError
-  > {
-    return Effect.gen({ self: this }, function* () {
+  readonly applyArtifact = Effect.fn("OntologyMetadataService.applyArtifact")(
+    function* (
+      this: OntologyMetadataService,
+      options: {
+        readonly branch: string;
+        readonly artifact: DefinitionArtifact;
+        readonly expectedRevision?: number;
+        readonly idempotencyKey?: string;
+        readonly agentContext?: AgentContext;
+        readonly expectedTenantId?: string;
+        readonly expectedEnvironmentId?: string;
+        readonly crashInject?: boolean;
+      }
+    ) {
       yield* this.checkContext({
         agentContext: options.agentContext,
         expectedEnvironmentId: options.expectedEnvironmentId,
         expectedTenantId: options.expectedTenantId,
       });
 
-      // Check max artifact size
-      const canonicalStr = canonicalJson(options.artifact);
-      const actualBytes = Buffer.byteLength(canonicalStr, "utf-8");
-      if (actualBytes > MAX_ARTIFACT_BYTES) {
-        return yield* Effect.fail(
-          new ArtifactSizeExceededError({
-            actualBytes,
-            maxAllowedBytes: MAX_ARTIFACT_BYTES,
-          })
-        );
-      }
-
-      // Check branch existence
       const branch = this.branches.get(options.branch);
       if (!branch) {
-        return yield* Effect.fail(
-          new BranchNotFoundError({ branchName: options.branch })
-        );
+        return yield* new BranchNotFoundError({ branchName: options.branch });
       }
+
+      const branchSchema = this.branchSchemas.get(options.branch);
+      if (!branchSchema) {
+        return yield* new BranchNotFoundError({ branchName: options.branch });
+      }
+
+      yield* validateArtifactPreconditions({
+        artifact: options.artifact,
+        branch,
+        crashInject: options.crashInject,
+        expectedRevision: options.expectedRevision,
+      });
 
       const candidateDigest = computeCanonicalDigest(options.artifact);
 
-      // Idempotency check
       if (options.idempotencyKey) {
-        const existing = this.candidateIdempotency.get(options.idempotencyKey);
-        if (existing) {
-          if (
-            existing.branch !== options.branch ||
-            existing.digest !== candidateDigest
-          ) {
-            return yield* Effect.fail(
-              new IdempotencyConflictError({
-                idempotencyKey: options.idempotencyKey,
-                message: `Idempotency key '${options.idempotencyKey}' was previously submitted with different branch or artifact`,
-              })
-            );
-          }
-          return existing.receipt;
-        }
-      }
-
-      // Check revision consistency
-      if (
-        options.expectedRevision !== undefined &&
-        branch.revision !== undefined &&
-        branch.revision !== options.expectedRevision
-      ) {
-        return yield* Effect.fail(
-          new CompilationError({
-            errors: [
-              `Expected branch revision ${options.expectedRevision}, but found ${branch.revision}`,
-            ],
-            message: "Branch revision mismatch (concurrent modification)",
-          })
+        const cached = yield* checkCandidateIdempotency(
+          this.candidateIdempotency.get(options.idempotencyKey),
+          options.branch,
+          candidateDigest,
+          options.idempotencyKey
         );
-      }
-
-      // Compilation & semantic validation
-      const errors: string[] = [];
-      const declaredTypeIds = new Set(options.artifact.types.map((t) => t.id));
-      const branchSchema = this.branchSchemas.get(options.branch)!;
-
-      // Validate types: primaryKey must exist in properties
-      for (const t of options.artifact.types) {
-        if (!t.properties[t.primaryKey]) {
-          errors.push(
-            `TypeDef '${t.id}' specifies primaryKey '${t.primaryKey}' which is missing in declared properties.`
-          );
+        if (cached) {
+          return cached;
         }
       }
 
-      // Validate links: sourceTypeId and targetTypeId must exist in artifact or branch
-      for (const l of options.artifact.links) {
-        const sourceExists =
-          declaredTypeIds.has(l.sourceTypeId) ||
-          branchSchema.objectTypes.has(l.sourceTypeId);
-        const targetExists =
-          declaredTypeIds.has(l.targetTypeId) ||
-          branchSchema.objectTypes.has(l.targetTypeId);
-
-        if (!sourceExists) {
-          errors.push(
-            `LinkDef '${l.id}' references undefined sourceTypeId '${l.sourceTypeId}'.`
-          );
-        }
-        if (!targetExists) {
-          errors.push(
-            `LinkDef '${l.id}' references undefined targetTypeId '${l.targetTypeId}'.`
-          );
-        }
-      }
-
-      // Validate queries: returnTypeId must exist
-      for (const q of options.artifact.queries) {
-        const returnTypeExists =
-          declaredTypeIds.has(q.returnTypeId) ||
-          branchSchema.objectTypes.has(q.returnTypeId);
-        if (!returnTypeExists) {
-          errors.push(
-            `QueryDef '${q.id}' references undefined returnTypeId '${q.returnTypeId}'.`
-          );
-        }
-      }
-
-      // Validate actions: declared effect class
-      for (const a of options.artifact.actions) {
-        if (
-          a.effectClass !== "read_only" &&
-          a.effectClass !== "state_mutation" &&
-          a.effectClass !== "external_side_effect"
-        ) {
-          errors.push(
-            `ActionDef '${a.id}' has invalid or unsafe effectClass '${a.effectClass}'.`
-          );
-        }
-      }
-
-      // Validate freshness: typeId and propertyName must exist
-      for (const f of options.artifact.freshness) {
-        const typeDef =
-          options.artifact.types.find((t) => t.id === f.typeId) ??
-          branchSchema.objectTypes.get(f.typeId);
-        if (typeDef) {
-          const hasProp =
-            "properties" in typeDef &&
-            Boolean(
-              (typeDef.properties as Record<string, unknown>)[f.propertyName]
-            );
-          if (!hasProp) {
-            errors.push(
-              `FreshnessDef references undefined property '${f.propertyName}' on type '${f.typeId}'.`
-            );
-          }
-        } else {
-          errors.push(
-            `FreshnessDef references undefined typeId '${f.typeId}'.`
-          );
-        }
-      }
-
-      if (errors.length > 0) {
-        return yield* Effect.fail(
-          new CompilationError({
-            errors,
-            message: `Artifact validation failed with ${errors.length} error(s)`,
-          })
-        );
-      }
-
-      // Crash injection test: fail before any state mutation occurs
-      if (options.crashInject) {
-        return yield* Effect.fail(
-          new CompilationError({
-            errors: ["CRASH_INJECTION_TRIGGERED"],
-            message: "Simulated crash fault injected before state mutation",
-          })
-        );
-      }
+      yield* validateCandidateArtifactOrError(options.artifact, branchSchema);
 
       // Atomically commit schema changes to branch
       const nextRevision = (branch.revision ?? 1) + 1;
@@ -469,67 +775,18 @@ export class OntologyMetadataService {
         revision: nextRevision,
       });
 
-      const cardinalityMap: Record<"1:1" | "1:N" | "N:N", LinkCardinality> = {
-        "1:1": "one-to-one",
-        "1:N": "one-to-many",
-        "N:N": "many-to-many",
-      };
+      applyArtifactToBranchSchema(options.artifact, branchSchema);
 
-      const riskTierMap: Record<
-        "low" | "moderate" | "high" | "critical",
-        RiskTier
-      > = {
-        critical: "critical",
-        high: "high",
-        low: "low",
-        moderate: "medium",
-      };
-
-      for (const t of options.artifact.types) {
-        branchSchema.objectTypes.set(t.id, {
-          description: t.description ?? t.name,
-          id: t.id as ObjectTypeId,
-          name: t.name,
-          primaryKey: t.primaryKey,
-          properties: t.properties as any,
-          typology: (t.typology ?? "master") as any,
-        });
-      }
-
-      for (const l of options.artifact.links) {
-        branchSchema.linkTypes.set(l.id, {
-          cardinality: cardinalityMap[l.cardinality],
-          description: l.name,
-          id: l.id as LinkTypeId,
-          sourceToTargetName: l.name,
-          sourceTypeId: l.sourceTypeId as ObjectTypeId,
-          targetToSourceName: `${l.name}Inverse`,
-          targetTypeId: l.targetTypeId as ObjectTypeId,
-        });
-      }
-
-      for (const a of options.artifact.actions) {
-        branchSchema.actionTypes.set(a.id, {
-          defaultExecutionMode: "automated",
-          description: a.description ?? a.name,
-          id: a.id as any,
-          minimumAgentTier: 4,
-          name: a.name,
-          parametersSchema: a.parametersSchema as any,
-          riskTier: riskTierMap[a.riskTier],
-          submissionCriteria: [],
-        });
-      }
-
+      const now = yield* Clock.currentTimeMillis;
       const changeSet: CandidateChangeSet = {
         artifact: options.artifact,
         canonicalDigest: candidateDigest,
-        compiledAt: Date.now(),
+        compiledAt: now,
         revision: nextRevision,
       };
 
       const receipt: CandidateReceipt = {
-        appliedAt: Date.now(),
+        appliedAt: now,
         branch: options.branch,
         candidateDigest,
         changeSet,
@@ -550,38 +807,38 @@ export class OntologyMetadataService {
       }
 
       return receipt;
-    });
-  }
+    }
+  );
 
   // Inspect and Diff Candidate
-  inspectCandidate(
+  readonly inspectCandidate = Effect.fn(
+    "OntologyMetadataService.inspectCandidate"
+  )(function* (
+    this: OntologyMetadataService,
     candidateDigest: string,
     context?: ContextOptions | AgentContext
-  ): Effect.Effect<
-    CandidateChangeSet,
-    CandidateNotFoundError | AuthorizationError
-  > {
-    return Effect.gen({ self: this }, function* () {
-      yield* this.checkContext(context);
-      const candidate = this.candidates.get(candidateDigest);
-      if (!candidate) {
-        return yield* Effect.fail(
-          new CandidateNotFoundError({
-            candidateDigest,
-            message: `Candidate with digest '${candidateDigest}' was not found`,
-          })
-        );
-      }
-      return candidate;
-    });
-  }
+  ) {
+    yield* this.checkContext(context);
+    const candidate = this.candidates.get(candidateDigest);
+    if (!candidate) {
+      return yield* new CandidateNotFoundError({
+        candidateDigest,
+        message: `Candidate with digest '${candidateDigest}' was not found`,
+      });
+    }
+    return candidate;
+  });
 
-  diffCandidate(
-    candidateDigest: string,
-    context?: ContextOptions | AgentContext
-  ): Effect.Effect<CandidateDiff, CandidateNotFoundError | AuthorizationError> {
-    return Effect.gen({ self: this }, function* () {
-      const candidate = yield* this.inspectCandidate(candidateDigest, context);
+  readonly diffCandidate = Effect.fn("OntologyMetadataService.diffCandidate")(
+    function* (
+      this: OntologyMetadataService,
+      candidateDigest: string,
+      context?: ContextOptions | AgentContext
+    ) {
+      const candidate = (yield* this.inspectCandidate(
+        candidateDigest,
+        context
+      )) as CandidateChangeSet;
       const activeArtifact = this.activeRelease
         ? this.candidates.get(this.activeRelease.candidateDigest)?.artifact
         : undefined;
@@ -621,26 +878,26 @@ export class OntologyMetadataService {
         addedTypes,
         modifiedTypes,
       };
-    });
-  }
+    }
+  );
 
   // V0-CH-03: Proposal and Review lifecycle
-  createProposal(args: {
-    readonly title: string;
-    readonly description: string;
-    readonly sourceBranch: string;
-    readonly targetBranch?: string;
-    readonly author: Subject;
-    readonly changeSet: ProposalChangeSet;
-    readonly candidateDigest?: string;
-    readonly agentContext?: AgentContext;
-    readonly expectedTenantId?: string;
-    readonly expectedEnvironmentId?: string;
-  }): Effect.Effect<
-    OntologyProposal,
-    BranchNotFoundError | AuthorizationError | CandidateNotFoundError
-  > {
-    return Effect.gen({ self: this }, function* () {
+  readonly createProposal = Effect.fn("OntologyMetadataService.createProposal")(
+    function* (
+      this: OntologyMetadataService,
+      args: {
+        readonly title: string;
+        readonly description: string;
+        readonly sourceBranch: string;
+        readonly targetBranch?: string;
+        readonly author: Subject;
+        readonly changeSet: ProposalChangeSet;
+        readonly candidateDigest?: string;
+        readonly agentContext?: AgentContext;
+        readonly expectedTenantId?: string;
+        readonly expectedEnvironmentId?: string;
+      }
+    ) {
       yield* this.checkContext({
         agentContext: args.agentContext,
         expectedEnvironmentId: args.expectedEnvironmentId,
@@ -649,33 +906,29 @@ export class OntologyMetadataService {
 
       const targetBranch = args.targetBranch ?? "main";
       if (!this.branches.has(args.sourceBranch)) {
-        return yield* Effect.fail(
-          new BranchNotFoundError({ branchName: args.sourceBranch })
-        );
+        return yield* new BranchNotFoundError({
+          branchName: args.sourceBranch,
+        });
       }
       if (!this.branches.has(targetBranch)) {
-        return yield* Effect.fail(
-          new BranchNotFoundError({ branchName: targetBranch })
-        );
+        return yield* new BranchNotFoundError({ branchName: targetBranch });
       }
 
       if (args.candidateDigest && !this.candidates.has(args.candidateDigest)) {
-        return yield* Effect.fail(
-          new CandidateNotFoundError({
-            candidateDigest: args.candidateDigest,
-            message: `Candidate '${args.candidateDigest}' does not exist`,
-          })
-        );
+        return yield* new CandidateNotFoundError({
+          candidateDigest: args.candidateDigest,
+          message: `Candidate '${args.candidateDigest}' does not exist`,
+        });
       }
 
-      const now = Date.now();
+      const now = yield* Clock.currentTimeMillis;
       const proposal: OntologyProposal & { candidateDigest?: string } = {
         author: args.author,
         candidateDigest: args.candidateDigest,
         changeSet: args.changeSet,
         createdAt: now,
         description: args.description,
-        id: `prop_${now}_${Math.random().toString(36).slice(2, 7)}`,
+        id: generatePrefixedId("prop", now),
         reviews: [],
         sourceBranch: args.sourceBranch,
         status: "open",
@@ -686,26 +939,21 @@ export class OntologyMetadataService {
 
       this.proposals.set(proposal.id, proposal);
       return proposal;
-    });
-  }
-
-  reviewProposal(
-    proposalId: string,
-    review: ProposalReview,
-    options?: {
-      readonly expectedCandidateDigest?: string;
-      readonly agentContext?: AgentContext;
-      readonly expectedTenantId?: string;
-      readonly expectedEnvironmentId?: string;
     }
-  ): Effect.Effect<
-    OntologyProposal,
-    | ProposalNotFoundError
-    | AuthorizationError
-    | SelfReviewDeniedError
-    | StaleReviewError
-  > {
-    return Effect.gen({ self: this }, function* () {
+  );
+
+  readonly reviewProposal = Effect.fn("OntologyMetadataService.reviewProposal")(
+    function* (
+      this: OntologyMetadataService,
+      proposalId: string,
+      review: ProposalReview,
+      options?: {
+        readonly expectedCandidateDigest?: string;
+        readonly agentContext?: AgentContext;
+        readonly expectedTenantId?: string;
+        readonly expectedEnvironmentId?: string;
+      }
+    ) {
       yield* this.checkContext({
         agentContext: options?.agentContext,
         expectedEnvironmentId: options?.expectedEnvironmentId,
@@ -714,40 +962,37 @@ export class OntologyMetadataService {
 
       const proposal = this.proposals.get(proposalId);
       if (!proposal) {
-        return yield* Effect.fail(
-          new ProposalNotFoundError({
-            message: `Proposal '${proposalId}' not found`,
-            proposalId,
-          })
-        );
+        return yield* new ProposalNotFoundError({
+          message: `Proposal '${proposalId}' not found`,
+          proposalId,
+        });
       }
 
       // Deny self-approval: author cannot review their own proposal
       if (review.reviewer.id === proposal.author.id) {
-        return yield* Effect.fail(
-          new SelfReviewDeniedError({
-            authorId: proposal.author.id,
-            message: `Author '${proposal.author.id}' cannot self-review or self-approve proposal '${proposalId}'`,
-            reviewerId: review.reviewer.id,
-          })
-        );
+        return yield* new SelfReviewDeniedError({
+          authorId: proposal.author.id,
+          message: `Author '${proposal.author.id}' cannot self-review or self-approve proposal '${proposalId}'`,
+          reviewerId: review.reviewer.id,
+        });
       }
 
       // Stale review check
-      const propCandidateDigest = (proposal as any).candidateDigest;
+      const propCandidateDigest =
+        "candidateDigest" in proposal
+          ? (proposal as { candidateDigest?: string }).candidateDigest
+          : undefined;
       if (
         options?.expectedCandidateDigest &&
         propCandidateDigest &&
         propCandidateDigest !== options.expectedCandidateDigest
       ) {
-        return yield* Effect.fail(
-          new StaleReviewError({
-            candidateDigest: propCandidateDigest,
-            message: `Review references stale candidate digest '${options.expectedCandidateDigest}', current proposal candidate is '${propCandidateDigest}'`,
-            proposalId,
-            reviewDigest: options.expectedCandidateDigest,
-          })
-        );
+        return yield* new StaleReviewError({
+          candidateDigest: propCandidateDigest,
+          message: `Review references stale candidate digest '${options.expectedCandidateDigest}', current proposal candidate is '${propCandidateDigest}'`,
+          proposalId,
+          reviewDigest: options.expectedCandidateDigest,
+        });
       }
 
       const updatedReviews = [...proposal.reviews, review];
@@ -758,159 +1003,71 @@ export class OntologyMetadataService {
         ...proposal,
         reviews: updatedReviews,
         status,
-        updatedAt: Date.now(),
+        updatedAt: yield* Clock.currentTimeMillis,
       };
 
       this.proposals.set(proposalId, updated);
       return updated;
-    });
-  }
-
-  mergeProposal(
-    proposalId: string,
-    merger: Subject,
-    policy: ApprovalsPolicy = {
-      requireComplianceReview: false,
-      requireDomainSpecialistReview: false,
-      requiredMinApprovals: 1,
     }
-  ): Effect.Effect<
-    OntologyProposal,
-    ProposalNotFoundError | ApprovalsPolicyViolationError | BranchNotFoundError
-  > {
-    const proposal = this.proposals.get(proposalId);
-    if (!proposal) {
-      return Effect.fail(
-        new ProposalNotFoundError({
+  );
+
+  readonly mergeProposal = Effect.fn("OntologyMetadataService.mergeProposal")(
+    function* (
+      this: OntologyMetadataService,
+      proposalId: string,
+      _merger: Subject,
+      policy: ApprovalsPolicy = defaultApprovalsPolicy
+    ) {
+      const proposal = this.proposals.get(proposalId);
+      if (!proposal) {
+        return yield* new ProposalNotFoundError({
           message: `Proposal ${proposalId} not found`,
           proposalId,
-        })
-      );
-    }
-
-    if (
-      proposal.status === "rejected" ||
-      proposal.reviews.some((r) => r.verdict === "reject")
-    ) {
-      return Effect.fail(
-        new ApprovalsPolicyViolationError({
-          proposalId,
-          reason: "Proposal has been rejected and cannot be merged",
-        })
-      );
-    }
-
-    const approvals = proposal.reviews.filter((r) => r.verdict === "approve");
-    if (approvals.length < policy.requiredMinApprovals) {
-      return Effect.fail(
-        new ApprovalsPolicyViolationError({
-          proposalId,
-          reason: `Requires at least ${policy.requiredMinApprovals} approvals; found ${approvals.length}`,
-        })
-      );
-    }
-
-    if (policy.requireComplianceReview) {
-      const complianceApproved = approvals.some((a) =>
-        a.reviewer.roles.includes("compliance_officer")
-      );
-      if (!complianceApproved) {
-        return Effect.fail(
-          new ApprovalsPolicyViolationError({
-            proposalId,
-            reason: "Requires sign-off from a compliance officer",
-          })
-        );
+        });
       }
-    }
 
-    if (policy.requireDomainSpecialistReview) {
-      const specialistApproved = approvals.some(
-        (a) =>
-          a.reviewer.roles.includes("specialist") ||
-          a.reviewer.roles.includes("domain_specialist")
-      );
-      if (!specialistApproved) {
-        return Effect.fail(
-          new ApprovalsPolicyViolationError({
-            proposalId,
-            reason: "Requires sign-off from a domain specialist",
-          })
-        );
+      yield* validateProposalApprovals(proposal, policy);
+
+      const targetSchema = this.branchSchemas.get(proposal.targetBranch);
+      if (!targetSchema) {
+        return yield* new BranchNotFoundError({
+          branchName: proposal.targetBranch,
+        });
       }
-    }
 
-    const targetSchema = this.branchSchemas.get(proposal.targetBranch);
-    if (!targetSchema) {
-      return Effect.fail(
-        new BranchNotFoundError({ branchName: proposal.targetBranch })
-      );
-    }
+      applyProposalChangesToSchema(targetSchema, proposal.changeSet);
 
-    for (const ot of proposal.changeSet.addedObjectTypes) {
-      targetSchema.objectTypes.set(ot.id, ot);
-    }
-    for (const ot of proposal.changeSet.modifiedObjectTypes) {
-      targetSchema.objectTypes.set(ot.id, ot);
-    }
-    for (const id of proposal.changeSet.deletedObjectTypeIds) {
-      targetSchema.objectTypes.delete(id);
-    }
+      const now = yield* Clock.currentTimeMillis;
+      const merged: OntologyProposal = {
+        ...proposal,
+        mergedAt: now,
+        status: "merged",
+        updatedAt: now,
+      };
+      this.proposals.set(proposalId, merged);
 
-    for (const lt of proposal.changeSet.addedLinkTypes) {
-      targetSchema.linkTypes.set(lt.id, lt);
+      return merged;
     }
-    for (const lt of proposal.changeSet.modifiedLinkTypes) {
-      targetSchema.linkTypes.set(lt.id, lt);
-    }
-    for (const id of proposal.changeSet.deletedLinkTypeIds) {
-      targetSchema.linkTypes.delete(id);
-    }
-
-    for (const at of proposal.changeSet.addedActionTypes) {
-      targetSchema.actionTypes.set(at.id, at);
-    }
-    for (const at of proposal.changeSet.modifiedActionTypes) {
-      targetSchema.actionTypes.set(at.id, at);
-    }
-    for (const id of proposal.changeSet.deletedActionTypeIds) {
-      targetSchema.actionTypes.delete(id);
-    }
-
-    const now = Date.now();
-    const merged: OntologyProposal = {
-      ...proposal,
-      mergedAt: now,
-      status: "merged",
-      updatedAt: now,
-    };
-    this.proposals.set(proposalId, merged);
-
-    return Effect.succeed(merged);
-  }
+  );
 
   // V0-CH-03: Publication of immutable DefinitionRelease
-  publishRelease(options: {
-    readonly candidateDigest: string;
-    readonly expectedCurrentRelease: {
-      readonly kind: "none" | "release";
-      readonly digest?: string;
-    };
-    readonly reviewRefs: readonly string[];
-    readonly publisher: Subject;
-    readonly idempotencyKey?: string;
-    readonly agentContext?: AgentContext;
-    readonly expectedTenantId?: string;
-    readonly expectedEnvironmentId?: string;
-  }): Effect.Effect<
-    PublicationReceipt,
-    | AuthorizationError
-    | IdempotencyConflictError
-    | CandidateNotFoundError
-    | ReleaseConflictError
-    | ApprovalsPolicyViolationError
-  > {
-    return Effect.gen({ self: this }, function* () {
+  readonly publishRelease = Effect.fn("OntologyMetadataService.publishRelease")(
+    function* (
+      this: OntologyMetadataService,
+      options: {
+        readonly candidateDigest: string;
+        readonly expectedCurrentRelease: {
+          readonly kind: "none" | "release";
+          readonly digest?: string;
+        };
+        readonly reviewRefs: readonly string[];
+        readonly publisher: Subject;
+        readonly idempotencyKey?: string;
+        readonly agentContext?: AgentContext;
+        readonly expectedTenantId?: string;
+        readonly expectedEnvironmentId?: string;
+      }
+    ) {
       yield* this.checkContext({
         agentContext: options.agentContext,
         expectedEnvironmentId: options.expectedEnvironmentId,
@@ -924,12 +1081,10 @@ export class OntologyMetadataService {
         );
         if (existing) {
           if (existing.candidateDigest !== options.candidateDigest) {
-            return yield* Effect.fail(
-              new IdempotencyConflictError({
-                idempotencyKey: options.idempotencyKey,
-                message: `Idempotency key '${options.idempotencyKey}' was previously submitted for candidate '${existing.candidateDigest}', not '${options.candidateDigest}'`,
-              })
-            );
+            return yield* new IdempotencyConflictError({
+              idempotencyKey: options.idempotencyKey,
+              message: `Idempotency key '${options.idempotencyKey}' was previously submitted for candidate '${existing.candidateDigest}', not '${options.candidateDigest}'`,
+            });
           }
           return existing.receipt;
         }
@@ -938,72 +1093,39 @@ export class OntologyMetadataService {
       // Candidate must exist
       const candidate = this.candidates.get(options.candidateDigest);
       if (!candidate) {
-        return yield* Effect.fail(
-          new CandidateNotFoundError({
-            candidateDigest: options.candidateDigest,
-            message: `Candidate digest '${options.candidateDigest}' not found`,
-          })
-        );
+        return yield* new CandidateNotFoundError({
+          candidateDigest: options.candidateDigest,
+          message: `Candidate digest '${options.candidateDigest}' not found`,
+        });
       }
 
       // Check expected current release (CAS / concurrency check)
-      if (options.expectedCurrentRelease.kind === "none") {
-        if (this.activeRelease !== null) {
-          return yield* Effect.fail(
-            new ReleaseConflictError({
-              actualDigest: this.activeRelease.canonicalDigest,
-              expectedDigest: undefined,
-              message:
-                "Expected no active release (initial publication), but an active release already exists",
-            })
-          );
-        }
-      } else {
-        if (this.activeRelease === null) {
-          return yield* Effect.fail(
-            new ReleaseConflictError({
-              actualDigest: undefined,
-              expectedDigest: options.expectedCurrentRelease.digest,
-              message:
-                "Expected existing release, but no release is currently active",
-            })
-          );
-        }
-        if (
-          options.expectedCurrentRelease.digest &&
-          this.activeRelease.canonicalDigest !==
-            options.expectedCurrentRelease.digest
-        ) {
-          return yield* Effect.fail(
-            new ReleaseConflictError({
-              actualDigest: this.activeRelease.canonicalDigest,
-              expectedDigest: options.expectedCurrentRelease.digest,
-              message: `Active release digest '${this.activeRelease.canonicalDigest}' does not match expected digest '${options.expectedCurrentRelease.digest}'`,
-            })
-          );
-        }
-      }
+      yield* validateExpectedReleaseCas(
+        this.activeRelease,
+        options.expectedCurrentRelease
+      );
 
       // Verify review obligations
       if (options.reviewRefs.length === 0) {
-        return yield* Effect.fail(
-          new ApprovalsPolicyViolationError({
-            proposalId: "unknown",
-            reason:
-              "Publication requires at least one reviewed reference approval",
-          })
-        );
+        return yield* new ApprovalsPolicyViolationError({
+          proposalId: "unknown",
+          reason:
+            "Publication requires at least one reviewed reference approval",
+        });
       }
 
       const nextRev = (this.activeRelease?.revision ?? 0) + 1;
+      const now = yield* Clock.currentTimeMillis;
       const release: DefinitionRelease = {
         candidateDigest: options.candidateDigest,
         canonicalDigest: candidate.canonicalDigest,
-        declaredEffects: candidate.artifact.actions.map((a) => a.effectClass),
+        declaredEffects: candidate.artifact.actions.map(
+          (a: ActionDef) => a.effectClass
+        ),
         dependencies: [],
-        publishedAt: Date.now(),
+        publishedAt: now,
         publishedBy: options.publisher,
-        releaseId: `rel_${Date.now()}_${options.candidateDigest.slice(0, 8)}`,
+        releaseId: `rel_${now}_${options.candidateDigest.slice(0, 8)}`,
         reviewRefs: options.reviewRefs,
         revision: nextRev,
         schemaVersion: "1.0.0",
@@ -1016,8 +1138,8 @@ export class OntologyMetadataService {
 
       const pubReceipt: PublicationReceipt = {
         idempotencyKey: options.idempotencyKey,
-        publicationId: `pub_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
-        publishedAt: Date.now(),
+        publicationId: generatePrefixedId("pub"),
+        publishedAt: now,
         release,
         status: "published",
       };
@@ -1032,21 +1154,21 @@ export class OntologyMetadataService {
       }
 
       return pubReceipt;
-    });
-  }
+    }
+  );
 
   // Lost response recovery by publicationId or idempotencyKey
-  getPublication(options: {
-    readonly publicationId?: string;
-    readonly idempotencyKey?: string;
-    readonly agentContext?: AgentContext;
-    readonly expectedTenantId?: string;
-    readonly expectedEnvironmentId?: string;
-  }): Effect.Effect<
-    PublicationReceipt,
-    PublicationNotFoundError | AuthorizationError
-  > {
-    return Effect.gen({ self: this }, function* () {
+  readonly getPublication = Effect.fn("OntologyMetadataService.getPublication")(
+    function* (
+      this: OntologyMetadataService,
+      options: {
+        readonly publicationId?: string;
+        readonly idempotencyKey?: string;
+        readonly agentContext?: AgentContext;
+        readonly expectedTenantId?: string;
+        readonly expectedEnvironmentId?: string;
+      }
+    ) {
       yield* this.checkContext({
         agentContext: options.agentContext,
         expectedEnvironmentId: options.expectedEnvironmentId,
@@ -1067,56 +1189,52 @@ export class OntologyMetadataService {
         }
       }
 
-      return yield* Effect.fail(
-        new PublicationNotFoundError({
-          identifier:
-            options.publicationId ?? options.idempotencyKey ?? "unknown",
-          message:
-            "Publication not found for given identifier or idempotency key",
-        })
-      );
-    });
-  }
+      return yield* new PublicationNotFoundError({
+        identifier:
+          options.publicationId ?? options.idempotencyKey ?? "unknown",
+        message:
+          "Publication not found for given identifier or idempotency key",
+      });
+    }
+  );
 
-  getActiveRelease(
+  readonly getActiveRelease = Effect.fn(
+    "OntologyMetadataService.getActiveRelease"
+  )(function* (
+    this: OntologyMetadataService,
     context?: ContextOptions | AgentContext
-  ): Effect.Effect<DefinitionRelease | null, AuthorizationError> {
-    return Effect.gen({ self: this }, function* () {
-      yield* this.checkContext(context);
-      return this.activeRelease;
-    });
-  }
+  ) {
+    yield* this.checkContext(context);
+    return this.activeRelease;
+  });
 
-  getProposal(
-    proposalId: string,
-    context?: ContextOptions | AgentContext
-  ): Effect.Effect<
-    OntologyProposal,
-    ProposalNotFoundError | AuthorizationError
-  > {
-    return Effect.gen({ self: this }, function* () {
+  readonly getProposal = Effect.fn("OntologyMetadataService.getProposal")(
+    function* (
+      this: OntologyMetadataService,
+      proposalId: string,
+      context?: ContextOptions | AgentContext
+    ) {
       yield* this.checkContext(context);
       const proposal = this.proposals.get(proposalId);
       if (!proposal) {
-        return yield* Effect.fail(
-          new ProposalNotFoundError({
-            message: `Proposal ${proposalId} not found`,
-            proposalId,
-          })
-        );
+        return yield* new ProposalNotFoundError({
+          message: `Proposal ${proposalId} not found`,
+          proposalId,
+        });
       }
       return proposal;
-    });
-  }
+    }
+  );
 
-  listProposals(
-    context?: ContextOptions | AgentContext
-  ): Effect.Effect<readonly OntologyProposal[], AuthorizationError> {
-    return Effect.gen({ self: this }, function* () {
+  readonly listProposals = Effect.fn("OntologyMetadataService.listProposals")(
+    function* (
+      this: OntologyMetadataService,
+      context?: ContextOptions | AgentContext
+    ) {
       yield* this.checkContext(context);
       return [...this.proposals.values()];
-    });
-  }
+    }
+  );
 
   exportSnapshot(): Record<string, unknown> {
     return {
@@ -1141,56 +1259,26 @@ export class OntologyMetadataService {
     };
   }
 
-  importSnapshot(data: any): void {
-    if (!data || typeof data !== "object") return;
-    if (Array.isArray(data.branches)) {
-      this.branches.clear();
-      for (const [k, v] of data.branches) this.branches.set(k, v);
+  importSnapshot(data: unknown): void {
+    if (!data || typeof data !== "object") {
+      return;
     }
-    if (Array.isArray(data.branchSchemas)) {
-      this.branchSchemas.clear();
-      for (const [k, v] of data.branchSchemas) {
-        this.branchSchemas.set(k, {
-          actionTypes: new Map(v.actionTypes),
-          interfaceTypes: new Map(v.interfaceTypes),
-          linkTypes: new Map(v.linkTypes),
-          objectTypes: new Map(v.objectTypes),
-        });
-      }
+    const d = data as Record<string, unknown>;
+    populateMap(this.branches, d.branches);
+    populateBranchSchemas(this.branchSchemas, d.branchSchemas);
+    populateMap(this.proposals, d.proposals);
+    populateMap(this.candidates, d.candidates);
+    populateMap(this.candidateReceipts, d.candidateReceipts);
+    populateMap(this.candidateIdempotency, d.candidateIdempotency);
+    populateMap(this.publicationIdempotency, d.publicationIdempotency);
+    populateMap(this.publications, d.publications);
+    if (d.activeRelease !== undefined) {
+      this.activeRelease = (d.activeRelease ??
+        null) as DefinitionRelease | null;
     }
-    if (Array.isArray(data.proposals)) {
-      this.proposals.clear();
-      for (const [k, v] of data.proposals) this.proposals.set(k, v);
-    }
-    if (Array.isArray(data.candidates)) {
-      this.candidates.clear();
-      for (const [k, v] of data.candidates) this.candidates.set(k, v);
-    }
-    if (Array.isArray(data.candidateReceipts)) {
-      this.candidateReceipts.clear();
-      for (const [k, v] of data.candidateReceipts)
-        this.candidateReceipts.set(k, v);
-    }
-    if (Array.isArray(data.candidateIdempotency)) {
-      this.candidateIdempotency.clear();
-      for (const [k, v] of data.candidateIdempotency)
-        this.candidateIdempotency.set(k, v);
-    }
-    if (Array.isArray(data.publicationIdempotency)) {
-      this.publicationIdempotency.clear();
-      for (const [k, v] of data.publicationIdempotency)
-        this.publicationIdempotency.set(k, v);
-    }
-    if (Array.isArray(data.publications)) {
-      this.publications.clear();
-      for (const [k, v] of data.publications) this.publications.set(k, v);
-    }
-    if (data.activeRelease !== undefined) {
-      this.activeRelease = data.activeRelease;
-    }
-    if (Array.isArray(data.releasesHistory)) {
+    if (Array.isArray(d.releasesHistory)) {
       this.releasesHistory.length = 0;
-      this.releasesHistory.push(...data.releasesHistory);
+      this.releasesHistory.push(...(d.releasesHistory as DefinitionRelease[]));
     }
   }
 }

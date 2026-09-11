@@ -1,27 +1,29 @@
-import * as fs from "node:fs";
-import path from "node:path";
-
 import { Effect } from "effect";
 import { describe, expect, it } from "vitest";
 
+import {
+  joinPath,
+  makeTempDirSync,
+  rmDirRecursiveSync,
+  writeTextFileSync,
+} from "./paths.js";
 import { runPublicationGate } from "./publication-gate.js";
 
 describe("Publication Gate (validation/publication/publication-gate.ts)", () => {
   it("passes when scanning clean workspace files", () =>
     Effect.gen(function* () {
-      const tempCleanDir = fs.mkdtempSync(
-        path.join(process.cwd(), ".tmp-pub-gate-clean-")
+      const tempCleanDir = makeTempDirSync(
+        joinPath(process.cwd(), ".tmp-pub-gate-clean-")
       );
       yield* Effect.addFinalizer(() =>
         Effect.sync(() => {
-          fs.rmSync(tempCleanDir, { recursive: true, force: true });
+          rmDirRecursiveSync(tempCleanDir);
         })
       );
 
-      fs.writeFileSync(
-        path.join(tempCleanDir, "index.ts"),
-        "export const version = '0.1.0';",
-        "utf-8"
+      writeTextFileSync(
+        joinPath(tempCleanDir, "index.ts"),
+        "export const version = '0.1.0';"
       );
 
       const result = yield* runPublicationGate(tempCleanDir);
@@ -31,24 +33,22 @@ describe("Publication Gate (validation/publication/publication-gate.ts)", () => 
 
   it("fails and halts release when private oracle marker is introduced", () =>
     Effect.gen(function* () {
-      const tempDirtyDir = fs.mkdtempSync(
-        path.join(process.cwd(), ".tmp-pub-gate-dirty-")
+      const tempDirtyDir = makeTempDirSync(
+        joinPath(process.cwd(), ".tmp-pub-gate-dirty-")
       );
       yield* Effect.addFinalizer(() =>
         Effect.sync(() => {
-          fs.rmSync(tempDirtyDir, { recursive: true, force: true });
+          rmDirRecursiveSync(tempDirtyDir);
         })
       );
 
-      fs.writeFileSync(
-        path.join(tempDirtyDir, "index.ts"),
-        "export const version = '0.1.0';",
-        "utf-8"
+      writeTextFileSync(
+        joinPath(tempDirtyDir, "index.ts"),
+        "export const version = '0.1.0';"
       );
-      fs.writeFileSync(
-        path.join(tempDirtyDir, "leaked.ts"),
-        "const hiddenWeight = '__OPERON_EVALUATOR_WEIGHTS__';",
-        "utf-8"
+      writeTextFileSync(
+        joinPath(tempDirtyDir, "leaked.ts"),
+        "const hiddenWeight = '__OPERON_EVALUATOR_WEIGHTS__';"
       );
 
       const exit = yield* Effect.exit(runPublicationGate(tempDirtyDir));

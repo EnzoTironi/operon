@@ -1,8 +1,13 @@
-import * as fs from "node:fs";
-import path from "node:path";
-
+import { parseJson, serializeJson } from "@operon/schema";
 import { Effect } from "effect";
 import { describe, expect, it } from "vitest";
+
+import {
+  joinPath,
+  resolvePath,
+  unlinkFileSync,
+  writeTextFileSync,
+} from "./fs-io.js";
 
 import { runCli } from "./index.js";
 
@@ -280,7 +285,7 @@ describe("@operon/cli test suite", () => {
         "--json",
       ]);
       expect(prepCode).toBe(0);
-      const prepOutput = JSON.parse(logs.at(-1)!);
+      const prepOutput = parseJson(logs.at(-1)!);
       expect(prepOutput.status).toBe("PREPARED");
       expect(prepOutput.actionId).toBe("update_vitals");
       expect(prepOutput.canonicalDigest).toBeDefined();
@@ -289,7 +294,7 @@ describe("@operon/cli test suite", () => {
       // Verify zero business mutation before commit:
       logs.length = 0;
       yield* runCli(["object", "get", "Patient", "P001", "--json"]);
-      const patientBefore = JSON.parse(logs.at(-1)!);
+      const patientBefore = parseJson(logs.at(-1)!);
       expect(patientBefore.properties.heartRate).not.toBe(78);
 
       // 2. Reject mismatched proposal approval
@@ -335,7 +340,7 @@ describe("@operon/cli test suite", () => {
         "--json",
       ]);
       expect(approveCode).toBe(0);
-      const approveOutput = JSON.parse(logs.at(-1)!);
+      const approveOutput = parseJson(logs.at(-1)!);
       expect(approveOutput.status).toBe("APPROVED");
       expect(approveOutput.approvalId).toBeDefined();
       const approvalId = approveOutput.approvalId;
@@ -354,7 +359,7 @@ describe("@operon/cli test suite", () => {
         "--json",
       ]);
       expect(commitCode).toBe(0);
-      const commitOutput = JSON.parse(logs.at(-1)!);
+      const commitOutput = parseJson(logs.at(-1)!);
       expect(commitOutput.status).toBe("COMMITTED");
       expect(commitOutput.operationId).toBeDefined();
       expect(commitOutput.receiptDigest).toBeDefined();
@@ -363,7 +368,7 @@ describe("@operon/cli test suite", () => {
       // Verify business mutation applied atomically after commit
       logs.length = 0;
       yield* runCli(["object", "get", "Patient", "P001", "--json"]);
-      const patientAfter = JSON.parse(logs.at(-1)!);
+      const patientAfter = parseJson(logs.at(-1)!);
       expect(patientAfter.properties.heartRate).toBe(78);
 
       // 6. Action status inspection
@@ -375,7 +380,7 @@ describe("@operon/cli test suite", () => {
         "--json",
       ]);
       expect(statusCode).toBe(0);
-      const statusOutput = JSON.parse(logs.at(-1)!);
+      const statusOutput = parseJson(logs.at(-1)!);
       expect(statusOutput.operationId).toBe(operationId);
       expect(statusOutput.status).toBe("COMMITTED");
 
@@ -393,7 +398,7 @@ describe("@operon/cli test suite", () => {
         "--json",
       ]);
       expect(viewCode).toBe(0);
-      const viewOutput = JSON.parse(logs.at(-1)!);
+      const viewOutput = parseJson(logs.at(-1)!);
       expect(viewOutput.isDisposable).toBe(true);
       expect(viewOutput.sourceOfTruth).toBe("OPERON_KERNEL");
       expect(viewOutput.state).toBe("PROPOSED");
@@ -418,7 +423,7 @@ describe("@operon/cli test suite", () => {
 
       // 1. Evaluate F1 Company-in-a-Box via CLI
       logs.length = 0;
-      const casesJson = JSON.stringify([
+      const casesJson = serializeJson([
         {
           assertions: 8,
           executionTimeMs: 40,
@@ -442,23 +447,26 @@ describe("@operon/cli test suite", () => {
         "--json",
       ]);
       expect(evalCode).toBe(0);
-      const f1Receipt = JSON.parse(logs.at(-1)!);
+      const f1Receipt = parseJson(logs.at(-1)!) as {
+        outcome: string;
+        assertionsCount: number;
+        signature: unknown;
+        signerPublicKey: unknown;
+      };
       expect(f1Receipt.outcome).toBe("PASS");
       expect(f1Receipt.assertionsCount).toBe(8);
       expect(f1Receipt.signature).toBeDefined();
       expect(f1Receipt.signerPublicKey).toBeDefined();
 
       // 2. Verify F1 Receipt via CLI
-      const tempReceiptPath = path.join(
+      const tempReceiptPath = joinPath(
         process.cwd(),
         `.tmp-test-receipt-${Date.now()}.json`
       );
-      fs.writeFileSync(tempReceiptPath, JSON.stringify(f1Receipt), "utf-8");
+      writeTextFileSync(tempReceiptPath, serializeJson(f1Receipt));
       yield* Effect.addFinalizer(() =>
         Effect.sync(() => {
-          if (fs.existsSync(tempReceiptPath)) {
-            fs.unlinkSync(tempReceiptPath);
-          }
+          unlinkFileSync(tempReceiptPath);
         })
       );
 
@@ -470,12 +478,12 @@ describe("@operon/cli test suite", () => {
         "--json",
       ]);
       expect(verifyCode).toBe(0);
-      const verifyOutput = JSON.parse(logs.at(-1)!);
+      const verifyOutput = parseJson(logs.at(-1)!) as { isValid: boolean };
       expect(verifyOutput.isValid).toBe(true);
 
       // 3. Evaluate F2 Consented Mirror via CLI
       logs.length = 0;
-      const consentJson = JSON.stringify({
+      const consentJson = serializeJson({
         consentGrantId: "consent_cli_001",
         createdAt: Date.now() - 500,
         dataScope: ["patient_records", "vitals"],
@@ -484,7 +492,7 @@ describe("@operon/cli test suite", () => {
         purpose: "safe dosage clinical mirror",
       });
 
-      const correctionsJson = JSON.stringify([
+      const correctionsJson = serializeJson([
         {
           correctedAt: Date.now(),
           correctedBy: "dr_turner",
@@ -510,7 +518,12 @@ describe("@operon/cli test suite", () => {
         "--json",
       ]);
       expect(mirrorCode).toBe(0);
-      const f2Receipt = JSON.parse(logs.at(-1)!);
+      const f2Receipt = parseJson(logs.at(-1)!) as {
+        participantId: string;
+        claim: string;
+        correctionRefs: string[];
+        signature: unknown;
+      };
       expect(f2Receipt.participantId).toBe("regional_hospital_group");
       expect(f2Receipt.claim).toBe("observed-action");
       expect(f2Receipt.correctionRefs).toEqual(["corr_cli_01"]);
@@ -521,12 +534,15 @@ describe("@operon/cli test suite", () => {
       const scanCode = yield* runCli([
         "assurance",
         "scan",
-        path.resolve(process.cwd(), "benchmarks/public"),
+        resolvePath(process.cwd(), "benchmarks/public"),
         "--public-only",
         "--json",
       ]);
       expect(scanCode).toBe(0);
-      const scanOutput = JSON.parse(logs.at(-1)!);
+      const scanOutput = parseJson(logs.at(-1)!) as {
+        isClean: boolean;
+        violations: unknown[];
+      };
       expect(scanOutput.isClean).toBe(true);
       expect(scanOutput.violations.length).toBe(0);
     }).pipe(Effect.scoped, Effect.runPromise));

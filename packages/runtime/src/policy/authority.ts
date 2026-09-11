@@ -49,21 +49,21 @@ export class AuthorityService {
     return Effect.gen(function* () {
       const mandate = mandates.get(mandateId);
       if (!mandate) {
-        return yield* Effect.fail(
+        return yield* 
           new GrantNotFoundError({
             grantId: mandateId,
             message: `Mandate '${mandateId}' not found`,
           })
-        );
+        ;
       }
       if (mandate.tenantId !== tenantId) {
         // Tenant non-disclosure: fail without disclosing existence
-        return yield* Effect.fail(
+        return yield* 
           new TenantMismatchError({
             message: `Mandate '${mandateId}' does not exist for tenant`,
             tenantId,
           })
-        );
+        ;
       }
       return mandate;
     });
@@ -85,21 +85,21 @@ export class AuthorityService {
     return Effect.gen(function* () {
       const grant = grants.get(grantId);
       if (!grant) {
-        return yield* Effect.fail(
+        return yield* 
           new GrantNotFoundError({
             grantId,
             message: `Grant '${grantId}' not found`,
           })
-        );
+        ;
       }
       if (grant.tenantId !== tenantId) {
         // Tenant non-disclosure: fail without disclosing existence
-        return yield* Effect.fail(
+        return yield* 
           new TenantMismatchError({
             message: `Grant '${grantId}' does not exist for tenant`,
             tenantId,
           })
-        );
+        ;
       }
       return grant;
     });
@@ -112,8 +112,12 @@ export class AuthorityService {
     const { grants } = this;
     return Effect.sync(() =>
       [...grants.values()].filter((g) => {
-        if (g.tenantId !== tenantId) return false;
-        if (actorId && g.actorId !== actorId) return false;
+        if (g.tenantId !== tenantId) {
+          return false;
+        }
+        if (actorId && g.actorId !== actorId) {
+          return false;
+        }
         return true;
       })
     );
@@ -150,35 +154,35 @@ export class AuthorityService {
 
       if (grant.environmentId !== environmentId) {
         const reason = `Grant environment '${grant.environmentId}' does not match execution environment '${environmentId}'`;
-        return yield* Effect.fail(
+        return yield* 
           new GrantExceededError({
             grantId,
             message: reason,
             reason,
           })
-        );
+        ;
       }
 
       if (grant.actorId !== actor.id) {
         const reason = `Grant actor '${grant.actorId}' does not match invoking actor '${actor.id}'`;
-        return yield* Effect.fail(
+        return yield* 
           new GrantExceededError({
             grantId,
             message: reason,
             reason,
           })
-        );
+        ;
       }
 
       if (now > grant.expiresAt) {
         const reason = `Grant '${grantId}' has expired at ${grant.expiresAt}`;
-        return yield* Effect.fail(
+        return yield* 
           new GrantExceededError({
             grantId,
             message: reason,
             reason,
           })
-        );
+        ;
       }
 
       if (
@@ -187,13 +191,13 @@ export class AuthorityService {
         !grant.eligibleActions.includes("*")
       ) {
         const reason = `Action '${actionId}' is not authorized under grant eligible actions [${grant.eligibleActions.join(", ")}]`;
-        return yield* Effect.fail(
+        return yield* 
           new GrantExceededError({
             grantId,
             message: reason,
             reason,
           })
-        );
+        ;
       }
 
       // Budget check: committed + reservationAmount <= maxReservations
@@ -201,13 +205,13 @@ export class AuthorityService {
         grant.budget.committedReservations + reservationAmount;
       if (totalRequested > grant.budget.maxReservations) {
         const reason = `Grant budget exceeded: requested reservation ${reservationAmount} + committed ${grant.budget.committedReservations} exceeds maximum budget ${grant.budget.maxReservations}`;
-        return yield* Effect.fail(
+        return yield* 
           new GrantExceededError({
             grantId,
             message: reason,
             reason,
           })
-        );
+        ;
       }
 
       return grant;
@@ -231,13 +235,13 @@ export class AuthorityService {
       const newCommitted = grant.budget.committedReservations + amount;
       if (newCommitted > grant.budget.maxReservations) {
         const reason = `Reservation of ${amount} exceeds remaining budget of ${grant.budget.maxReservations - grant.budget.committedReservations}`;
-        return yield* Effect.fail(
+        return yield* 
           new GrantExceededError({
             grantId,
             message: reason,
             reason,
           })
-        );
+        ;
       }
       grants.set(grantId, {
         ...grant,

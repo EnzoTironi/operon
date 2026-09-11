@@ -118,7 +118,9 @@ export async function runSompoRdpSimulation() {
       },
       timestamp: Date.now(),
     },
-    stagedLogic: (params: any) =>
+    stagedLogic: (
+      params: typeof DispatchEmergencyCareAction.parametersSchema.Type
+    ) =>
       Effect.succeed([
         {
           id: params.residentId,
@@ -181,7 +183,7 @@ export async function runSompoRdpSimulation() {
         claimId,
         claimStatus: "submitted",
         claimantId,
-        lossAmountJpy: 7500000,
+        lossAmountJpy: 7_500_000,
         triageCategory: "standard",
       },
       typeId: InsuranceClaimType.id,
@@ -199,7 +201,7 @@ export async function runSompoRdpSimulation() {
     rawParameters: {
       claimId,
       fraudRiskScore: 0.88,
-      lossAmountJpy: 7500000,
+      lossAmountJpy: 7_500_000,
     },
     security: {
       correlationId: "corr-sompo-triage-01",
@@ -212,7 +214,7 @@ export async function runSompoRdpSimulation() {
       },
       timestamp: Date.now(),
     },
-    stagedLogic: (params: any) =>
+    stagedLogic: (params: typeof TriageClaimAction.parametersSchema.Type) =>
       Effect.succeed([
         {
           id: params.claimId,
@@ -222,7 +224,7 @@ export async function runSompoRdpSimulation() {
             claimId: params.claimId,
             claimStatus: "under_investigation",
             claimantId,
-            lossAmountJpy: 7500000,
+            lossAmountJpy: 7_500_000,
             triageCategory: "fraud_alert",
           },
           typeId: InsuranceClaimType.id,
@@ -248,7 +250,7 @@ export async function runSompoRdpSimulation() {
     actionType: ApproveClaimPayoutAction,
     rawParameters: {
       adjusterId: "adj_suzuki",
-      approvedAmountJpy: 7500000,
+      approvedAmountJpy: 7_500_000,
       claimId,
     },
     security: {
@@ -262,7 +264,9 @@ export async function runSompoRdpSimulation() {
       },
       timestamp: Date.now(),
     },
-    stagedLogic: (params: any) =>
+    stagedLogic: (
+      params: typeof ApproveClaimPayoutAction.parametersSchema.Type
+    ) =>
       Effect.succeed([
         {
           id: params.claimId,
@@ -272,7 +276,7 @@ export async function runSompoRdpSimulation() {
             claimId: params.claimId,
             claimStatus: "approved",
             claimantId,
-            lossAmountJpy: 7500000,
+            lossAmountJpy: 7_500_000,
             triageCategory: "fraud_alert",
           },
           typeId: InsuranceClaimType.id,

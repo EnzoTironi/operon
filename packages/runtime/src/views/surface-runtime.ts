@@ -2,7 +2,7 @@ import type {
   OperationalMetricsRecord,
   RoomAudienceMembership,
 } from "@operon/schema";
-import { Context, Effect, Layer } from "effect";
+import { Clock, Context, Effect, Layer } from "effect";
 
 import {
   ClosedObjectModificationDeniedError,
@@ -78,8 +78,75 @@ export class SurfaceRuntimeService extends Context.Service<
   }
 >()("operon/runtime/SurfaceRuntimeService") {}
 
+interface OperationalEvent {
+  readonly durationMs?: number;
+  readonly eventType:
+    | "PROPOSAL_ACCEPTED"
+    | "PROPOSAL_CREATED"
+    | "OVERRIDE_REJECTED";
+  readonly readinessPassed?: boolean;
+}
+
 function membershipKey(roomId: string, userId: string): string {
   return `${roomId}::${userId}`;
+}
+
+function countProposalStats(events: readonly OperationalEvent[]) {
+  let totalProposals = 0;
+  let acceptedProposals = 0;
+  let rejectedOverrides = 0;
+  for (const ev of events) {
+    if (ev.eventType === "PROPOSAL_CREATED") {
+      totalProposals++;
+    } else if (ev.eventType === "PROPOSAL_ACCEPTED") {
+      acceptedProposals++;
+    } else if (ev.eventType === "OVERRIDE_REJECTED") {
+      rejectedOverrides++;
+    }
+  }
+  return { acceptedProposals, rejectedOverrides, totalProposals };
+}
+
+function calculateAverageDuration(events: readonly OperationalEvent[]) {
+  let totalDuration = 0;
+  let durationCount = 0;
+  for (const ev of events) {
+    if (ev.durationMs !== undefined) {
+      totalDuration += ev.durationMs;
+      durationCount++;
+    }
+  }
+  return durationCount > 0 ? totalDuration / durationCount : 0;
+}
+
+function calculateReadinessRatio(events: readonly OperationalEvent[]) {
+  let readinessPassCount = 0;
+  let readinessTotal = 0;
+  for (const ev of events) {
+    if (ev.readinessPassed !== undefined) {
+      readinessTotal++;
+      if (ev.readinessPassed) {
+        readinessPassCount++;
+      }
+    }
+  }
+  return readinessTotal > 0 ? readinessPassCount / readinessTotal : 1;
+}
+
+function aggregateOperationalCounts(events: readonly OperationalEvent[]) {
+  const { acceptedProposals, rejectedOverrides, totalProposals } =
+    countProposalStats(events);
+  const averageCycleTimeMs = calculateAverageDuration(events);
+  const readinessRatio = calculateReadinessRatio(events);
+
+  return {
+    acceptedProposals,
+    averageCycleTimeMs,
+    overrideRate: totalProposals > 0 ? rejectedOverrides / totalProposals : 0,
+    readinessRatio,
+    rejectedOverrides,
+    totalProposals,
+  };
 }
 
 /**
@@ -93,20 +160,20 @@ export const SurfaceRuntimeServiceLive = Layer.sync(
 
     return SurfaceRuntimeService.of({
       addRoomMember: Effect.fn("SurfaceRuntimeService.addRoomMember")(
-        (params) =>
-          Effect.sync(() => {
-            const key = membershipKey(params.roomId, params.userId);
-            const member: RoomAudienceMembership = {
-              joinedAt: Date.now(),
-              membershipId: `mem-${Date.now()}`,
-              role: params.role,
-              roomId: params.roomId,
-              status: "ACTIVE",
-              userId: params.userId,
-            };
-            memberships.set(key, member);
-            return member;
-          })
+        function* (params) {
+          const now = yield* Clock.currentTimeMillis;
+          const key = membershipKey(params.roomId, params.userId);
+          const member: RoomAudienceMembership = {
+            joinedAt: now,
+            membershipId: `mem-${now}`,
+            role: params.role,
+            roomId: params.roomId,
+            status: "ACTIVE",
+            userId: params.userId,
+          };
+          memberships.set(key, member);
+          return member;
+        }
       ),
 
       checkRoomAccess: Effect.fn("SurfaceRuntimeService.checkRoomAccess")(
@@ -115,15 +182,14 @@ export const SurfaceRuntimeServiceLive = Layer.sync(
           const member = memberships.get(key);
 
           if (!member || member.status === "REVOKED") {
-            const revokedAt = member?.revokedAt ?? Date.now();
-            return yield* Effect.fail(
-              new RoomAccessRevokedError({
-                message: `User '${userId}' does not have active access to room '${roomId}'. Access was revoked or not granted.`,
-                revokedAt,
-                roomId,
-                userId,
-              })
-            );
+            const revokedAt =
+              member?.revokedAt ?? (yield* Clock.currentTimeMillis);
+            return yield* new RoomAccessRevokedError({
+              message: `User '${userId}' does not have active access to room '${roomId}'. Access was revoked or not granted.`,
+              revokedAt,
+              roomId,
+              userId,
+            });
           }
 
           return { accessible: true };
@@ -132,58 +198,14 @@ export const SurfaceRuntimeServiceLive = Layer.sync(
 
       computeOperationalMetrics: Effect.fn(
         "SurfaceRuntimeService.computeOperationalMetrics"
-      )((events) =>
-        Effect.sync(() => {
-          let totalProposals = 0;
-          let acceptedProposals = 0;
-          let rejectedOverrides = 0;
-          let totalDuration = 0;
-          let durationCount = 0;
-          let readinessPassCount = 0;
-          let readinessTotal = 0;
-
-          for (const ev of events) {
-            if (ev.eventType === "PROPOSAL_CREATED") {
-              totalProposals++;
-            } else if (ev.eventType === "PROPOSAL_ACCEPTED") {
-              acceptedProposals++;
-            } else if (ev.eventType === "OVERRIDE_REJECTED") {
-              rejectedOverrides++;
-            }
-
-            if (ev.durationMs !== undefined) {
-              totalDuration += ev.durationMs;
-              durationCount++;
-            }
-
-            if (ev.readinessPassed !== undefined) {
-              readinessTotal++;
-              if (ev.readinessPassed) {
-                readinessPassCount++;
-              }
-            }
-          }
-
-          const overrideRate =
-            totalProposals > 0 ? rejectedOverrides / totalProposals : 0;
-          const averageCycleTimeMs =
-            durationCount > 0 ? totalDuration / durationCount : 0;
-          const readinessRatio =
-            readinessTotal > 0 ? readinessPassCount / readinessTotal : 1;
-
-          const metrics: OperationalMetricsRecord = {
-            acceptedProposals,
-            averageCycleTimeMs,
-            calculatedAt: Date.now(),
-            overrideRate,
-            readinessRatio,
-            rejectedOverrides,
-            totalProposals,
-          };
-
-          return metrics;
-        })
-      ),
+      )(function* (events) {
+        const counts = aggregateOperationalCounts(events);
+        const now = yield* Clock.currentTimeMillis;
+        return {
+          ...counts,
+          calculatedAt: now,
+        };
+      }),
 
       evaluateShadowProposal: Effect.fn(
         "SurfaceRuntimeService.evaluateShadowProposal"
@@ -205,43 +227,42 @@ export const SurfaceRuntimeServiceLive = Layer.sync(
         // OPR-FULL-036 / FULL-ACC-036:
         // When a rule prohibits altering a closed object, Button, API, and Agent all receive identical rejection!
         if (isClosed || objectStatus.toUpperCase() === "CLOSED") {
-          return yield* Effect.fail(
-            new ClosedObjectModificationDeniedError({
-              actionName,
-              channel,
-              message: `Channel '${channel}' denied: modification on closed object '${objectId}' prohibited by kernel rules`,
-              objectId,
-              objectStatus,
-            })
-          );
+          return yield* new ClosedObjectModificationDeniedError({
+            actionName,
+            channel,
+            message: `Channel '${channel}' denied: modification on closed object '${objectId}' prohibited by kernel rules`,
+            objectId,
+            objectStatus,
+          });
         }
 
+        const now = yield* Clock.currentTimeMillis;
         return {
           channel,
-          receiptId: `rec-${channel}-${Date.now()}`,
+          receiptId: `rec-${channel}-${now}`,
           status: "EXECUTED",
         };
       }),
 
       revokeRoomMember: Effect.fn("SurfaceRuntimeService.revokeRoomMember")(
-        (roomId: string, userId: string) =>
-          Effect.sync(() => {
-            const key = membershipKey(roomId, userId);
-            const current = memberships.get(key);
-            if (current) {
-              memberships.set(key, {
-                ...current,
-                revokedAt: Date.now(),
-                status: "REVOKED",
-              });
+        function* (roomId: string, userId: string) {
+          const key = membershipKey(roomId, userId);
+          const current = memberships.get(key);
+          if (current) {
+            const now = yield* Clock.currentTimeMillis;
+            memberships.set(key, {
+              ...current,
+              revokedAt: now,
+              status: "REVOKED",
+            });
+          }
+          // Invalidate any cached derived surfaces for this user and room (OPR-FULL-038)
+          for (const cacheKey of surfaceCache.keys()) {
+            if (cacheKey.startsWith(`${roomId}::`)) {
+              surfaceCache.delete(cacheKey);
             }
-            // Invalidate any cached derived surfaces for this user and room (OPR-FULL-038)
-            for (const cacheKey of surfaceCache.keys()) {
-              if (cacheKey.startsWith(`${roomId}::`)) {
-                surfaceCache.delete(cacheKey);
-              }
-            }
-          })
+          }
+        }
       ),
     });
   }

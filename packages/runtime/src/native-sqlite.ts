@@ -11,8 +11,8 @@ const nodeRequire = createRequire(import.meta.url);
 interface SqliteDatabase {
   exec: (sql: string) => void;
   prepare: (sql: string) => {
-    all: (...params: any[]) => readonly unknown[];
-    run: (...params: any[]) => { changes: number | bigint };
+    all: (...params: readonly unknown[]) => readonly unknown[];
+    run: (...params: readonly unknown[]) => { changes: number | bigint };
   };
   close: () => void;
 }
@@ -70,17 +70,20 @@ export class NativeSqliteDriver implements SqlDriver {
     });
   }
 
-  transaction<A, E, R>(
+  readonly transaction = Effect.fn("NativeSqliteDriver.transaction")(function* <
+    A,
+    E,
+    R,
+  >(
+    this: NativeSqliteDriver,
     fn: (tx: SqlDriver) => Effect.Effect<A, E, R>
-  ): Effect.Effect<A, E | StorageError, R> {
-    return Effect.gen({ self: this }, function* () {
-      yield* this.execute("BEGIN IMMEDIATE;");
-      return yield* fn(this).pipe(
-        Effect.tap(() => this.execute("COMMIT;")),
-        Effect.tapError(() => this.execute("ROLLBACK;"))
-      );
-    });
-  }
+  ): Effect.fn.Return<A, E | StorageError, R> {
+    yield* this.execute("BEGIN IMMEDIATE;");
+    return yield* fn(this).pipe(
+      Effect.tap(() => this.execute("COMMIT;")),
+      Effect.tapError(() => this.execute("ROLLBACK;"))
+    );
+  });
 
   close(): void {
     this.db.close();

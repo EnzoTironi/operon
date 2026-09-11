@@ -353,13 +353,13 @@ describe("ReconciliationService (V0-CH-06 / S03 / S04)", () => {
 
   it("compiles bitemporal explain query plan per S04", () => {
     const service = ReconciliationService.make();
-    const plan = service.explainQuery(
-      "Patient",
-      "P001",
-      1700000000,
-      1700000000,
-      "sqlite"
-    );
+    const plan = service.explainQuery({
+      dialect: "sqlite",
+      id: "P001",
+      txTime: 1700000000,
+      typeId: "Patient",
+      validTime: 1700000000,
+    });
     expect(plan.sql).toContain("SELECT");
     expect(plan.sql).toContain("FROM operon_objects");
     expect(plan.params).toEqual([

@@ -1,10 +1,6 @@
-import type {
-  ObjectInstance,
-  ObjectType,
-  PropertyDefinition,
-} from "@operon/schema";
+import type { ObjectInstance, ObjectType } from "@operon/schema";
 import { OperonTelemetryService } from "@operon/telemetry";
-import { Schema } from "effect";
+import { Exit, Schema } from "effect";
 
 export interface ReadinessCheckResult {
   readonly isReady: boolean;
@@ -33,54 +29,61 @@ export interface ReadinessCheckResult {
 /**
  * Evaluates Decision Readiness (4C-L1) for a given ObjectInstance against its ObjectType definition.
  */
-export function evaluateDecisionReadiness(
+type PropertyEntry = readonly [string, ObjectType["properties"][string]];
+
+function checkCorrectness(
   instance: ObjectInstance,
-  objectType: ObjectType<any>,
-  now: number = Date.now()
-): ReadinessCheckResult {
+  propertyEntries: readonly PropertyEntry[]
+): string[] {
   const correctViolations: string[] = [];
-  const missingProperties: string[] = [];
-  const staleProperties: {
-    property: string;
-    ageMs: number;
-    maxStalenessMs: number;
-  }[] = [];
-  const contradictions: string[] = [];
-
-  const propertyEntries = Object.entries(objectType.properties) as [
-    string,
-    PropertyDefinition<any>,
-  ][];
-
-  // 1. Correctness: Validate each property against its schema
   for (const [propName, propDef] of propertyEntries) {
-    const val = (instance.properties as any)?.[propName];
+    const val = instance.properties[propName];
     if (val !== undefined && val !== null) {
-      const exit = Schema.decodeUnknownExit(
-        propDef.schema as Schema.Decoder<any>
-      )(val);
-      if (exit._tag === "Failure") {
+      const decode = Schema.decodeUnknownExit(propDef.schema);
+      const exit = decode(val);
+      if (Exit.isFailure(exit)) {
         correctViolations.push(
           `Property '${propName}' validation failed: ${String(exit.cause)}`
         );
       }
     }
   }
+  return correctViolations;
+}
 
-  // 2. Completeness: Check required properties
+function checkCompleteness(
+  instance: ObjectInstance,
+  propertyEntries: readonly PropertyEntry[]
+): string[] {
+  const missingProperties: string[] = [];
   for (const [propName, propDef] of propertyEntries) {
-    const val = (instance.properties as any)?.[propName];
+    const val = instance.properties[propName];
     if (propDef.required && (val === undefined || val === null)) {
       missingProperties.push(propName);
     }
   }
+  return missingProperties;
+}
 
-  // 3. Currency: Check freshness budgets
+function checkCurrency(
+  instance: ObjectInstance,
+  propertyEntries: readonly PropertyEntry[],
+  now: number
+): {
+  readonly ageMs: number;
+  readonly maxStalenessMs: number;
+  readonly property: string;
+}[] {
   const recordedAt = instance.provenance?.recordedAt ?? instance.lastModifiedAt;
   const ageMs = Math.max(0, now - recordedAt);
+  const staleProperties: {
+    ageMs: number;
+    maxStalenessMs: number;
+    property: string;
+  }[] = [];
 
   for (const [propName, propDef] of propertyEntries) {
-    const val = (instance.properties as any)?.[propName];
+    const val = instance.properties[propName];
     if (
       propDef.freshnessBudget &&
       val !== undefined &&
@@ -94,8 +97,11 @@ export function evaluateDecisionReadiness(
       });
     }
   }
+  return staleProperties;
+}
 
-  // 4. Consistency: Check bitemporal and integrity invariants
+function checkConsistency(instance: ObjectInstance): string[] {
+  const contradictions: string[] = [];
   if (
     instance.validFrom !== undefined &&
     instance.validTo !== undefined &&
@@ -105,6 +111,23 @@ export function evaluateDecisionReadiness(
       `validFrom (${instance.validFrom}) cannot be after validTo (${instance.validTo})`
     );
   }
+  return contradictions;
+}
+
+/**
+ * Evaluates Decision Readiness (4C-L1) for a given ObjectInstance against its ObjectType definition.
+ */
+export function evaluateDecisionReadiness(
+  instance: ObjectInstance,
+  objectType: ObjectType,
+  now: number = Date.now()
+): ReadinessCheckResult {
+  const propertyEntries = Object.entries(objectType.properties);
+
+  const correctViolations = checkCorrectness(instance, propertyEntries);
+  const missingProperties = checkCompleteness(instance, propertyEntries);
+  const staleProperties = checkCurrency(instance, propertyEntries, now);
+  const contradictions = checkConsistency(instance);
 
   const isCorrect = correctViolations.length === 0;
   const isComplete = missingProperties.length === 0;

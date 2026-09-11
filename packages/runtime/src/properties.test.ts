@@ -150,7 +150,7 @@ describe("Kernel-Level Property-Based Testing (Fast-Check)", () => {
     await Effect.runPromise(
       Effect.all(
         widgets.map((w) => store.putObject(w)),
-        { concurrency: "unbounded" }
+        { concurrency: 10 }
       )
     );
 
@@ -163,8 +163,8 @@ describe("Kernel-Level Property-Based Testing (Fast-Check)", () => {
     const unionB = await Effect.runPromise(setOdds.union(setEvens).all());
 
     expect(unionA.length).toBe(unionB.length);
-    const idsA = unionA.map((o) => o.id).sort();
-    const idsB = unionB.map((o) => o.id).sort();
+    const idsA = unionA.map((o) => o.id).toSorted();
+    const idsB = unionB.map((o) => o.id).toSorted();
     expect(idsA).toEqual(idsB);
 
     // Idempotence: Evens U Evens == Evens

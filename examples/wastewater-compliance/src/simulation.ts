@@ -33,7 +33,7 @@ export async function runWastewaterSimulation() {
       id: "plant_central_wwtp",
       lastModifiedAt: Date.now(),
       properties: {
-        dailyCapacityM3: 150000,
+        dailyCapacityM3: 150_000,
         name: "Metro Central WWTP",
         plantId: "plant_central_wwtp",
       },

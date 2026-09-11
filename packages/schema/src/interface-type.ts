@@ -1,9 +1,9 @@
 import type { PropertyDefinition } from "./object-type.js";
 
 export interface InterfaceType<
-  Props extends Record<string, PropertyDefinition<any>> = Record<
+  Props extends Record<string, PropertyDefinition<unknown>> = Record<
     string,
-    PropertyDefinition<any>
+    PropertyDefinition<unknown>
   >,
 > {
   readonly id: string;
@@ -13,7 +13,7 @@ export interface InterfaceType<
 }
 
 export function defineInterfaceType<
-  Props extends Record<string, PropertyDefinition<any>>,
+  Props extends Record<string, PropertyDefinition<unknown>>,
 >(config: {
   readonly id: string;
   readonly name: string;

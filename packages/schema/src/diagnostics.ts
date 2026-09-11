@@ -1,16 +1,20 @@
 import { createHash } from "node:crypto";
 
+import type { Schema } from "effect";
+
 import type { DiagnosticSeverity } from "./compiler.js";
 import { canonicalJson } from "./definition.js";
 
 export type DiagnosticChannel = "business" | "policy" | "infrastructure";
+
+export type DiagnosticDetails = Record<string, Schema.Json>;
 
 export interface DiagnosticEntry {
   readonly channel: DiagnosticChannel;
   readonly code: string;
   readonly message: string;
   readonly severity: DiagnosticSeverity;
-  readonly details?: Record<string, unknown>;
+  readonly details?: DiagnosticDetails;
   readonly timestamp: number;
 }
 

@@ -6,13 +6,20 @@ import type {
   IngestionReceipt,
   MappingProposal,
   ObjectInstance,
+  ObjectProperties,
   ObjectTypeId,
+  PropertyMapping,
   SensitivityLevel,
   SourceArtifact,
   Subject,
 } from "@operon/schema";
-import { computeSourceDigest } from "@operon/schema";
-import { Data, Effect } from "effect";
+import {
+  computeSourceDigest,
+  generatePrefixedId,
+  parseJson,
+} from "@operon/schema";
+import type { Schema } from "effect";
+import { Clock, Data, Effect } from "effect";
 
 import type { ConcurrentModificationError } from "./errors.js";
 import { IdempotencyConflictError } from "./errors.js";
@@ -41,6 +48,23 @@ export interface IngestionResult {
   readonly createdCount: number;
   readonly updatedCount: number;
   readonly skippedCount: number;
+}
+
+function extractRecordProperties(
+  record: Record<string, Schema.Json>,
+  propertyMappings: readonly PropertyMapping[]
+): ObjectProperties {
+  const mappedProperties: ObjectProperties = {};
+  for (const mapping of propertyMappings) {
+    const rawVal = record[mapping.sourceField];
+    if (rawVal !== undefined) {
+      const val = mapping.transform ? mapping.transform(rawVal) : rawVal;
+      if (val !== undefined) {
+        mappedProperties[mapping.targetPropertyName] = val;
+      }
+    }
+  }
+  return mappedProperties;
 }
 
 /**
@@ -73,45 +97,69 @@ export class FunnelService {
   /**
    * Ingest a batch of raw records from an external dataset
    */
-  ingestBatch(
+  readonly ingestBatch = Effect.fn("FunnelService.ingestBatch")(function* (
+    this: FunnelService,
     pipelineId: string,
-    rawRecords: readonly Record<string, unknown>[]
-  ): Effect.Effect<
+    rawRecords: readonly Record<string, Schema.Json>[]
+  ): Effect.fn.Return<
     IngestionResult,
     PipelineNotFoundError | FunnelIngestionError
   > {
-    return Effect.gen({ self: this }, function* () {
-      const pipeline = yield* this.getPipeline(pipelineId);
+    const pipeline = yield* this.getPipeline(pipelineId);
+    const now = yield* Clock.currentTimeMillis;
 
-      let createdCount = 0;
-      let updatedCount = 0;
-      let skippedCount = 0;
+    let createdCount = 0;
+    let updatedCount = 0;
+    let skippedCount = 0;
 
-      for (const record of rawRecords) {
+    const { store } = this;
+    const resolveConflict = (
+      policy: ConflictResolutionPolicy,
+      existing: ObjectInstance,
+      record: Record<string, Schema.Json>
+    ) => this.resolveConflict(policy, existing, record);
+
+    yield* Effect.forEach(
+      rawRecords,
+      Effect.fn("FunnelService.ingestRecord")(function* (record) {
         const rawId = record[pipeline.primaryKeyField];
-        if (rawId === undefined || rawId === null) {
-          skippedCount++;
-          continue;
-        }
-        const id = String(rawId);
+          if (rawId === undefined || rawId === null) {
+            skippedCount++;
+            return;
+          }
+          const id = String(rawId);
+          const mappedProperties = extractRecordProperties(
+            record,
+            pipeline.propertyMappings
+          );
 
-        // Map properties
-        const mappedProperties: Record<string, unknown> = {};
-        for (const mapping of pipeline.propertyMappings) {
-          const rawVal = record[mapping.sourceField];
-          mappedProperties[mapping.targetPropertyName] = mapping.transform
-            ? mapping.transform(rawVal)
-            : rawVal;
-        }
+          const existing = yield* store.getObject(
+            pipeline.targetObjectTypeId as ObjectTypeId,
+            id
+          );
 
-        const existing = yield* this.store.getObject(
-          pipeline.targetObjectTypeId as ObjectTypeId,
-          id
-        );
+          if (!existing) {
+            const newInstance: ObjectInstance = {
+              id,
+              lastModifiedAt: now,
+              properties: mappedProperties,
+              typeId: pipeline.targetObjectTypeId as ObjectTypeId,
+              version: 1,
+            };
+            yield* store.putObject(newInstance).pipe(
+              Effect.mapError(
+                (err) =>
+                  new FunnelIngestionError({
+                    message: `Failed to insert object: ${err.message}`,
+                    pipelineId,
+                  })
+              )
+            );
+            createdCount++;
+            return;
+          }
 
-        if (existing) {
-          // Resolve conflict according to policy
-          const shouldUpdate = this.resolveConflict(
+          const shouldUpdate = resolveConflict(
             pipeline.conflictPolicy,
             existing,
             record
@@ -120,14 +168,14 @@ export class FunnelService {
           if (shouldUpdate) {
             const updatedInstance: ObjectInstance = {
               ...existing,
-              lastModifiedAt: Date.now(),
+              lastModifiedAt: now,
               properties: {
                 ...existing.properties,
                 ...mappedProperties,
               },
               version: existing.version + 1,
             };
-            yield* this.store.putObject(updatedInstance).pipe(
+            yield* store.putObject(updatedInstance).pipe(
               Effect.mapError(
                 (err) =>
                   new FunnelIngestionError({
@@ -140,47 +188,30 @@ export class FunnelService {
           } else {
             skippedCount++;
           }
-        } else {
-          const newInstance: ObjectInstance = {
-            id,
-            lastModifiedAt: Date.now(),
-            properties: mappedProperties,
-            typeId: pipeline.targetObjectTypeId as ObjectTypeId,
-            version: 1,
-          };
-          yield* this.store.putObject(newInstance).pipe(
-            Effect.mapError(
-              (err) =>
-                new FunnelIngestionError({
-                  message: `Failed to insert object: ${err.message}`,
-                  pipelineId,
-                })
-            )
-          );
-          createdCount++;
-        }
-      }
+        }),
+      { concurrency: 1 }
+    );
 
-      return {
-        createdCount,
-        processedCount: rawRecords.length,
-        skippedCount,
-        updatedCount,
-      };
-    });
-  }
+    return {
+      createdCount,
+      processedCount: rawRecords.length,
+      skippedCount,
+      updatedCount,
+    };
+  });
 
   /**
    * Ingest a single streaming event
    */
-  ingestStreamRecord(
-    pipelineId: string,
-    record: Record<string, unknown>
-  ): Effect.Effect<
-    ObjectInstance,
-    PipelineNotFoundError | FunnelIngestionError
-  > {
-    return Effect.gen({ self: this }, function* () {
+  readonly ingestStreamRecord = Effect.fn("FunnelService.ingestStreamRecord")(
+    function* (
+      this: FunnelService,
+      pipelineId: string,
+      record: Record<string, Schema.Json>
+    ): Effect.fn.Return<
+      ObjectInstance,
+      PipelineNotFoundError | FunnelIngestionError
+    > {
       yield* this.ingestBatch(pipelineId, [record]);
       const pipeline = yield* this.getPipeline(pipelineId);
       const rawId = record[pipeline.primaryKeyField];
@@ -189,21 +220,19 @@ export class FunnelService {
         String(rawId)
       );
       if (!obj) {
-        return yield* Effect.fail(
-          new FunnelIngestionError({
-            message: "Stream record could not be read after write",
-            pipelineId,
-          })
-        );
+        return yield* new FunnelIngestionError({
+          message: "Stream record could not be read after write",
+          pipelineId,
+        });
       }
       return obj;
-    });
-  }
+    }
+  );
 
   private resolveConflict(
     policy: ConflictResolutionPolicy,
     existing: ObjectInstance,
-    sourceRecord: Record<string, unknown>
+    sourceRecord: Record<string, Schema.Json>
   ): boolean {
     switch (policy) {
       case "source_wins": {
@@ -229,7 +258,7 @@ export class FunnelService {
 export interface IngestRawSourceOptions {
   readonly locator: string;
   readonly mediaType: string;
-  readonly rawPayload: unknown;
+  readonly rawPayload: Schema.Json;
   readonly permittedUses?: readonly string[];
   readonly sensitivity?: SensitivityLevel;
   readonly tenantId?: string;
@@ -262,6 +291,74 @@ export interface ProposeMappingOptions {
  * 4. Corrupt, unknown, and contradictory inputs yield explicit typed errors.
  * 5. Wrong tenant/environment reference does not disclose existence.
  */
+function extractPayloadItems(
+  payload: unknown
+): readonly Record<string, Schema.Json>[] {
+  if (Array.isArray(payload)) {
+    // SAFETY: payload array items are JSON records in this pipeline
+    return payload as readonly Record<string, Schema.Json>[];
+  }
+  if (typeof payload === "object" && payload !== null) {
+    // SAFETY: payload is verified to be a non-null JSON object at runtime
+    return [payload as Record<string, Schema.Json>];
+  }
+  return [];
+}
+
+function mapItemProperties(
+  item: Record<string, Schema.Json>,
+  mappings: readonly PropertyMapping[],
+  src: SourceArtifact
+): {
+  mappedProps: Record<string, Schema.Json>;
+  fieldProvenances: Record<string, FieldProvenance>;
+} {
+  const mappedProps: Record<string, Schema.Json> = {};
+  const fieldProvenances: Record<string, FieldProvenance> = {};
+  for (const rule of mappings) {
+    const val = item[rule.sourceField];
+    if (val !== undefined) {
+      mappedProps[rule.targetPropertyName] = val;
+      fieldProvenances[rule.targetPropertyName] = {
+        batchId: src.batchId,
+        digest: src.digest,
+        fieldPath: rule.sourceField,
+        locator: src.locator,
+        sourceId: src.sourceId,
+      };
+    }
+  }
+  return { mappedProps, fieldProvenances };
+}
+
+function checkConflictingProperties(
+  prev: CandidateRecord,
+  mappedProps: Record<string, Schema.Json>,
+  pkStr: string
+): Effect.Effect<void, ContradictoryInputError> {
+  const conflictingProps: string[] = [];
+  for (const [propName, propVal] of Object.entries(mappedProps)) {
+    if (
+      prev.properties[propName] !== undefined &&
+      prev.properties[propName] !== propVal
+    ) {
+      conflictingProps.push(propName);
+    }
+  }
+  if (conflictingProps.length > 0) {
+    return Effect.fail(
+      new ContradictoryInputError({
+        conflictingProperties: conflictingProps,
+        reason: `Contradictory values for record '${pkStr}': properties [${conflictingProps.join(
+          ", "
+        )}] conflict across sources`,
+        recordId: pkStr,
+      })
+    );
+  }
+  return Effect.void;
+}
+
 export class AccountableIngestionService {
   private readonly sourceInventory = new Map<string, SourceArtifact>();
   private readonly idempotencyRegistry = new Map<
@@ -279,126 +376,125 @@ export class AccountableIngestionService {
   /**
    * Ingest a raw source artifact into the inventory before any mapping or admission.
    */
-  ingestRawSource(
+  readonly ingestRawSource = Effect.fn(
+    "AccountableIngestionService.ingestRawSource"
+  )(function* (
+    this: AccountableIngestionService,
     options: IngestRawSourceOptions
-  ): Effect.Effect<
+  ): Effect.fn.Return<
     IngestionReceipt,
     IdempotencyConflictError | CorruptInputError
   > {
-    return Effect.gen({ self: this }, function* () {
-      let payload = options.rawPayload;
+    let payload = options.rawPayload;
 
-      // 1. Validate payload
-      if (
-        payload === undefined ||
-        payload === null ||
-        (typeof payload === "string" && payload.trim() === "")
-      ) {
-        return yield* Effect.fail(
+    // 1. Validate payload
+    if (
+      payload === undefined ||
+      payload === null ||
+      (typeof payload === "string" && payload.trim() === "")
+    ) {
+      return yield* new CorruptInputError({
+        locator: options.locator,
+        reason: "Raw payload is empty, undefined, or null",
+      });
+    }
+
+    // If string and mediaType is JSON, parse it to ensure valid structure
+    if (options.mediaType.includes("json") && typeof payload === "string") {
+      payload = yield* Effect.try({
+        catch: (cause: unknown) =>
           new CorruptInputError({
             locator: options.locator,
-            reason: "Raw payload is empty, undefined, or null",
-          })
-        );
-      }
+            reason: `Corrupt JSON payload: ${cause instanceof Error ? cause.message : String(cause)}`,
+          }),
+        // SAFETY: Parsing verified JSON string produces Schema.Json
+        try: () => parseJson(payload as string) as Schema.Json,
+      });
+    }
 
-      // If string and mediaType is JSON, parse it to ensure valid structure
-      if (options.mediaType.includes("json") && typeof payload === "string") {
-        payload = yield* Effect.try({
-          catch: (error: unknown) =>
-            new CorruptInputError({
-              locator: options.locator,
-              reason: `Corrupt JSON payload: ${String((error as any)?.message ?? error)}`,
-            }),
-          try: () => JSON.parse(payload as string),
-        });
-      }
+    // 2. Compute canonical digest
+    const digest = computeSourceDigest(payload);
 
-      // 2. Compute canonical digest
-      const digest = computeSourceDigest(payload);
-
-      // 3. Check idempotency
-      if (options.idempotencyKey) {
-        const existing = this.idempotencyRegistry.get(options.idempotencyKey);
-        if (existing) {
-          if (existing.digest === digest) {
-            return {
-              ...existing.receipt,
-              status: "replayed" as const,
-            };
-          }
-          return yield* Effect.fail(
-            new IdempotencyConflictError({
-              idempotencyKey: options.idempotencyKey,
-              message: `Idempotency conflict for key '${options.idempotencyKey}': existing digest '${existing.digest}', new digest '${digest}'`,
-            })
-          );
+    // 3. Check idempotency
+    if (options.idempotencyKey) {
+      const existing = this.idempotencyRegistry.get(options.idempotencyKey);
+      if (existing) {
+        if (existing.digest === digest) {
+          return {
+            ...existing.receipt,
+            status: "replayed" as const,
+          };
         }
-      }
-
-      // 4. Create SourceArtifact
-      const now = Date.now();
-      const sourceId = `src_${now}_${Math.random().toString(36).slice(2, 8)}`;
-      const batchId = `batch_${now}_${Math.random().toString(36).slice(2, 8)}`;
-
-      const artifact: SourceArtifact = {
-        batchId,
-        digest,
-        environmentId: options.environmentId,
-        locator: options.locator,
-        mediaType: options.mediaType,
-        permittedUses: options.permittedUses ?? [
-          "operational_analysis",
-          "decision_support",
-        ],
-        rawPayload: payload,
-        receivedAt: now,
-        sensitivity: options.sensitivity ?? "internal",
-        sourceId,
-        tenantId: options.tenantId,
-      };
-
-      this.sourceInventory.set(sourceId, artifact);
-
-      const receipt: IngestionReceipt = {
-        batchId,
-        idempotencyKey: options.idempotencyKey,
-        sourceArtifact: artifact,
-        status: "ingested",
-        timestamp: now,
-      };
-
-      if (options.idempotencyKey) {
-        this.idempotencyRegistry.set(options.idempotencyKey, {
-          digest,
-          receipt,
-          sourceId,
+        return yield* new IdempotencyConflictError({
+          idempotencyKey: options.idempotencyKey,
+          message: `Idempotency conflict for key '${options.idempotencyKey}': existing digest '${existing.digest}', new digest '${digest}'`,
         });
       }
+    }
 
-      return receipt;
-    });
-  }
+    // 4. Create SourceArtifact
+    const now = yield* Clock.currentTimeMillis;
+    const sourceId = generatePrefixedId("src", now);
+    const batchId = generatePrefixedId("batch", now);
+
+    const artifact: SourceArtifact = {
+      batchId,
+      digest,
+      environmentId: options.environmentId,
+      locator: options.locator,
+      mediaType: options.mediaType,
+      permittedUses: options.permittedUses ?? [
+        "operational_analysis",
+        "decision_support",
+      ],
+      rawPayload: payload,
+      receivedAt: now,
+      sensitivity: options.sensitivity ?? "internal",
+      sourceId,
+      tenantId: options.tenantId,
+    };
+
+    this.sourceInventory.set(sourceId, artifact);
+
+    const receipt: IngestionReceipt = {
+      batchId,
+      idempotencyKey: options.idempotencyKey,
+      sourceArtifact: artifact,
+      status: "ingested",
+      timestamp: now,
+    };
+
+    if (options.idempotencyKey) {
+      this.idempotencyRegistry.set(options.idempotencyKey, {
+        digest,
+        receipt,
+        sourceId,
+      });
+    }
+
+    return receipt;
+  });
 
   /**
    * Retrieve a source artifact with non-disclosure of existence on tenant mismatch.
    */
-  getSource(
-    sourceId: string,
-    tenantId?: string
-  ): Effect.Effect<SourceArtifact, UnknownSourceError> {
-    return Effect.gen({ self: this }, function* () {
+  readonly getSource = Effect.fn("AccountableIngestionService.getSource")(
+    function* (
+      this: AccountableIngestionService,
+      sourceId: string,
+      tenantId?: string
+    ): Effect.fn.Return<SourceArtifact, UnknownSourceError> {
       const src = this.sourceInventory.get(sourceId);
       if (!src) {
-        return yield* Effect.fail(new UnknownSourceError({ sourceId }));
+        return yield* new UnknownSourceError({ sourceId });
       }
       // Non-disclosure invariant: mismatching tenant returns identical error as not found
       if (tenantId && src.tenantId && src.tenantId !== tenantId) {
-        return yield* Effect.fail(new UnknownSourceError({ sourceId }));
+        return yield* new UnknownSourceError({ sourceId });
       }
       return src;
-    });
-  }
+    }
+  );
 
   /**
    * List source artifacts, optionally scoped to a tenant.
@@ -406,7 +502,9 @@ export class AccountableIngestionService {
   listSources(tenantId?: string): Effect.Effect<readonly SourceArtifact[]> {
     return Effect.sync(() => {
       const all = [...this.sourceInventory.values()];
-      if (!tenantId) return all;
+      if (!tenantId) {
+        return all;
+      }
       return all.filter((s) => !s.tenantId || s.tenantId === tenantId);
     });
   }
@@ -414,175 +512,149 @@ export class AccountableIngestionService {
   /**
    * Propose a mapping from raw sources to candidate records with full provenance tracking (S15).
    */
-  proposeMapping(
+  readonly proposeMapping = Effect.fn(
+    "AccountableIngestionService.proposeMapping"
+  )(function* (
+    this: AccountableIngestionService,
     options: ProposeMappingOptions
-  ): Effect.Effect<
+  ): Effect.fn.Return<
     MappingProposal,
     UnknownSourceError | ContradictoryInputError
   > {
-    return Effect.gen({ self: this }, function* () {
-      const sources: SourceArtifact[] = [];
-      for (const srcId of options.sourceIds) {
-        const src = yield* this.getSource(srcId, options.tenantId);
-        sources.push(src);
-      }
+    const sources = yield* Effect.forEach(
+      options.sourceIds,
+      (srcId) => this.getSource(srcId, options.tenantId),
+      { concurrency: 1 }
+    );
 
-      const candidateRecords: CandidateRecord[] = [];
-      const seenRecordsById = new Map<string, CandidateRecord>();
-      const openQuestions: string[] = [];
+    const candidateRecords: CandidateRecord[] = [];
+    const seenRecordsById = new Map<string, CandidateRecord>();
+    const openQuestions: string[] = [];
 
-      for (const src of sources) {
-        const payload = src.rawPayload;
-        const items: readonly Record<string, unknown>[] = Array.isArray(payload)
-          ? payload
-          : typeof payload === "object" && payload !== null
-            ? [payload as Record<string, unknown>]
-            : [];
+    yield* Effect.forEach(
+      sources,
+      Effect.fn("AccountableIngestionService.processSource")(function* (src) {
+        const items = extractPayloadItems(src.rawPayload);
 
-        for (const item of items) {
-          const rawPk = item[options.primaryKeyField];
-          if (rawPk === undefined || rawPk === null) {
-            openQuestions.push(
-              `Record in source '${src.sourceId}' missing primary key field '${options.primaryKeyField}'`
+        yield* Effect.forEach(
+          items,
+          Effect.fn("AccountableIngestionService.processItem")(function* (
+            item
+          ) {
+            const rawPk = item[options.primaryKeyField];
+            if (rawPk === undefined || rawPk === null) {
+              openQuestions.push(
+                `Record in source '${src.sourceId}' missing primary key field '${options.primaryKeyField}'`
+              );
+              return;
+            }
+            const pkStr = String(rawPk);
+            const { mappedProps, fieldProvenances } = mapItemProperties(
+              item,
+              options.propertyMappings,
+              src
             );
-            continue;
-          }
-          const pkStr = String(rawPk);
 
-          const mappedProps: Record<string, unknown> = {};
-          const fieldProvenances: Record<string, FieldProvenance> = {};
+            const prev = seenRecordsById.get(pkStr);
+            if (prev) {
+              yield* checkConflictingProperties(prev, mappedProps, pkStr);
+            }
 
-          for (const rule of options.propertyMappings) {
-            const val = item[rule.sourceField];
-            if (val !== undefined) {
-              mappedProps[rule.targetPropertyName] = val;
-              fieldProvenances[rule.targetPropertyName] = {
+            const candidate: CandidateRecord = {
+              confidence: 0.95,
+              properties: mappedProps,
+              provenance: {
                 batchId: src.batchId,
                 digest: src.digest,
-                fieldPath: rule.sourceField,
+                fieldProvenances,
                 locator: src.locator,
                 sourceId: src.sourceId,
-              };
-            }
-          }
+              },
+              rawRecordId: pkStr,
+              targetObjectTypeId: options.targetObjectTypeId,
+            };
 
-          // Check for contradictory inputs within the same batch/proposal
-          const prev = seenRecordsById.get(pkStr);
-          if (prev) {
-            const conflictingProps: string[] = [];
-            for (const [propName, propVal] of Object.entries(mappedProps)) {
-              if (
-                prev.properties[propName] !== undefined &&
-                prev.properties[propName] !== propVal
-              ) {
-                conflictingProps.push(propName);
-              }
-            }
-            if (conflictingProps.length > 0) {
-              return yield* Effect.fail(
-                new ContradictoryInputError({
-                  conflictingProperties: conflictingProps,
-                  reason: `Contradictory values for record '${pkStr}': properties [${conflictingProps.join(
-                    ", "
-                  )}] conflict across sources`,
-                  recordId: pkStr,
-                })
-              );
-            }
-          }
+            seenRecordsById.set(pkStr, candidate);
+            candidateRecords.push(candidate);
+          }),
+          { concurrency: 1 }
+        );
+      }),
+      { concurrency: 1 }
+    );
 
-          const candidate: CandidateRecord = {
-            confidence: 0.95,
-            properties: mappedProps,
-            provenance: {
-              batchId: src.batchId,
-              digest: src.digest,
-              fieldProvenances,
-              locator: src.locator,
-              sourceId: src.sourceId,
-            },
-            rawRecordId: pkStr,
-            targetObjectTypeId: options.targetObjectTypeId,
-          };
+    const now = yield* Clock.currentTimeMillis;
+    const proposalId = generatePrefixedId("prop_map", now);
 
-          seenRecordsById.set(pkStr, candidate);
-          candidateRecords.push(candidate);
-        }
-      }
+    const proposal: MappingProposal = {
+      confidence: candidateRecords.length > 0 ? 0.95 : 0,
+      createdAt: now,
+      createdBy: options.author,
+      definitionDigest: options.definitionDigest,
+      openQuestions,
+      proposalId,
+      records: candidateRecords,
+      sources: options.sourceIds,
+      status: "draft",
+    };
 
-      const proposalId = `prop_map_${Date.now()}_${Math.random()
-        .toString(36)
-        .slice(2, 8)}`;
-
-      const proposal: MappingProposal = {
-        confidence: candidateRecords.length > 0 ? 0.95 : 0,
-        createdAt: Date.now(),
-        createdBy: options.author,
-        definitionDigest: options.definitionDigest,
-        openQuestions,
-        proposalId,
-        records: candidateRecords,
-        sources: options.sourceIds,
-        status: "draft",
-      };
-
-      this.mappingProposals.set(proposalId, proposal);
-      return proposal;
-    });
-  }
+    this.mappingProposals.set(proposalId, proposal);
+    return proposal;
+  });
 
   /**
    * Admitting a mapping proposal writes candidate records to the canonical Object Store (S03).
    * Raw evidence CANNOT mutate the store directly without this approved proposal.
    */
-  admitProposal(
+  readonly admitProposal = Effect.fn(
+    "AccountableIngestionService.admitProposal"
+  )(function* (
+    this: AccountableIngestionService,
     proposalId: string,
     _author: Subject
-  ): Effect.Effect<
+  ): Effect.fn.Return<
     MappingProposal,
     UnknownSourceError | ConcurrentModificationError
   > {
-    return Effect.gen({ self: this }, function* () {
-      const proposal = this.mappingProposals.get(proposalId);
-      if (!proposal) {
-        return yield* Effect.fail(
-          new UnknownSourceError({ sourceId: proposalId })
-        );
-      }
+    const proposal = this.mappingProposals.get(proposalId);
+    if (!proposal) {
+      return yield* new UnknownSourceError({ sourceId: proposalId });
+    }
 
-      const now = Date.now();
-      for (const record of proposal.records) {
-        yield* this.store.putObject({
+    const now = yield* Clock.currentTimeMillis;
+    yield* Effect.forEach(
+      proposal.records,
+      (record) =>
+        this.store.putObject({
           id: record.rawRecordId,
           lastModifiedAt: now,
           properties: record.properties,
           typeId: record.targetObjectTypeId,
           version: 1,
-        });
-      }
+        }),
+      { concurrency: 1 }
+    );
 
-      const approved: MappingProposal = {
-        ...proposal,
-        status: "approved",
-      };
-      this.mappingProposals.set(proposalId, approved);
-      return approved;
-    });
-  }
+    const approved: MappingProposal = {
+      ...proposal,
+      status: "approved",
+    };
+    this.mappingProposals.set(proposalId, approved);
+    return approved;
+  });
 
-  getProposal(
-    proposalId: string
-  ): Effect.Effect<MappingProposal, UnknownSourceError> {
-    return Effect.gen({ self: this }, function* () {
+  readonly getProposal = Effect.fn("AccountableIngestionService.getProposal")(
+    function* (
+      this: AccountableIngestionService,
+      proposalId: string
+    ): Effect.fn.Return<MappingProposal, UnknownSourceError> {
       const p = this.mappingProposals.get(proposalId);
       if (!p) {
-        return yield* Effect.fail(
-          new UnknownSourceError({ sourceId: proposalId })
-        );
+        return yield* new UnknownSourceError({ sourceId: proposalId });
       }
       return p;
-    });
-  }
+    }
+  );
 
   exportSnapshot(): {
     readonly sources: readonly SourceArtifact[];

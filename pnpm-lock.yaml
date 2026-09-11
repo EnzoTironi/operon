@@ -11,9 +11,9 @@ importers:
       '@effect/tsgo':
         specifier: 0.45.0
         version: 0.45.0
-      '@mpsuesser/oxlint-plugin-effect':
-        specifier: ^0.5.0
-        version: 0.5.0
+      '@oxlint/plugins':
+        specifier: 1.82.0
+        version: 1.82.0
       '@stryker-mutator/core':
         specifier: ^10.0.0
         version: 10.0.0(@types/node@22.20.2)
@@ -26,6 +26,9 @@ importers:
       '@vitest/coverage-v8':
         specifier: ^2.1.9
         version: 2.1.9(vitest@2.1.9(@types/node@22.20.2))
+      effect:
+        specifier: 4.0.0-rc.112
+        version: 4.0.0-rc.112
       fast-check:
         specifier: ^4.9.0
         version: 4.9.0
@@ -232,6 +235,9 @@ importers:
       '@operon/schema':
         specifier: workspace:*
         version: link:../schema
+      effect:
+        specifier: 4.0.0-rc.112
+        version: 4.0.0-rc.112
     devDependencies:
       typescript:
         specifier: ^5.7.2
@@ -1417,9 +1423,6 @@ packages:
       '@cfworker/json-schema':
         optional: true
 
-  '@mpsuesser/oxlint-plugin-effect@0.5.0':
-    resolution: {integrity: sha512-RksB0kBL3aEzMdSgozRgKjVc9++k8EsmoqS9QQ4+AS9TVBVcHyA+Q6dE9gcsRqYWbsGNQQ58STDJAwlwczsAqg==}
-
   '@mrleebo/prisma-ast@0.13.1':
     resolution: {integrity: sha512-XyroGQXcHrZdvmrGJvsA9KNeOOgGMg1Vg9OlheUsBOSKznLMDl+YChxbkboRHvtFYJEMRYmlV3uoo/njCw05iw==}
     engines: {node: '>=16'}
@@ -2556,9 +2559,6 @@ packages:
     resolution: {integrity: sha512-R8Rdn8Hy72KKcebgLiv8jQcQkXoLMOGGv5uI1/k0l+snqkOzQ1R0ChUBCxWMlBsFMekWjq0wRudIweFs7sKT5A==}
     engines: {node: '>=14.0.0'}
 
-  '@standard-schema/spec@1.1.0':
-    resolution: {integrity: sha512-l2aFy5jALhniG5HgqrD6jXLi/rUWrKvqN/qJx6yoJsgKhblVd+iqqU4RCXavm/jPityDo5TCvKMnpjKnOriy0w==}
-
   '@stryker-mutator/api@10.0.0':
     resolution: {integrity: sha512-ZtAJ0ZT3MVRCWJTBE2h90XB/6E+4lifHYtcTyNG6nU2nLekPgTo4gD5esjX6Okxo1b/JB4jJzyxYB54fwKAoJw==}
     engines: {node: '>=22.0.0'}
@@ -3139,14 +3139,6 @@ packages:
   ee-first@1.1.1:
     resolution: {integrity: sha512-WMwm9LhRUo+WUaRN+vRuETqG89IgZphVSNkdFgeb6sS/E4OrDIN7t48CAewSHXc6C8lefD8KKfr5vY61brQlow==}
 
-  effect-oxlint@0.3.4:
-    resolution: {integrity: sha512-VaI72NhDI+OBk8rkWBxR3D+k8iQN5KX4caiTRtWR/KDlif4KdxmjPelQqflwwprxkGldEpLry9fQvvzlBWY6bA==}
-    peerDependencies:
-      effect: ^4.0.0-rc.112
-
-  effect@4.0.0-beta.100:
-    resolution: {integrity: sha512-K4ed+BS3HyE+NoAZ8pJss2DpuK41mb856IO7ZlPfnwBXbq8oTtAAurrsVnwe2hzPamIuaZp/Pq4/xp9qORYv8Q==}
-
   effect@4.0.0-rc.112:
     resolution: {integrity: sha512-wXxwuh1Ywnv4cPRM3Wfa0vDwuOHnZ1TsTgHJkG9XgzND6inhBH9n1vBxhg3iIXOia/OrpmvVmd3lrD4vq6bF3A==}
 
@@ -3306,9 +3298,6 @@ packages:
     resolution: {integrity: sha512-S8KoZgRZN+a5rNwqTxlZZePjT/4cnm0ROV70LedRHZ0p8u9fRID0hJUZQpkKLzro8LfmC8sx23bY6tVNxv8pQA==}
     engines: {node: '>= 18.0.0'}
 
-  find-my-way-ts@0.1.6:
-    resolution: {integrity: sha512-a85L9ZoXtNAey3Y6Z+eBWW658kO/MwR7zIafkIUPUMf3isZG0NCs2pjW2wtjxAKuJPxMAsHUIP4ZPGv0o5gyTA==}
-
   find-workspaces@0.3.1:
     resolution: {integrity: sha512-UDkGILGJSA1LN5Aa7McxCid4sqW3/e+UYsVwyxki3dDT0F8+ym0rAfnCkEfkL0rO7M+8/mvkim4t/s3IPHmg+w==}
 
@@ -3467,10 +3456,6 @@ packages:
   inherits@2.0.4:
     resolution: {integrity: sha512-k/vGaX4/Yla3WzyMCvTQOXYeIHvqOKtnqBduzTHpzpQZzAskKMhZ2K+EnBiSM9zGSoIFeMpXKxa4dYeZIQqewQ==}
 
-  ini@7.0.0:
-    resolution: {integrity: sha512-ifK0CgjALofS5bkrcTy4RaQ9Vx2Knf/eLeIO+NaswQEpH1UblrtTSCIvN71qQDMq0PeQ/SSPojvEJp9vvvfr+w==}
-    engines: {node: ^22.22.2 || ^24.15.0 || >=26.0.0}
-
   ink@6.8.0:
     resolution: {integrity: sha512-sbl1RdLOgkO9isK42WCZlJCFN9hb++sX9dsklOvfd1YQ3bQ2AiFu12Q6tFlr0HvEUvzraJntQCCpfEoUe9DSzA==}
     engines: {node: '>=20'}
@@ -3613,9 +3598,6 @@ packages:
     engines: {node: ^20.19.0 || >=22.12.0}
     hasBin: true
 
-  kubernetes-types@1.30.0:
-    resolution: {integrity: sha512-Dew1okvhM/SQcIa2rcgujNndZwU8VnSapDgdxlYoB84ZlpAD43U6KLAFqYo17ykSFGHNPrg0qry0bP+GJd9v7Q==}
-
   libsodium-wrappers@0.8.4:
     resolution: {integrity: sha512-mu8aAWucZjTB5O/BtGXtW4e1agy7uHxNYG7zPthmmD1jU43LCDmSWZLN4JhflbdPXj3yDO4lxM1O9hLDgIOXDw==}
 
@@ -3624,6 +3606,7 @@ packages:
 
   libsql@0.5.29:
     resolution: {integrity: sha512-8lMP8iMgiBzzoNbAPQ59qdVcj6UaE/Vnm+fiwX4doX4Narook0a4GPKWBEv+CR8a1OwbfkgL18uBfBjWdF0Fzg==}
+    cpu: [x64, arm64, wasm32, arm]
     os: [darwin, linux, win32]
 
   lie@3.3.0:
@@ -3744,9 +3727,6 @@ packages:
 
   msgpackr@2.1.0:
     resolution: {integrity: sha512-p/pBCVO63CsvvpkomUnNNag6+n38rULuDA6HHe70o2gtC8ODI52foF/4ko2qQcp6OiErJXTmrZeXmsGGHsIQNQ==}
-
-  multipasta@0.2.8:
-    resolution: {integrity: sha512-ZPWuMKyv0cSO29f7hozp+k6+crZbQijV8ipMvxNxRf2SwtYGTX1ZX89Kd20VV4H9Znonx+EQn+iy1wGQsJ+b+Q==}
 
   mutation-server-protocol@0.4.1:
     resolution: {integrity: sha512-SBGK0j8hLDne7bktgThKI8kGvGTx3rY3LAeQTmOKZ5bVnL/7TorLMvcVF7dIPJCu5RNUWhkkuF53kurygYVt3g==}
@@ -4293,10 +4273,6 @@ packages:
     resolution: {integrity: sha512-o5sSPKEkg/DIQNmH43V0/uerLrpzVedkUh8tGNvaeXpfpuwjKenlSox/2O/BTlZUtEe+JG7s5YhEz608PlAHRA==}
     engines: {node: '>=0.6'}
 
-  toml@4.3.0:
-    resolution: {integrity: sha512-lVb8X9BsPVuH0M4BKeS91tXAmJvCjQ5UIyAbQFaxkKGyUFK2RPkhwaFSQH8vbpl1d23eu/IBH+dwVMHWaq9A5A==}
-    engines: {node: '>=20'}
-
   tree-kill@1.2.2:
     resolution: {integrity: sha512-L0Orpi8qGpRG//Nd+H90vFB+3iHnue1zSSGmNOOCh1GLJ7rUKVwV2HvijphGQS2UmhUZewS9VgvxYIdgr+fG1A==}
     hasBin: true
@@ -4397,10 +4373,6 @@ packages:
 
   util-deprecate@1.0.2:
     resolution: {integrity: sha512-EPD5q1uXyFxJpCrLnCc1nHnq3gOa6DZBocAIiI2TaSCA7VCJ1UJDMagCzIkXNsUYfD1daK//LTEQ8xiIbrHtcw==}
-
-  uuid@14.0.2:
-    resolution: {integrity: sha512-xZe/16rV4aa+HGSOCiY2YeLT1OybRLrrkL/Rqaq7p7GMVXjFh+6wN4oMYgjFmnSnhY8t6Xpdl2l9qmnHYuMHwQ==}
-    hasBin: true
 
   valibot@1.2.0:
     resolution: {integrity: sha512-mm1rxUsmOxzrwnX5arGS+U4T25RdvpPjPN4yR0u9pUBov9+zGVtO84tif1eY4r6zWxVxu3KzIyknJy3rxfRZZg==}
@@ -5621,12 +5593,6 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  '@mpsuesser/oxlint-plugin-effect@0.5.0':
-    dependencies:
-      '@oxlint/plugins': 1.82.0
-      effect: 4.0.0-beta.100
-      effect-oxlint: 0.3.4(effect@4.0.0-beta.100)
-
   '@mrleebo/prisma-ast@0.13.1':
     dependencies:
       chevrotain: 10.5.0
@@ -6552,8 +6518,6 @@ snapshots:
       '@smithy/util-buffer-from': 2.2.0
       tslib: 2.8.1
 
-  '@standard-schema/spec@1.1.0': {}
-
   '@stryker-mutator/api@10.0.0':
     dependencies:
       mutation-testing-metrics: 3.8.4
@@ -7104,24 +7068,6 @@ snapshots:
 
   ee-first@1.1.1: {}
 
-  effect-oxlint@0.3.4(effect@4.0.0-beta.100):
-    dependencies:
-      '@oxlint/plugins': 1.82.0
-      effect: 4.0.0-beta.100
-
-  effect@4.0.0-beta.100:
-    dependencies:
-      '@standard-schema/spec': 1.1.0
-      fast-check: 4.9.0
-      find-my-way-ts: 0.1.6
-      ini: 7.0.0
-      kubernetes-types: 1.30.0
-      msgpackr: 2.1.0
-      multipasta: 0.2.8
-      toml: 4.3.0
-      uuid: 14.0.2
-      yaml: 2.9.0
-
   effect@4.0.0-rc.112:
     dependencies:
       fast-check: 4.9.0
@@ -7348,8 +7294,6 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  find-my-way-ts@0.1.6: {}
-
   find-workspaces@0.3.1:
     dependencies:
       fast-glob: 3.3.3
@@ -7499,8 +7443,6 @@ snapshots:
 
   inherits@2.0.4: {}
 
-  ini@7.0.0: {}
-
   ink@6.8.0(react@19.3.0):
     dependencies:
       '@alcalzone/ansi-tokenize': 0.2.5
@@ -7645,8 +7587,6 @@ snapshots:
       yaml: 2.9.0
       zod: 4.6.0
 
-  kubernetes-types@1.30.0: {}
-
   libsodium-wrappers@0.8.4:
     dependencies:
       libsodium: 0.8.4
@@ -7782,8 +7722,6 @@ snapshots:
   msgpackr@2.1.0:
     optionalDependencies:
       msgpackr-extract: 3.0.4
-
-  multipasta@0.2.8: {}
 
   mutation-server-protocol@0.4.1:
     dependencies:
@@ -8427,8 +8365,6 @@ snapshots:
 
   toidentifier@1.0.1: {}
 
-  toml@4.3.0: {}
-
   tree-kill@1.2.2: {}
 
   tslib@2.8.1: {}
@@ -8530,8 +8466,6 @@ snapshots:
       picocolors: 1.1.1
 
   util-deprecate@1.0.2: {}
-
-  uuid@14.0.2: {}
 
   valibot@1.2.0(typescript@5.9.3):
     optionalDependencies:

@@ -15,7 +15,7 @@ export const TaskMandateSchema = Schema.Struct({
   environmentId: Schema.String,
   issuerId: Schema.String,
   authorizedOutcome: Schema.String,
-  constraints: Schema.Record(Schema.String, Schema.Unknown),
+  constraints: Schema.Record(Schema.String, Schema.Json),
   createdAt: Schema.Number,
   expiresAt: Schema.Number,
 });
@@ -137,7 +137,7 @@ export const PreparedActionSchema = Schema.Struct({
   environmentId: Schema.String,
   proposer: SubjectSchema,
   grantId: Schema.optional(Schema.String),
-  normalizedParameters: Schema.Record(Schema.String, Schema.Unknown),
+  normalizedParameters: Schema.Record(Schema.String, Schema.Json),
   objectRevisions: Schema.Array(ObjectRevisionRefSchema),
   predicateDependencies: Schema.Array(PredicateDependencySchema),
   evidenceClosure: Schema.Array(EvidenceClosureItemSchema),
@@ -271,12 +271,14 @@ export function computeOperationReceiptDigest(
   return computeCanonicalDigest(receiptWithoutDigest);
 }
 
+export type ActionParameters = Record<string, Schema.Json>;
+
 /**
  * Compute RFC 8785 canonical digest of normalized action effects (S07 / V1-04)
  */
 export function computeEffectDigest(effects: {
   readonly actionId: string;
-  readonly normalizedParameters: Record<string, unknown>;
+  readonly normalizedParameters: ActionParameters;
   readonly requestedEffects?: readonly RequestedEffect[];
   readonly intendedRecipients?: readonly string[];
 }): string {

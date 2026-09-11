@@ -2,24 +2,28 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { createOperonMcpServer } from "@operon/mcp";
 import { Effect } from "effect";
 
+import { printCliError } from "../io.js";
 import { createRuntimeContext } from "../state.js";
 
-export function runMcp(args: string[]): Effect.Effect<number, unknown, never> {
+export function runMcp(args: string[]): Effect.Effect<number> {
   return Effect.gen(function* () {
     const sub = args[0] ?? "start";
 
     if (sub !== "start") {
-      console.error(`Error: Unknown mcp subcommand '${sub}'`);
-      console.error(
+      printCliError(`Error: Unknown mcp subcommand '${sub}'`);
+      printCliError(
         "  Usage: operon mcp start [--agent-tier <1|2|3|4>] [--db <path>]"
       );
       return 1;
     }
 
     const tierIndex = args.indexOf("--agent-tier");
+    // SAFETY: default agent tier 4 conforms to AgentTier union
+    const defaultTier: 1 | 2 | 3 | 4 = 4;
+    // SAFETY: tier argument parsed as numeric agent tier union
     const agentTier =
       tierIndex === -1
-        ? (4 as const)
+        ? defaultTier
         : (Math.trunc(Number(args[tierIndex + 1])) as 1 | 2 | 3 | 4);
 
     const dbIndex = args.indexOf("--db");

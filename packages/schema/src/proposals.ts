@@ -32,8 +32,8 @@ export interface ProposalChangeSet {
   readonly modifiedLinkTypes: readonly LinkType[];
   readonly deletedLinkTypeIds: readonly string[];
 
-  readonly addedActionTypes: readonly ActionType<any>[];
-  readonly modifiedActionTypes: readonly ActionType<any>[];
+  readonly addedActionTypes: readonly ActionType[];
+  readonly modifiedActionTypes: readonly ActionType[];
   readonly deletedActionTypeIds: readonly string[];
 }
 

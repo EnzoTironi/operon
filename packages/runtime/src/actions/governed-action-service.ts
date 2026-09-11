@@ -2,10 +2,12 @@ import { createHash } from "node:crypto";
 
 import type {
   ActionEvaluationContext,
+  ActionParameters,
   ActionType,
   ApprovalRecord,
   EvidenceClosureItem,
   ObjectRevisionRef,
+  ObjectTypeId,
   PredicateDependency,
   PreparedAction,
   RequestedEffect,
@@ -17,8 +19,10 @@ import {
   computeApprovalRecordHash,
   computePreparedActionDigest,
   createWorldView,
+  generatePrefixedId,
+  serializeJson,
 } from "@operon/schema";
-import { Effect, Schema } from "effect";
+import { Clock, Effect, Schema } from "effect";
 
 import {
   ApprovalDigestMismatchError,
@@ -74,12 +78,255 @@ const DEFAULT_APPROVER_ROLES = new Set([
   "specialist",
 ]);
 
+interface ActionCheckItem {
+  readonly checkId: string;
+  readonly name: string;
+  readonly executed: boolean;
+  readonly status: "passed" | "failed" | "needs_execution_revalidation";
+  readonly reason?: string;
+}
+
+function determineActionVerdict(params: {
+  readonly hasDenial: boolean;
+  readonly hasReviewRequirement: boolean;
+  readonly failedReasonsCount: number;
+  readonly defaultExecutionMode: string;
+  readonly proposer: Subject;
+}): "allow" | "review" | "deny" | "evidence_insufficient" {
+  if (params.hasDenial) {
+    return "deny";
+  }
+  if (params.hasReviewRequirement) {
+    return "review";
+  }
+  if (params.failedReasonsCount > 0) {
+    return "evidence_insufficient";
+  }
+  if (
+    params.defaultExecutionMode === "proposal" ||
+    params.proposer.agentTier === 2 ||
+    (params.proposer.agentTier === 3 && params.proposer.type === "agent")
+  ) {
+    return "review";
+  }
+  return "allow";
+}
+
+function collectRequestedEffects(
+  action: ActionType<ActionParameters>
+): RequestedEffect[] {
+  const effects: RequestedEffect[] = [];
+  if (action.mutation) {
+    effects.push({
+      description: `State mutation on ${action.targetObjectTypeId ?? "target"}`,
+      effectId: `${action.id}_mutation`,
+      isLiveExternal: false,
+      mutationTypes: ["put"],
+    });
+  }
+  if (action.sideEffects) {
+    for (const se of action.sideEffects) {
+      effects.push({
+        description: se.description,
+        effectId: se.id,
+        isLiveExternal: true,
+      });
+    }
+  }
+  return effects;
+}
+
+const collectObjectRevisions = Effect.fn(
+  "GovernedActionService.collectObjectRevisions"
+)(function* (
+  action: ActionType<ActionParameters>,
+  pRecord: Record<string, unknown>,
+  objectStore: ObjectStore
+) {
+  const objectRevisions: ObjectRevisionRef[] = [];
+  const candidateTargetIds = [
+    pRecord.targetId,
+    pRecord.patientId,
+    pRecord.claimId,
+    pRecord.objectId,
+    pRecord.userId,
+  ].filter((val): val is string => typeof val === "string" && val.length > 0);
+
+  yield* Effect.forEach(
+    candidateTargetIds,
+    Effect.fn("GovernedActionService.resolveTargetObject")(
+      function* (targetId) {
+        const targetType =
+          action.targetObjectTypeId ?? ("Object" as ObjectTypeId);
+        const existingObj = yield* objectStore.getObject(
+          targetType as ObjectTypeId,
+          targetId
+        );
+        if (existingObj) {
+          objectRevisions.push({
+            objectId: existingObj.id,
+            propertyRevisions: {},
+            revision: existingObj.version,
+            typeId: existingObj.typeId,
+          });
+        }
+      }
+    ),
+    { concurrency: 1 }
+  );
+  return objectRevisions;
+});
+
+const evaluateFreshnessChecks = Effect.fn(
+  "GovernedActionService.evaluateFreshnessChecks"
+)(function* (
+  action: ActionType<ActionParameters>,
+  pRecord: Record<string, unknown>,
+  objectStore: ObjectStore,
+  worldView: WorldView
+) {
+  const failedReasons: string[] = [];
+  const checks: ActionCheckItem[] = [];
+
+  if (!action.requiredFreshnessProperties) {
+    return { checks, failedReasons };
+  }
+
+  yield* Effect.forEach(
+    action.requiredFreshnessProperties,
+    Effect.fn("GovernedActionService.checkFreshnessReq")(function* (req) {
+      const targetId = pRecord.targetId as string | undefined;
+      if (!targetId) {
+        failedReasons.push(
+          `Missing targetId for freshness check '${req.propertyName}'`
+        );
+        checks.push({
+          checkId: `freshness_${req.propertyName}`,
+          executed: true,
+          name: `Freshness check for ${req.propertyName}`,
+          reason: "Missing targetId",
+          status: "failed",
+        });
+        return;
+      }
+
+      const obj = yield* objectStore.getObject(req.objectTypeId, targetId);
+      if (!obj) {
+        failedReasons.push(
+          `Target object '${targetId}' not found for freshness check '${req.propertyName}'`
+        );
+        checks.push({
+          checkId: `freshness_${req.propertyName}`,
+          executed: true,
+          name: `Freshness check for ${req.propertyName}`,
+          reason: `Target object '${targetId}' not found`,
+          status: "failed",
+        });
+        return;
+      }
+
+      const propTimestamps = obj.provenance?.propertyTimestamps;
+      const recordedAt =
+        propTimestamps?.[req.propertyName] ??
+        obj.provenance?.recordedAt ??
+        obj.lastModifiedAt;
+      const ageMs = worldView.validTime - recordedAt;
+      if (ageMs > req.maxStalenessMs) {
+        const reason = `Property '${req.propertyName}' staleness ${ageMs}ms exceeds budget ${req.maxStalenessMs}ms`;
+        failedReasons.push(reason);
+        checks.push({
+          checkId: `freshness_${req.propertyName}`,
+          executed: true,
+          name: `Freshness check for ${req.propertyName}`,
+          reason,
+          status: "failed",
+        });
+      } else {
+        checks.push({
+          checkId: `freshness_${req.propertyName}`,
+          executed: true,
+          name: `Freshness check for ${req.propertyName}`,
+          status: "passed",
+        });
+      }
+    }),
+    { concurrency: 1 }
+  );
+
+  return { checks, failedReasons };
+});
+
+const evaluateCriteriaGuards = Effect.fn(
+  "GovernedActionService.evaluateCriteriaGuards"
+)(function* (
+  action: ActionType<ActionParameters>,
+  normalizedParameters: ActionParameters,
+  evalContext: ActionEvaluationContext
+) {
+  const predicateDependencies: PredicateDependency[] = [];
+  const checks: ActionCheckItem[] = [];
+  const failedReasons: string[] = [];
+  let hasReviewRequirement = false;
+  let hasDenial = false;
+
+  yield* Effect.forEach(
+    action.submissionCriteria,
+    Effect.fn("GovernedActionService.evalCriterion")(function* (criterion) {
+      const result = yield* criterion.evaluate(
+        normalizedParameters,
+        evalContext
+      );
+      predicateDependencies.push({
+        criterionId: criterion.id,
+        description: criterion.description,
+        passed: result.passed,
+        verdict: result.verdict,
+      });
+
+      checks.push({
+        checkId: criterion.id,
+        executed: true,
+        name: criterion.description,
+        reason: result.failureReason,
+        status: result.passed ? "passed" : "failed",
+      });
+
+      if (!result.passed) {
+        if (result.verdict === "deny") {
+          hasDenial = true;
+          failedReasons.push(
+            result.failureReason ?? `Criterion '${criterion.id}' denied`
+          );
+        } else {
+          hasReviewRequirement = true;
+          failedReasons.push(
+            result.failureReason ??
+              `Criterion '${criterion.id}' requires review`
+          );
+        }
+      }
+    }),
+    { concurrency: 1 }
+  );
+
+  return {
+    checks,
+    failedReasons,
+    hasDenial,
+    hasReviewRequirement,
+    predicateDependencies,
+  };
+});
+
 /**
  * GovernedActionService (S06, S07 / V0-CH-07):
  * Manages action preparation (dry-run, zero business mutation) and exact proposal approval.
  */
 export class GovernedActionService {
-  private readonly actionTypes = new Map<string, ActionType<any>>();
+  private readonly actionTypes = new Map<
+    string,
+    ActionType<ActionParameters>
+  >();
   private readonly preparedActions = new Map<string, PreparedAction>(); // keyed by canonicalDigest
   private readonly preparedById = new Map<string, PreparedAction>();
   private readonly approvals = new Map<string, ApprovalRecord>(); // keyed by id
@@ -89,7 +336,7 @@ export class GovernedActionService {
   >();
 
   constructor(
-    registeredActions: readonly ActionType<any>[],
+    registeredActions: readonly ActionType<ActionParameters>[],
     private readonly objectStore: ObjectStore,
     private readonly authorityService: AuthorityService,
     initialSnapshot?: GovernedActionSnapshot
@@ -109,11 +356,11 @@ export class GovernedActionService {
     }
   }
 
-  registerActionType(action: ActionType<any>): void {
+  registerActionType(action: ActionType<ActionParameters>): void {
     this.actionTypes.set(action.id, action);
   }
 
-  getActionType(actionId: string): ActionType<any> | undefined {
+  getActionType(actionId: string): ActionType<ActionParameters> | undefined {
     return this.actionTypes.get(actionId);
   }
 
@@ -152,29 +399,30 @@ export class GovernedActionService {
         grantId,
         ttlMs = 24 * 60 * 60 * 1000,
       } = input;
-      const now = Date.now();
+      const now = yield* Clock.currentTimeMillis;
 
       const action = actionTypes.get(actionId);
       if (!action) {
-        return yield* Effect.fail(
+        return yield* 
           new FreshnessOrPolicyDeniedError({
             actionId,
             message: `ActionType '${actionId}' is not registered`,
             reasons: [`ActionType '${actionId}' not found`],
           })
-        );
+        ;
       }
 
       // 1. Parameter decoding & validation
-      const normalizedParameters = yield* Schema.decodeUnknownEffect(
-        action.parametersSchema as Schema.Decoder<any>
-      )(rawParameters).pipe(
+      const decodeParameters = Schema.decodeUnknownEffect(
+        action.parametersSchema as Schema.Decoder<ActionParameters>
+      );
+      const normalizedParameters = yield* decodeParameters(rawParameters).pipe(
         Effect.mapError(
           (err) =>
             new ParameterValidationError({
               actionTypeId: action.id,
               details: err,
-              message: `Parameter validation failed: ${String((err as any)?.message ?? err)}`,
+              message: `Parameter validation failed: ${err instanceof Error ? err.message : String(err)}`,
             })
         )
       );
@@ -207,105 +455,21 @@ export class GovernedActionService {
           validTime: now,
         });
 
-      // 4. Object revisions inspection (pins target object state for CAS revalidation at commit)
-      const objectRevisions: ObjectRevisionRef[] = [];
+      // 4. Object revisions inspection
       const pRecord = normalizedParameters as Record<string, unknown>;
-      const candidateTargetIds = [
-        pRecord.targetId,
-        pRecord.patientId,
-        pRecord.claimId,
-        pRecord.objectId,
-        pRecord.userId,
-      ].filter(
-        (val): val is string => typeof val === "string" && val.length > 0
+      const objectRevisions = yield* collectObjectRevisions(
+        action,
+        pRecord,
+        objectStore
       );
 
-      for (const targetId of candidateTargetIds) {
-        const targetType = action.targetObjectTypeId ?? ("Object" as const);
-        const existingObj = yield* objectStore.getObject(
-          targetType as any,
-          targetId
-        );
-        if (existingObj) {
-          objectRevisions.push({
-            objectId: existingObj.id,
-            propertyRevisions: {},
-            revision: existingObj.version,
-            typeId: existingObj.typeId,
-          });
-        }
-      }
-
       // 5. Freshness check against pinned WorldView
-      const failedReasons: string[] = [];
-      const checks: {
-        checkId: string;
-        name: string;
-        executed: boolean;
-        status: "passed" | "failed" | "needs_execution_revalidation";
-        reason?: string;
-      }[] = [];
-
-      if (action.requiredFreshnessProperties) {
-        for (const req of action.requiredFreshnessProperties) {
-          const targetId = pRecord.targetId as string | undefined;
-          if (!targetId) {
-            failedReasons.push(
-              `Missing targetId for freshness check '${req.propertyName}'`
-            );
-            checks.push({
-              checkId: `freshness_${req.propertyName}`,
-              executed: true,
-              name: `Freshness check for ${req.propertyName}`,
-              reason: "Missing targetId",
-              status: "failed",
-            });
-            continue;
-          }
-
-          const obj = yield* objectStore.getObject(req.objectTypeId, targetId);
-          if (!obj) {
-            failedReasons.push(
-              `Target object '${targetId}' not found for freshness check '${req.propertyName}'`
-            );
-            checks.push({
-              checkId: `freshness_${req.propertyName}`,
-              executed: true,
-              name: `Freshness check for ${req.propertyName}`,
-              reason: `Target object '${targetId}' not found`,
-              status: "failed",
-            });
-            continue;
-          }
-
-          const propTimestamps = (obj.provenance as any)?.propertyTimestamps as
-            | Record<string, number>
-            | undefined;
-          const recordedAt =
-            propTimestamps?.[req.propertyName] ??
-            obj.provenance?.recordedAt ??
-            obj.lastModifiedAt;
-          const ageMs = worldView.validTime - recordedAt;
-          if (ageMs > req.maxStalenessMs) {
-            const reason = `Property '${req.propertyName}' staleness ${ageMs}ms exceeds budget ${req.maxStalenessMs}ms`;
-            failedReasons.push(reason);
-            checks.push({
-              checkId: `freshness_${req.propertyName}`,
-              executed: true,
-              name: `Freshness check for ${req.propertyName}`,
-              reason,
-              status: "failed",
-            });
-          } else {
-            checks.push({
-              checkId: `freshness_${req.propertyName}`,
-              executed: true,
-              name: `Freshness check for ${req.propertyName}`,
-              status: "passed",
-            });
-          }
-        }
-      }
+      const freshness = yield* evaluateFreshnessChecks(
+        action,
+        pRecord,
+        objectStore,
+        worldView
+      );
 
       // 6. Evaluate Submission Criteria guards
       const evalContext: ActionEvaluationContext = {
@@ -318,53 +482,22 @@ export class GovernedActionService {
         },
       };
 
-      const predicateDependencies: PredicateDependency[] = [];
-      let hasReviewRequirement = false;
-      let hasDenial = false;
+      const criteria = yield* evaluateCriteriaGuards(
+        action,
+        normalizedParameters,
+        evalContext
+      );
 
-      for (const criterion of action.submissionCriteria) {
-        const result = yield* criterion.evaluate(
-          normalizedParameters,
-          evalContext
-        );
-        predicateDependencies.push({
-          criterionId: criterion.id,
-          description: criterion.description,
-          passed: result.passed,
-          verdict: result.verdict,
-        });
-
-        checks.push({
-          checkId: criterion.id,
-          executed: true,
-          name: criterion.description,
-          reason: result.failureReason,
-          status: result.passed ? "passed" : "failed",
-        });
-
-        if (!result.passed) {
-          if (result.verdict === "deny") {
-            hasDenial = true;
-            failedReasons.push(
-              result.failureReason ?? `Criterion '${criterion.id}' denied`
-            );
-          } else {
-            hasReviewRequirement = true;
-            failedReasons.push(
-              result.failureReason ??
-                `Criterion '${criterion.id}' requires review`
-            );
-          }
-        }
-      }
-
-      // Execution revalidation checks
-      checks.push({
-        checkId: "cas_revision_lock",
-        executed: false,
-        name: "Optimistic concurrency version check",
-        status: "needs_execution_revalidation",
-      });
+      const checks: ActionCheckItem[] = [
+        ...freshness.checks,
+        ...criteria.checks,
+        {
+          checkId: "cas_revision_lock",
+          executed: false,
+          name: "Optimistic concurrency version check",
+          status: "needs_execution_revalidation",
+        },
+      ];
       if (grantId) {
         checks.push({
           checkId: "grant_reservation_commit",
@@ -374,27 +507,22 @@ export class GovernedActionService {
         });
       }
 
-      // Determine canonical verdict
-      let verdict: "allow" | "review" | "deny" | "evidence_insufficient" =
-        "allow";
-      if (hasDenial) {
-        verdict = "deny";
-      } else if (hasReviewRequirement) {
-        verdict = "review";
-      } else if (failedReasons.length > 0) {
-        verdict = "evidence_insufficient";
-      } else if (
-        action.defaultExecutionMode === "proposal" ||
-        proposer.agentTier === 2 ||
-        (proposer.agentTier === 3 && proposer.type === "agent")
-      ) {
-        verdict = "review";
-      }
+      const allFailedReasons = [
+        ...freshness.failedReasons,
+        ...criteria.failedReasons,
+      ];
+      const verdict = determineActionVerdict({
+        defaultExecutionMode: action.defaultExecutionMode,
+        failedReasonsCount: allFailedReasons.length,
+        hasDenial: criteria.hasDenial,
+        hasReviewRequirement: criteria.hasReviewRequirement,
+        proposer,
+      });
 
       // 7. Evidence closure
       const evidenceDigest = createHash("sha256")
         .update(
-          JSON.stringify({
+          serializeJson({
             actionId: action.id,
             objectRevisions,
             params: normalizedParameters,
@@ -413,27 +541,10 @@ export class GovernedActionService {
       ];
 
       // 8. Requested effects
-      const requestedEffects: RequestedEffect[] = [];
-      if (action.mutation) {
-        requestedEffects.push({
-          description: `State mutation on ${action.targetObjectTypeId ?? "target"}`,
-          effectId: `${action.id}_mutation`,
-          isLiveExternal: false,
-          mutationTypes: ["put"],
-        });
-      }
-      if (action.sideEffects) {
-        for (const se of action.sideEffects) {
-          requestedEffects.push({
-            description: se.description,
-            effectId: se.id,
-            isLiveExternal: true,
-          });
-        }
-      }
+      const requestedEffects = collectRequestedEffects(action);
 
-      const id = `prep_${now}_${Math.random().toString(36).slice(2, 7)}`;
-      const preparedWithoutDigest = {
+      const id = generatePrefixedId("prep", now);
+      const preparedWithoutDigest: Omit<PreparedAction, "canonicalDigest"> = {
         actionId: action.id,
         actionRelease: "1.0.0",
         checks,
@@ -445,11 +556,12 @@ export class GovernedActionService {
         intendedRecipients: [],
         normalizedParameters,
         objectRevisions,
-        predicateDependencies,
+        predicateDependencies: criteria.predicateDependencies,
         preparedAt: now,
         proposer,
         requestedEffects,
-        reviewReasons: failedReasons.length > 0 ? failedReasons : undefined,
+        reviewReasons:
+          allFailedReasons.length > 0 ? allFailedReasons : undefined,
         tenantId,
         usageReservations: [{ amount: 1, resource: action.id }],
         verdict,
@@ -457,7 +569,7 @@ export class GovernedActionService {
       };
 
       const canonicalDigest = computePreparedActionDigest(
-        preparedWithoutDigest as any
+        preparedWithoutDigest
       );
       const preparedAction: PreparedAction = {
         ...preparedWithoutDigest,
@@ -500,60 +612,60 @@ export class GovernedActionService {
         reviewerContext,
         reason,
       } = input;
-      const now = Date.now();
+      const now = yield* Clock.currentTimeMillis;
 
       // 1. Lookup prepared action by preparedDigest
       const prepared = preparedActions.get(preparedDigest);
       if (!prepared) {
-        return yield* Effect.fail(
+        return yield* 
           new PreparedActionNotFoundError({
             message: `Prepared action with digest '${preparedDigest}' not found`,
             preparedDigest,
           })
-        );
+        ;
       }
 
       // 2. Tenant non-disclosure check
       if (prepared.tenantId !== reviewerContext.tenantId) {
-        return yield* Effect.fail(
+        return yield* 
           new TenantMismatchError({
             message: `Prepared action does not exist for tenant`,
             tenantId: reviewerContext.tenantId,
           })
-        );
+        ;
       }
 
       // 3. Exact Proposal Digest Match (S07 Invariant)
       if (preparedDigest !== viewedDigest) {
-        return yield* Effect.fail(
+        return yield* 
           new ApprovalDigestMismatchError({
             message: `Viewed proposal digest '${viewedDigest}' does not match prepared digest '${preparedDigest}'`,
             preparedDigest,
             viewedDigest,
           })
-        );
+        ;
       }
 
       // 4. Stale approval check (Proposal expiration)
       if (now > prepared.expiresAt) {
-        return yield* Effect.fail(
+        return yield* 
           new StaleApprovalError({
             message: `Prepared action proposal '${prepared.id}' expired at ${prepared.expiresAt}`,
             preparedDigest,
             reason: "proposal_expired",
           })
-        );
+        ;
       }
 
       // 5. Self-Approval Invariant: Proposer cannot self-approve
       if (reviewerContext.reviewer.id === prepared.proposer.id) {
-        return yield* Effect.fail(
+        return yield* 
           new SelfApprovalDeniedError({
             message: `Independent review required: proposer '${prepared.proposer.id}' cannot approve own proposal`,
             proposerId: prepared.proposer.id,
             reviewerId: reviewerContext.reviewer.id,
           })
-        );
+        ;
       }
 
       // 6. Fabricated Approval Invariant: Sentinel or AI agent cannot satisfy human approval requirement
@@ -561,12 +673,12 @@ export class GovernedActionService {
         reviewerContext.reviewer.type === "agent" &&
         reviewerContext.assurance !== "delegated_service"
       ) {
-        return yield* Effect.fail(
+        return yield* 
           new FabricatedApprovalError({
             message: `Approval requires an authenticated human reviewer, but got agent '${reviewerContext.reviewer.id}'`,
             reason: "agent_cannot_approve_human_proposal",
           })
-        );
+        ;
       }
 
       // 7. Role / Authorization check
@@ -574,18 +686,18 @@ export class GovernedActionService {
         DEFAULT_APPROVER_ROLES.has(r.toLowerCase())
       );
       if (!hasAllowedRole) {
-        return yield* Effect.fail(
+        return yield* 
           new UnauthorizedReviewerError({
             message: `Reviewer '${reviewerContext.reviewer.id}' lacks authorized approver role`,
             requiredRole: "approver",
             reviewerId: reviewerContext.reviewer.id,
           })
-        );
+        ;
       }
 
       // 8. Create ApprovalRecord
-      const approvalId = `appr_${now}_${Math.random().toString(36).slice(2, 7)}`;
-      const approvalWithoutHash = {
+      const approvalId = generatePrefixedId("appr", now);
+      const approvalWithoutHash: Omit<ApprovalRecord, "recordHash"> = {
         actionRelease: prepared.actionRelease,
         approvedAt: now,
         decision,
@@ -599,7 +711,7 @@ export class GovernedActionService {
         viewedDigest,
       };
 
-      const recordHash = computeApprovalRecordHash(approvalWithoutHash as any);
+      const recordHash = computeApprovalRecordHash(approvalWithoutHash);
       const approvalRecord: ApprovalRecord = {
         ...approvalWithoutHash,
         recordHash,
@@ -623,20 +735,20 @@ export class GovernedActionService {
     return Effect.gen(function* () {
       const p = preparedActions.get(preparedDigest);
       if (!p) {
-        return yield* Effect.fail(
+        return yield* 
           new PreparedActionNotFoundError({
             message: `Prepared action with digest '${preparedDigest}' not found`,
             preparedDigest,
           })
-        );
+        ;
       }
       if (p.tenantId !== tenantId) {
-        return yield* Effect.fail(
+        return yield* 
           new TenantMismatchError({
             message: "Prepared action does not exist for tenant",
             tenantId,
           })
-        );
+        ;
       }
       return p;
     });
@@ -653,20 +765,20 @@ export class GovernedActionService {
     return Effect.gen(function* () {
       const a = approvals.get(approvalId);
       if (!a) {
-        return yield* Effect.fail(
+        return yield* 
           new ApprovalRecordNotFoundError({
             approvalId,
             message: `Approval record '${approvalId}' not found`,
           })
-        );
+        ;
       }
       if (a.reviewerContext.tenantId !== tenantId) {
-        return yield* Effect.fail(
+        return yield* 
           new TenantMismatchError({
             message: "Approval record does not exist for tenant",
             tenantId,
           })
-        );
+        ;
       }
       return a;
     });
@@ -679,14 +791,16 @@ export class GovernedActionService {
     const { approvalsByPreparedDigest } = this;
     return Effect.gen(function* () {
       const a = approvalsByPreparedDigest.get(preparedDigest);
-      if (!a) return undefined;
+      if (!a) {
+        return;
+      }
       if (a.reviewerContext.tenantId !== tenantId) {
-        return yield* Effect.fail(
+        return yield* 
           new TenantMismatchError({
             message: "Approval record does not exist for tenant",
             tenantId,
           })
-        );
+        ;
       }
       return a;
     });

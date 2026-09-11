@@ -1,4 +1,6 @@
 import type {
+  ActionEvaluationContext,
+  ActionParameters,
   ActionType,
   ApprovalRecord,
   ObjectInstance,
@@ -7,8 +9,12 @@ import type {
   OutboxItem,
   PreparedAction,
 } from "@operon/schema";
-import { computeOperationReceiptDigest } from "@operon/schema";
-import { Effect } from "effect";
+import {
+  ObjectTypeId,
+  computeOperationReceiptDigest,
+  generatePrefixedId,
+} from "@operon/schema";
+import { Clock, Effect, Exit } from "effect";
 
 import type {
   GrantExceededError,
@@ -46,6 +52,293 @@ interface IdempotencyEntry {
   readonly receipt: OperationReceipt;
 }
 
+export interface AtomicCommitServiceOptions {
+  readonly actionTypes: Map<string, ActionType<ActionParameters>>;
+  readonly objectStore: ObjectStore;
+  readonly auditStore: AuditStore;
+  readonly authorityService: AuthorityService;
+  readonly initialSnapshot?: AtomicCommitSnapshot;
+}
+
+const validateApprovalState = Effect.fn(
+  "AtomicCommitService.validateApprovalState"
+)(function* (
+  prepared: PreparedAction,
+  approval: ApprovalRecord | undefined,
+  consumedApprovals: Set<string>,
+  now: number
+) {
+  if (approval) {
+    if (approval.preparedDigest !== prepared.canonicalDigest) {
+      return yield* 
+        new ApprovalDigestMismatchError({
+          message: `Approval viewedDigest '${approval.viewedDigest}' does not match prepared digest '${prepared.canonicalDigest}'`,
+          preparedDigest: prepared.canonicalDigest,
+          viewedDigest: approval.viewedDigest,
+        })
+      ;
+    }
+    if (approval.decision !== "approved") {
+      return yield* 
+        new FreshnessOrPolicyDeniedError({
+          actionId: prepared.actionId,
+          message: `Cannot commit rejected proposal approval '${approval.id}'`,
+          reasons: ["Proposal was rejected by reviewer"],
+        })
+      ;
+    }
+    if (now > approval.expiresAt) {
+      return yield* 
+        new StaleApprovalError({
+          message: `Approval '${approval.id}' expired at ${approval.expiresAt}`,
+          preparedDigest: prepared.canonicalDigest,
+          reason: "approval_expired",
+        })
+      ;
+    }
+    if (consumedApprovals.has(approval.id)) {
+      return yield* 
+        new StaleApprovalError({
+          message: `Approval '${approval.id}' has already been consumed by another operation`,
+          preparedDigest: prepared.canonicalDigest,
+          reason: "approval_already_consumed",
+        })
+      ;
+    }
+  } else if (prepared.verdict !== "allow") {
+    return yield* 
+      new FreshnessOrPolicyDeniedError({
+        actionId: prepared.actionId,
+        message: `Action requires review (prepared verdict: ${prepared.verdict}) and cannot be committed without signed approval`,
+        reasons: prepared.reviewReasons ?? ["Requires human approval"],
+      })
+    ;
+  }
+});
+
+const validateRevisionConcurrency = Effect.fn(
+  "AtomicCommitService.validateRevisionConcurrency"
+)(function* (
+  revisions: readonly {
+    typeId: string;
+    objectId: string;
+    revision: number;
+  }[],
+  objectStore: ObjectStore
+) {
+  yield* Effect.forEach(
+    revisions,
+    Effect.fn("AtomicCommitService.checkRevision")(function* (ref) {
+      const current = yield* objectStore.getObject(
+        ObjectTypeId.make(ref.typeId),
+        ref.objectId
+      );
+      const currentVersion = current ? current.version : 0;
+      if (currentVersion !== ref.revision) {
+        return yield* new CommitConcurrencyError({
+          actualRevision: currentVersion,
+          expectedRevision: ref.revision,
+          message: `Funnel merge conflict: object '${ref.objectId}' was modified concurrently (expected revision ${ref.revision}, store has ${currentVersion})`,
+          objectId: ref.objectId,
+        });
+      }
+    }),
+    { concurrency: 1 }
+  );
+});
+
+const rollbackSnapshots = Effect.fn("AtomicCommitService.rollbackSnapshots")(
+  function* (
+    snapshots: Map<string, ObjectInstance | undefined>,
+    objectStore: ObjectStore
+  ) {
+    yield* Effect.forEach(
+      [...snapshots.entries()],
+      Effect.fn("AtomicCommitService.revertSnapshot")(
+        function* ([key, orig]) {
+          const [typeId, id] = key.split(":");
+          if (typeId && id) {
+            const objTypeId = ObjectTypeId.make(typeId);
+            if (objectStore.revertObject) {
+              yield* objectStore.revertObject(objTypeId, id, orig);
+            } else if (orig) {
+              yield* objectStore.putObject(orig).pipe(Effect.ignore);
+            } else {
+              yield* objectStore
+                .deleteObject(objTypeId, id)
+                .pipe(Effect.ignore);
+            }
+          }
+        }
+      ),
+      { concurrency: 1 }
+    );
+  }
+);
+
+const executeMutations = Effect.fn("AtomicCommitService.executeMutations")(
+  function* (params: {
+    readonly actionType: ActionType<ActionParameters> | undefined;
+    readonly prepared: PreparedAction;
+    readonly evalContext: ActionEvaluationContext;
+    readonly objectStore: ObjectStore;
+    readonly now: number;
+  }) {
+    const { actionType, prepared, evalContext, objectStore, now } = params;
+    const updatedObjects: ObjectInstance[] = [];
+    const originalSnapshots = new Map<string, ObjectInstance | undefined>();
+
+    if (!actionType?.mutation) {
+      return { originalSnapshots, updatedObjects };
+    }
+
+    const stagedEdits = yield* actionType
+      .mutation(prepared.normalizedParameters, evalContext)
+      .pipe(
+        Effect.mapError(
+          (err) =>
+            new StorageError({
+              cause: err,
+              message: `Action mutation failed: ${err.message}`,
+            })
+        )
+      );
+
+    yield* Effect.forEach(
+      stagedEdits,
+      Effect.fn("AtomicCommitService.captureSnapshot")(function* (edit) {
+        const existing = yield* objectStore.getObject(edit.typeId, edit.id);
+        originalSnapshots.set(
+          `${edit.typeId}:${edit.id}`,
+          existing ? structuredClone(existing) : undefined
+        );
+      }),
+      { concurrency: 1 }
+    );
+
+    yield* Effect.forEach(
+      stagedEdits,
+      Effect.fn("AtomicCommitService.applyEdit")(function* (edit) {
+        const existing = originalSnapshots.get(`${edit.typeId}:${edit.id}`);
+        const targetVersion = existing
+          ? existing.version + 1
+          : (edit.version ?? 1);
+        const updated = yield* objectStore
+          .putObject({
+            ...edit,
+            lastModifiedAt: now,
+            version: targetVersion,
+          })
+          .pipe(
+            Effect.mapError(
+              (cErr) =>
+                new CommitConcurrencyError({
+                  actualRevision: cErr.actualVersion,
+                  expectedRevision: cErr.expectedVersion,
+                  message: `Concurrent modification on object '${edit.id}': expected ${cErr.expectedVersion} but store has ${cErr.actualVersion}`,
+                  objectId: edit.id,
+                })
+            )
+          );
+        updatedObjects.push(updated);
+      }),
+      { concurrency: 1 }
+    );
+
+    return { originalSnapshots, updatedObjects };
+  }
+);
+
+const dispatchSideEffects = Effect.fn(
+  "AtomicCommitService.dispatchSideEffects"
+)(function* (params: {
+  readonly actionType: ActionType<ActionParameters> | undefined;
+  readonly prepared: PreparedAction;
+  readonly evalContext: ActionEvaluationContext;
+  readonly now: number;
+  readonly environmentId: string;
+  readonly tenantId: string;
+  readonly operationId: string;
+  readonly outbox: Map<string, OutboxItem>;
+}) {
+  const {
+    actionType,
+    prepared,
+    evalContext,
+    now,
+    environmentId,
+    tenantId,
+    operationId,
+    outbox,
+  } = params;
+  const outboxItems: OutboxItem[] = [];
+  let finalStatus: OperationStatus = "COMMITTED";
+
+  if (!actionType?.sideEffects) {
+    return { finalStatus, outboxItems };
+  }
+
+  yield* Effect.forEach(
+    actionType.sideEffects,
+    Effect.fn("AtomicCommitService.stageSideEffect")(function* (se) {
+      const outboxId = generatePrefixedId("out", now);
+      const item: OutboxItem = {
+        attemptCount: 0,
+        command: se.id,
+        createdAt: now,
+        environmentId,
+        id: outboxId,
+        operationId,
+        payload: {
+          parameters: prepared.normalizedParameters,
+          sideEffectDescription: se.description,
+        },
+        status: "pending",
+        tenantId,
+        updatedAt: now,
+      };
+      outbox.set(outboxId, item);
+
+      const inFlightTime = yield* Clock.currentTimeMillis;
+      let currentItem: OutboxItem = {
+        ...item,
+        attemptCount: item.attemptCount + 1,
+        status: "in_flight",
+        updatedAt: inFlightTime,
+      };
+      outbox.set(outboxId, currentItem);
+
+      const dispatchExit = yield* Effect.exit(
+        se.execute(prepared.normalizedParameters, evalContext)
+      );
+
+      const finishTime = yield* Clock.currentTimeMillis;
+      if (Exit.isSuccess(dispatchExit)) {
+        currentItem = {
+          ...currentItem,
+          status: "succeeded",
+          updatedAt: finishTime,
+        };
+        outbox.set(outboxId, currentItem);
+        finalStatus = "SUCCEEDED";
+      } else {
+        currentItem = {
+          ...currentItem,
+          error: String(dispatchExit.cause),
+          status: "external_unknown",
+          updatedAt: finishTime,
+        };
+        outbox.set(outboxId, currentItem);
+        finalStatus = "EXTERNAL_UNKNOWN";
+      }
+      outboxItems.push(currentItem);
+    }),
+    { concurrency: 1 }
+  );
+
+  return { finalStatus, outboxItems };
+});
+
 /**
  * AtomicCommitService (S08 / V0-CH-08):
  * Atomically commits state, decision, approval consumption, reservation,
@@ -58,14 +351,17 @@ export class AtomicCommitService {
   private readonly consumedApprovals = new Set<string>();
   private readonly idempotencyRegistry = new Map<string, IdempotencyEntry>();
   private readonly preparedActions = new Map<string, PreparedAction>();
+  private readonly actionTypes: Map<string, ActionType<ActionParameters>>;
+  private readonly objectStore: ObjectStore;
+  private readonly auditStore: AuditStore;
+  private readonly authorityService: AuthorityService;
 
-  constructor(
-    private readonly actionTypes: Map<string, ActionType<any>>,
-    private readonly objectStore: ObjectStore,
-    private readonly auditStore: AuditStore,
-    private readonly authorityService: AuthorityService,
-    initialSnapshot?: AtomicCommitSnapshot
-  ) {
+  constructor(options: AtomicCommitServiceOptions) {
+    this.actionTypes = options.actionTypes;
+    this.objectStore = options.objectStore;
+    this.auditStore = options.auditStore;
+    this.authorityService = options.authorityService;
+    const initialSnapshot = options.initialSnapshot;
     if (initialSnapshot) {
       for (const op of initialSnapshot.operations) {
         this.operations.set(op.operationId, op);
@@ -123,16 +419,16 @@ export class AtomicCommitService {
     return Effect.gen(function* () {
       const { prepared, approval, idempotencyKey, tenantId, environmentId } =
         input;
-      const now = Date.now();
+      const now = yield* Clock.currentTimeMillis;
 
       // 1. Tenant & Environment non-disclosure check
       if (prepared.tenantId !== tenantId) {
-        return yield* Effect.fail(
+        return yield* 
           new TenantMismatchError({
             message: "Prepared action does not exist for tenant",
             tenantId,
           })
-        );
+        ;
       }
 
       const scopedIdempotencyKey = `${tenantId}:${environmentId}:${prepared.actionId}:${idempotencyKey}`;
@@ -141,82 +437,21 @@ export class AtomicCommitService {
       const existingIdempotency = idempotencyRegistry.get(scopedIdempotencyKey);
       if (existingIdempotency) {
         if (existingIdempotency.preparedDigest !== prepared.canonicalDigest) {
-          return yield* Effect.fail(
+          return yield* 
             new IdempotencyConflictError({
               idempotencyKey,
               message: `Idempotency key '${idempotencyKey}' was already committed with a different prepared proposal digest`,
             })
-          );
+          ;
         }
         return existingIdempotency.receipt;
       }
 
       // 3. Approval consumption & CAS validation (S07, S08)
-      if (approval) {
-        if (approval.preparedDigest !== prepared.canonicalDigest) {
-          return yield* Effect.fail(
-            new ApprovalDigestMismatchError({
-              message: `Approval viewedDigest '${approval.viewedDigest}' does not match prepared digest '${prepared.canonicalDigest}'`,
-              preparedDigest: prepared.canonicalDigest,
-              viewedDigest: approval.viewedDigest,
-            })
-          );
-        }
-        if (approval.decision !== "approved") {
-          return yield* Effect.fail(
-            new FreshnessOrPolicyDeniedError({
-              actionId: prepared.actionId,
-              message: `Cannot commit rejected proposal approval '${approval.id}'`,
-              reasons: ["Proposal was rejected by reviewer"],
-            })
-          );
-        }
-        if (now > approval.expiresAt) {
-          return yield* Effect.fail(
-            new StaleApprovalError({
-              preparedDigest: prepared.canonicalDigest,
-              message: `Approval '${approval.id}' expired at ${approval.expiresAt}`,
-              reason: "approval_expired",
-            })
-          );
-        }
-        if (consumedApprovals.has(approval.id)) {
-          return yield* Effect.fail(
-            new StaleApprovalError({
-              preparedDigest: prepared.canonicalDigest,
-              message: `Approval '${approval.id}' has already been consumed by another operation`,
-              reason: "approval_already_consumed",
-            })
-          );
-        }
-      } else if (prepared.verdict !== "allow") {
-        return yield* Effect.fail(
-          new FreshnessOrPolicyDeniedError({
-            actionId: prepared.actionId,
-            message: `Prepared action '${prepared.id}' has verdict '${prepared.verdict}' and requires independent approval before commit`,
-            reasons: prepared.reviewReasons ?? ["Requires human approval"],
-          })
-        );
-      }
+      yield* validateApprovalState(prepared, approval, consumedApprovals, now);
 
       // 4. Optimistic Concurrency Control (CAS revision check against ObjectStore)
-      for (const ref of prepared.objectRevisions) {
-        const current = yield* objectStore.getObject(
-          ref.typeId as any,
-          ref.objectId
-        );
-        const currentVersion = current ? current.version : 0;
-        if (currentVersion !== ref.revision) {
-          return yield* Effect.fail(
-            new CommitConcurrencyError({
-              actualRevision: currentVersion,
-              expectedRevision: ref.revision,
-              message: `Funnel merge conflict: object '${ref.objectId}' was modified concurrently (expected revision ${ref.revision}, store has ${currentVersion})`,
-              objectId: ref.objectId,
-            })
-          );
-        }
-      }
+      yield* validateRevisionConcurrency(prepared.objectRevisions, objectStore);
 
       // 5. Grant budget reservation commit
       if (prepared.grantId) {
@@ -225,8 +460,8 @@ export class AtomicCommitService {
 
       // 6. Action mutation execution and state rollback snapshot
       const actionType = actionTypes.get(prepared.actionId);
-      const evalContext = {
-        getObject: (typeId: any, id: string) =>
+      const evalContext: ActionEvaluationContext = {
+        getObject: (typeId: ObjectTypeId, id: string) =>
           objectStore.getObject(typeId, id),
         now,
         security: {
@@ -236,77 +471,16 @@ export class AtomicCommitService {
         },
       };
 
-      const updatedObjects: ObjectInstance[] = [];
-      const originalSnapshots = new Map<string, ObjectInstance | undefined>();
-
-      if (actionType?.mutation) {
-        const stagedEdits = yield* actionType
-          .mutation(prepared.normalizedParameters, evalContext)
-          .pipe(
-            Effect.mapError(
-              (err) =>
-                new StorageError({
-                  cause: err,
-                  message: `Action mutation failed: ${err.message}`,
-                })
-            )
-          );
-
-        for (const edit of stagedEdits) {
-          const existing = yield* objectStore.getObject(edit.typeId, edit.id);
-          originalSnapshots.set(
-            `${edit.typeId}:${edit.id}`,
-            existing ? structuredClone(existing) : undefined
-          );
-        }
-
-        for (const edit of stagedEdits) {
-          const existing = originalSnapshots.get(`${edit.typeId}:${edit.id}`);
-          const targetVersion = existing
-            ? existing.version + 1
-            : (edit.version ?? 1);
-          const updated = yield* objectStore
-            .putObject({
-              ...edit,
-              lastModifiedAt: now,
-              version: targetVersion,
-            })
-            .pipe(
-              Effect.mapError(
-                (cErr) =>
-                  new CommitConcurrencyError({
-                    actualRevision: cErr.actualVersion,
-                    expectedRevision: cErr.expectedVersion,
-                    message: `Concurrent modification on object '${edit.id}': expected ${cErr.expectedVersion} but store has ${cErr.actualVersion}`,
-                    objectId: edit.id,
-                  })
-              )
-            );
-          updatedObjects.push(updated);
-        }
-      }
-
-      // Atomic rollback helper if audit or state fails
-      const rollbackState = () =>
-        Effect.gen(function* () {
-          for (const [key, orig] of originalSnapshots) {
-            const [typeId, id] = key.split(":");
-            if (typeId && id) {
-              if (objectStore.revertObject) {
-                yield* objectStore.revertObject(typeId as any, id, orig);
-              } else if (orig) {
-                yield* objectStore.putObject(orig).pipe(Effect.ignore);
-              } else {
-                yield* objectStore
-                  .deleteObject(typeId as any, id)
-                  .pipe(Effect.ignore);
-              }
-            }
-          }
-        });
+      const { originalSnapshots, updatedObjects } = yield* executeMutations({
+        actionType,
+        evalContext,
+        now,
+        objectStore,
+        prepared,
+      });
 
       // 7. Persist DecisionRecord to AuditStore
-      const operationId = `op_${now}_${Math.random().toString(36).slice(2, 7)}`;
+      const operationId = generatePrefixedId("op", now);
       const decisionRecord = yield* auditStore
         .appendDecision({
           actionTypeId: prepared.actionId,
@@ -325,7 +499,7 @@ export class AtomicCommitService {
         })
         .pipe(
           Effect.catch((error) =>
-            rollbackState().pipe(
+            rollbackSnapshots(originalSnapshots, objectStore).pipe(
               Effect.andThen(
                 Effect.fail(
                   new StorageError({
@@ -344,68 +518,19 @@ export class AtomicCommitService {
       }
 
       // 9. Durable Outbox items creation for external side effects (S08)
-      const outboxItems: OutboxItem[] = [];
-      let finalStatus: OperationStatus = "COMMITTED";
-
-      if (actionType?.sideEffects && actionType.sideEffects.length > 0) {
-        for (const se of actionType.sideEffects) {
-          const outboxId = `out_${now}_${Math.random().toString(36).slice(2, 7)}`;
-          const item: OutboxItem = {
-            attemptCount: 0,
-            command: se.id,
-            createdAt: now,
-            environmentId,
-            id: outboxId,
-            operationId,
-            payload: {
-              parameters: prepared.normalizedParameters,
-              sideEffectDescription: se.description,
-            },
-            status: "pending",
-            tenantId,
-            updatedAt: now,
-          };
-          outbox.set(outboxId, item);
-
-          // Dispatch side effect
-          let currentItem: OutboxItem = {
-            ...item,
-            attemptCount: item.attemptCount + 1,
-            status: "in_flight",
-            updatedAt: Date.now(),
-          };
-          outbox.set(outboxId, currentItem);
-
-          const dispatchExit = yield* Effect.exit(
-            se.execute(prepared.normalizedParameters, evalContext)
-          );
-
-          if (dispatchExit._tag === "Success") {
-            currentItem = {
-              ...currentItem,
-              status: "succeeded",
-              updatedAt: Date.now(),
-            };
-            outbox.set(outboxId, currentItem);
-            finalStatus = "SUCCEEDED";
-          } else {
-            // S08: A lost response or dispatch failure leads to EXTERNAL_UNKNOWN and provider reconciliation,
-            // NOT blind repeat or automatic budget release.
-            currentItem = {
-              ...currentItem,
-              error: String(dispatchExit.cause),
-              status: "external_unknown",
-              updatedAt: Date.now(),
-            };
-            outbox.set(outboxId, currentItem);
-            finalStatus = "EXTERNAL_UNKNOWN";
-          }
-          outboxItems.push(currentItem);
-        }
-      }
+      const { finalStatus, outboxItems } = yield* dispatchSideEffects({
+        actionType,
+        environmentId,
+        evalContext,
+        now,
+        operationId,
+        outbox,
+        prepared,
+        tenantId,
+      });
 
       // 10. OperationReceipt construction
-      const receiptWithoutDigest = {
+      const receiptWithoutDigest: Omit<OperationReceipt, "receiptDigest"> = {
         actionId: prepared.actionId,
         approvalId: approval?.id,
         committedAt: now,
@@ -420,9 +545,7 @@ export class AtomicCommitService {
         updatedObjects,
       };
 
-      const receiptDigest = computeOperationReceiptDigest(
-        receiptWithoutDigest as any
-      );
+      const receiptDigest = computeOperationReceiptDigest(receiptWithoutDigest);
       const receipt: OperationReceipt = {
         ...receiptWithoutDigest,
         receiptDigest,
@@ -508,20 +631,20 @@ export class AtomicCommitService {
     return Effect.gen(function* () {
       const op = operations.get(operationId);
       if (!op) {
-        return yield* Effect.fail(
+        return yield* 
           new TenantMismatchError({
             message: `Operation '${operationId}' not found`,
             tenantId,
           })
-        );
+        ;
       }
       if (op.tenantId !== tenantId) {
-        return yield* Effect.fail(
+        return yield* 
           new TenantMismatchError({
             message: `Operation does not exist for tenant`,
             tenantId,
           })
-        );
+        ;
       }
 
       const updatedReceipt: OperationReceipt = {
@@ -540,14 +663,16 @@ export class AtomicCommitService {
     const { operations } = this;
     return Effect.gen(function* () {
       const op = operations.get(operationId);
-      if (!op) return undefined;
+      if (!op) {
+        return;
+      }
       if (op.tenantId !== tenantId) {
-        return yield* Effect.fail(
+        return yield* 
           new TenantMismatchError({
             message: "Operation does not exist for tenant",
             tenantId,
           })
-        );
+        ;
       }
       return op;
     });

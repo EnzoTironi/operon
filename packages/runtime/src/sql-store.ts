@@ -2,15 +2,28 @@ import type {
   LinkInstance,
   LinkTypeId,
   ObjectInstance,
+  ObjectProperties,
   ObjectTypeId,
 } from "@operon/schema";
-import { Effect } from "effect";
+import { Effect, Schema } from "effect";
 
 import type { StorageError } from "./errors.js";
 import { ConcurrentModificationError } from "./errors.js";
 import type { AtomicTransactionBatch, ObjectStore } from "./object-store.js";
 
+const JsonCodec = Schema.fromJsonString(Schema.Unknown);
+const parseJson = Schema.decodeUnknownSync(JsonCodec);
+const serializeJson = Schema.encodeSync(JsonCodec);
+
 export type SqlDialect = "postgres" | "sqlite";
+
+export interface BitemporalQueryOptions {
+  readonly typeId: string;
+  readonly id: string;
+  readonly validTime: number;
+  readonly txTime: number;
+  readonly dialect?: SqlDialect;
+}
 
 export interface SqlQueryResult<T = unknown> {
   readonly rows: readonly T[];
@@ -112,13 +125,11 @@ export const SqlSchemaGenerator = {
     return { params: [typeId, id], sql };
   },
 
-  compileBitemporalQuery(
-    typeId: string,
-    id: string,
-    validTime: number,
-    txTime: number,
-    dialect: SqlDialect = "postgres"
-  ): { sql: string; params: unknown[] } {
+  compileBitemporalQuery(options: BitemporalQueryOptions): {
+    sql: string;
+    params: unknown[];
+  } {
+    const { dialect = "postgres", id, txTime, typeId, validTime } = options;
     if (dialect === "postgres") {
       const sql = `SELECT id, type_id, version, properties, valid_from, valid_to, tx_from, tx_to, branch 
                    FROM operon_objects 
@@ -149,6 +160,137 @@ export class EmbeddedSqlDriver implements SqlDriver {
   private objects = new Map<string, SqlBitemporalRecord>();
   private links: SqlLinkRecord[] = [];
 
+  private matchesTemporalSlice(
+    record: SqlBitemporalRecord,
+    validTime?: number,
+    txTime?: number
+  ): boolean {
+    if (validTime !== undefined && txTime !== undefined) {
+      const validMatch =
+        record.valid_from <= validTime &&
+        (record.valid_to === null || record.valid_to > validTime);
+      const txMatch =
+        record.tx_from <= txTime &&
+        (record.tx_to === null || record.tx_to > txTime);
+      return validMatch && txMatch;
+    }
+    return record.tx_to === null;
+  }
+
+  private executeSelectObjects(params: readonly unknown[]): SqlQueryResult {
+    const typeId = params[0] as string;
+    const id = params[1] as string;
+    const validTime = params[2] as number | undefined;
+    const txTime = (params.length >= 6 ? params[4] : params[3]) as
+      | number
+      | undefined;
+
+    const results: SqlBitemporalRecord[] = [];
+    for (const record of this.objects.values()) {
+      if (
+        record.type_id === typeId &&
+        (!id || record.id === id) &&
+        this.matchesTemporalSlice(record, validTime, txTime)
+      ) {
+        results.push(record);
+      }
+    }
+
+    results.sort((a, b) => b.tx_from - a.tx_from);
+    return { rows: results, rowsAffected: 0 };
+  }
+
+  private executeSelectLinks(
+    params: readonly unknown[],
+    isSource: boolean
+  ): SqlQueryResult {
+    const linkTypeId = params[0] as string;
+    const endpointId = params[1] as string;
+
+    const matched = this.links.filter((l) => {
+      if (l.link_type_id !== linkTypeId || l.tx_to !== null) {
+        return false;
+      }
+      return isSource ? l.source_id === endpointId : l.target_id === endpointId;
+    });
+
+    return { rows: matched, rowsAffected: 0 };
+  }
+
+  private executeInsertObject(params: readonly unknown[]): SqlQueryResult {
+    const record: SqlBitemporalRecord = {
+      branch: (params[8] as string) ?? "main",
+      id: params[0] as string,
+      properties: params[3] as string,
+      tx_from: params[6] as number,
+      tx_to: (params[7] as number) ?? null,
+      type_id: params[1] as string,
+      valid_from: params[4] as number,
+      valid_to: (params[5] as number) ?? null,
+      version: params[2] as number,
+    };
+    const key = `${record.type_id}:${record.id}:${record.version}:${record.tx_from}`;
+    this.objects.set(key, record);
+    return { rows: [], rowsAffected: 1 };
+  }
+
+  private executeUpdateObject(
+    params: readonly unknown[],
+    isSetValidTo: boolean
+  ): SqlQueryResult {
+    if (isSetValidTo) {
+      const newValidTo = params[0] as number;
+      const typeId = params[1] as string;
+      const id = params[2] as string;
+
+      let count = 0;
+      for (const [key, record] of this.objects.entries()) {
+        if (
+          record.type_id === typeId &&
+          record.id === id &&
+          record.tx_to === null &&
+          (record.valid_to === null || record.valid_to > newValidTo)
+        ) {
+          this.objects.set(key, { ...record, valid_to: newValidTo });
+          count++;
+        }
+      }
+      return { rows: [], rowsAffected: count };
+    }
+
+    const newTxTo = params[0] as number;
+    const typeId = params[1] as string;
+    const id = params[2] as string;
+
+    let count = 0;
+    for (const [key, record] of this.objects.entries()) {
+      if (
+        record.type_id === typeId &&
+        record.id === id &&
+        record.tx_to === null
+      ) {
+        this.objects.set(key, { ...record, tx_to: newTxTo });
+        count++;
+      }
+    }
+    return { rows: [], rowsAffected: count };
+  }
+
+  private executeInsertLink(params: readonly unknown[]): SqlQueryResult {
+    const link: SqlLinkRecord = {
+      link_type_id: params[0] as string,
+      source_id: params[1] as string,
+      target_id: params[2] as string,
+      properties: (params[3] as string) ?? "{}",
+      tx_from: params[6] as number,
+      tx_to: (params[7] as number) ?? null,
+      valid_from: params[4] as number,
+      valid_to: (params[5] as number) ?? null,
+    };
+    this.links.push(link);
+    return { rows: [], rowsAffected: 1 };
+  }
+
   public execute(
     sql: string,
     params: readonly unknown[] = []
@@ -160,125 +302,28 @@ export class EmbeddedSqlDriver implements SqlDriver {
         normalized.startsWith("SELECT") &&
         normalized.includes("FROM OPERON_OBJECTS")
       ) {
-        const typeId = params[0] as string;
-        const id = params[1] as string;
-        const validTime = params[2] as number | undefined;
-        const txTime = (params.length >= 6 ? params[4] : params[3]) as
-          | number
-          | undefined;
-
-        const results: SqlBitemporalRecord[] = [];
-        for (const record of this.objects.values()) {
-          if (record.type_id !== typeId) continue;
-          if (id && record.id !== id) continue;
-
-          if (validTime !== undefined && txTime !== undefined) {
-            const validMatch =
-              record.valid_from <= validTime &&
-              (record.valid_to === null || record.valid_to > validTime);
-            const txMatch =
-              record.tx_from <= txTime &&
-              (record.tx_to === null || record.tx_to > txTime);
-            if (validMatch && txMatch) {
-              results.push(record);
-            }
-          } else if (record.tx_to === null) {
-            results.push(record);
-          }
-        }
-
-        results.sort((a, b) => b.tx_from - a.tx_from);
-        return { rows: results, rowsAffected: 0 };
+        return this.executeSelectObjects(params);
       }
-
       if (
         normalized.startsWith("SELECT") &&
         normalized.includes("FROM OPERON_LINKS")
       ) {
-        const linkTypeId = params[0] as string;
-        const endpointId = params[1] as string;
-        const isSource = normalized.includes("SOURCE_ID =");
-
-        const matched = this.links.filter((l) => {
-          if (l.link_type_id !== linkTypeId) return false;
-          if (l.tx_to !== null) return false;
-          return isSource
-            ? l.source_id === endpointId
-            : l.target_id === endpointId;
-        });
-
-        return { rows: matched, rowsAffected: 0 };
+        return this.executeSelectLinks(
+          params,
+          normalized.includes("SOURCE_ID =")
+        );
       }
-
       if (normalized.startsWith("INSERT INTO OPERON_OBJECTS")) {
-        const record: SqlBitemporalRecord = {
-          branch: (params[8] as string) ?? "main",
-          id: params[0] as string,
-          properties: params[3] as string,
-          tx_from: params[6] as number,
-          tx_to: (params[7] as number) ?? null,
-          type_id: params[1] as string,
-          valid_from: params[4] as number,
-          valid_to: (params[5] as number) ?? null,
-          version: params[2] as number,
-        };
-        const key = `${record.type_id}:${record.id}:${record.version}:${record.tx_from}`;
-        this.objects.set(key, record);
-        return { rows: [], rowsAffected: 1 };
+        return this.executeInsertObject(params);
       }
-
       if (normalized.startsWith("UPDATE OPERON_OBJECTS")) {
-        if (normalized.includes("SET VALID_TO")) {
-          const newValidTo = params[0] as number;
-          const typeId = params[1] as string;
-          const id = params[2] as string;
-
-          let count = 0;
-          for (const [key, record] of this.objects.entries()) {
-            if (
-              record.type_id === typeId &&
-              record.id === id &&
-              record.tx_to === null &&
-              (record.valid_to === null || record.valid_to > newValidTo)
-            ) {
-              this.objects.set(key, { ...record, valid_to: newValidTo });
-              count++;
-            }
-          }
-          return { rows: [], rowsAffected: count };
-        }
-
-        const newTxTo = params[0] as number;
-        const typeId = params[1] as string;
-        const id = params[2] as string;
-
-        let count = 0;
-        for (const [key, record] of this.objects.entries()) {
-          if (
-            record.type_id === typeId &&
-            record.id === id &&
-            record.tx_to === null
-          ) {
-            this.objects.set(key, { ...record, tx_to: newTxTo });
-            count++;
-          }
-        }
-        return { rows: [], rowsAffected: count };
+        return this.executeUpdateObject(
+          params,
+          normalized.includes("SET VALID_TO")
+        );
       }
-
       if (normalized.startsWith("INSERT INTO OPERON_LINKS")) {
-        const link: SqlLinkRecord = {
-          link_type_id: params[0] as string,
-          source_id: params[1] as string,
-          target_id: params[2] as string,
-          properties: (params[3] as string) ?? "{}",
-          valid_from: params[4] as number,
-          valid_to: (params[5] as number) ?? null,
-          tx_from: params[6] as number,
-          tx_to: (params[7] as number) ?? null,
-        };
-        this.links.push(link);
-        return { rows: [], rowsAffected: 1 };
+        return this.executeInsertLink(params);
       }
 
       return { rows: [], rowsAffected: 0 };
@@ -302,6 +347,174 @@ export class EmbeddedSqlDriver implements SqlDriver {
   }
 }
 
+interface ClosePriorSliceOptions {
+  readonly tx: SqlDriver;
+  readonly dialect: SqlDialect;
+  readonly instance: ObjectInstance;
+  readonly current: SqlBitemporalRecord;
+  readonly now: number;
+}
+
+function closeOrUpdatePriorSlice(
+  opts: ClosePriorSliceOptions
+): Effect.Effect<void, StorageError> {
+  const p1 = opts.dialect === "postgres" ? "$1" : "?";
+  const p2 = opts.dialect === "postgres" ? "$2" : "?";
+  const p3 = opts.dialect === "postgres" ? "$3" : "?";
+  if (
+    opts.instance.validFrom !== undefined &&
+    opts.instance.validFrom > opts.current.valid_from
+  ) {
+    const updateValidToSql = `UPDATE operon_objects SET valid_to = ${p1} WHERE type_id = ${p2} AND id = ${p3} AND tx_to IS NULL AND (valid_to IS NULL OR valid_to > ${p1});`;
+    const updateParams =
+      opts.dialect === "postgres"
+        ? [opts.instance.validFrom, opts.instance.typeId, opts.instance.id]
+        : [
+            opts.instance.validFrom,
+            opts.instance.typeId,
+            opts.instance.id,
+            opts.instance.validFrom,
+          ];
+    return opts.tx.execute(updateValidToSql, updateParams).pipe(Effect.asVoid);
+  }
+  const closeSql = `UPDATE operon_objects SET tx_to = ${p1} WHERE type_id = ${p2} AND id = ${p3} AND tx_to IS NULL;`;
+  return opts.tx
+    .execute(closeSql, [opts.now, opts.instance.typeId, opts.instance.id])
+    .pipe(Effect.asVoid);
+}
+
+const reconcilePriorObjectSlice = Effect.fn(
+  "SqlStore.reconcilePriorObjectSlice"
+)(function* (
+  tx: SqlDriver,
+  dialect: SqlDialect,
+  instance: ObjectInstance,
+  now: number
+) {
+  const query = SqlSchemaGenerator.compilePointLookup(
+    instance.typeId,
+    instance.id,
+    dialect
+  );
+  const existingRes = yield* tx.execute(query.sql, query.params);
+
+  if (existingRes.rows.length === 0) {
+    if (instance.version !== 1) {
+      return yield* new ConcurrentModificationError({
+        actualVersion: instance.version,
+        expectedVersion: 1,
+        objectId: instance.id,
+      });
+    }
+    return instance.validFrom ?? now;
+  }
+
+  const current = existingRes.rows[0] as SqlBitemporalRecord;
+  if (current.version !== instance.version - 1) {
+    return yield* new ConcurrentModificationError({
+      actualVersion: instance.version,
+      expectedVersion: current.version + 1,
+      objectId: instance.id,
+    });
+  }
+
+  yield* closeOrUpdatePriorSlice({
+    current,
+    dialect,
+    instance,
+    now,
+    tx,
+  });
+  return instance.validFrom ?? current.valid_from;
+});
+
+interface InsertObjectSliceOptions {
+  readonly tx: SqlDriver;
+  readonly dialect: SqlDialect;
+  readonly instance: ObjectInstance;
+  readonly validFrom: number;
+  readonly now: number;
+}
+
+function insertObjectSlice(
+  opts: InsertObjectSliceOptions
+): Effect.Effect<void, StorageError> {
+  const insertSql = `INSERT INTO operon_objects (id, type_id, version, properties, valid_from, valid_to, tx_from, tx_to, branch) 
+                     VALUES (${
+                       opts.dialect === "postgres"
+                         ? "$1, $2, $3, $4, $5, $6, $7, $8, $9"
+                         : "?, ?, ?, ?, ?, ?, ?, ?, ?"
+                     });`;
+  const params = [
+    opts.instance.id,
+    opts.instance.typeId,
+    opts.instance.version,
+    serializeJson(opts.instance.properties),
+    opts.validFrom,
+    opts.instance.validTo ?? null,
+    opts.now,
+    null,
+    "main",
+  ];
+  return opts.tx.execute(insertSql, params).pipe(Effect.asVoid);
+}
+
+const applyAtomicMutation = Effect.fn("SqlStore.applyAtomicMutation")(
+  function* (
+    tx: SqlDriver,
+    dialect: SqlDialect,
+    mutation: AtomicTransactionBatch["mutations"][number],
+    now: number
+  ) {
+    if (mutation.type === "put" && mutation.instance) {
+      const validFrom = yield* reconcilePriorObjectSlice(
+        tx,
+        dialect,
+        mutation.instance,
+        now
+      );
+      yield* insertObjectSlice({
+        dialect,
+        instance: mutation.instance,
+        now,
+        tx,
+        validFrom,
+      });
+    } else if (mutation.type === "delete" && mutation.typeId && mutation.id) {
+      const p1 = dialect === "postgres" ? "$1" : "?";
+      const p2 = dialect === "postgres" ? "$2" : "?";
+      const p3 = dialect === "postgres" ? "$3" : "?";
+      const closeSql = `UPDATE operon_objects SET tx_to = ${p1} WHERE type_id = ${p2} AND id = ${p3} AND tx_to IS NULL;`;
+      yield* tx.execute(closeSql, [now, mutation.typeId, mutation.id]);
+    }
+  }
+);
+
+function applyAtomicLink(
+  tx: SqlDriver,
+  dialect: SqlDialect,
+  link: NonNullable<AtomicTransactionBatch["links"]>[number],
+  now: number
+): Effect.Effect<void, StorageError> {
+  const insertLinkSql = `INSERT INTO operon_links (link_type_id, source_id, target_id, properties, valid_from, valid_to, tx_from, tx_to)
+                         VALUES (${
+                           dialect === "postgres"
+                             ? "$1, $2, $3, $4, $5, $6, $7, $8"
+                             : "?, ?, ?, ?, ?, ?, ?, ?"
+                         });`;
+  const linkParams = [
+    link.linkTypeId,
+    link.sourceId,
+    link.targetId,
+    serializeJson(link.metadata ?? {}),
+    link.createdAt ?? now,
+    null,
+    now,
+    null,
+  ];
+  return tx.execute(insertLinkSql, linkParams).pipe(Effect.asVoid);
+}
+
 /**
  * Production SQL Bitemporal Store implementing ObjectStore and time-travel queries
  */
@@ -321,20 +534,22 @@ export class SqlBitemporalStore implements ObjectStore {
       this.dialect
     );
     return this.driver.execute(query.sql, query.params).pipe(
-      Effect.map((res) => {
-        if (res.rows.length === 0) return undefined;
-        const row = res.rows[0] as SqlBitemporalRecord;
-        return {
-          id: row.id,
-          lastModifiedAt: row.tx_from,
-          properties: JSON.parse(row.properties) as Record<string, unknown>,
-          typeId: row.type_id as ObjectTypeId,
-          validFrom: row.valid_from,
-          validTo: row.valid_to ?? undefined,
-          version: row.version,
-        };
+      Effect.map((res): ObjectInstance | undefined => {
+        const row = res.rows[0] as SqlBitemporalRecord | undefined;
+        return row
+          ? {
+              id: row.id,
+              lastModifiedAt: row.tx_from,
+              // SAFETY: Object properties serialized to SQL conform to ObjectProperties
+              properties: parseJson(row.properties) as ObjectProperties,
+              typeId: row.type_id as ObjectTypeId,
+              validFrom: row.valid_from,
+              validTo: row.valid_to ?? undefined,
+              version: row.version,
+            }
+          : undefined;
       }),
-      Effect.orDie
+      Effect.catchTag("StorageError", Effect.die)
     );
   }
 
@@ -342,103 +557,34 @@ export class SqlBitemporalStore implements ObjectStore {
     instance: ObjectInstance
   ): Effect.Effect<ObjectInstance, ConcurrentModificationError> {
     const now = Date.now();
-
     const dialect = this.dialect;
+
+    const executePutTransaction = Effect.fn(
+      "SqlBitemporalStore.executePutTransaction"
+    )(function* (tx: SqlDriver) {
+      const validFrom = yield* reconcilePriorObjectSlice(
+        tx,
+        dialect,
+        instance,
+        now
+      );
+      yield* insertObjectSlice({
+        dialect,
+        instance,
+        now,
+        tx,
+        validFrom,
+      });
+
+      return {
+        ...instance,
+        lastModifiedAt: now,
+        validFrom,
+      };
+    });
+
     return this.driver
-      .transaction((tx) =>
-        Effect.gen(function* () {
-          const query = SqlSchemaGenerator.compilePointLookup(
-            instance.typeId,
-            instance.id,
-            dialect
-          );
-          const existingRes = yield* tx.execute(query.sql, query.params);
-
-          let validFrom = instance.validFrom ?? now;
-          if (existingRes.rows.length > 0) {
-            const current = existingRes.rows[0] as SqlBitemporalRecord;
-            if (current.version !== instance.version - 1) {
-              return yield* Effect.fail(
-                new ConcurrentModificationError({
-                  actualVersion: instance.version,
-                  expectedVersion: current.version + 1,
-                  objectId: instance.id,
-                })
-              );
-            }
-
-            if (instance.validFrom === undefined) {
-              validFrom = current.valid_from;
-            }
-
-            if (
-              instance.validFrom !== undefined &&
-              instance.validFrom > current.valid_from
-            ) {
-              // The earlier valid-time segment remains valid up to the new validFrom
-              const updateValidToSql = `UPDATE operon_objects SET valid_to = ${
-                dialect === "postgres" ? "$1" : "?"
-              } WHERE type_id = ${dialect === "postgres" ? "$2" : "?"} AND id = ${
-                dialect === "postgres" ? "$3" : "?"
-              } AND tx_to IS NULL AND (valid_to IS NULL OR valid_to > ${
-                dialect === "postgres" ? "$1" : "?"
-              });`;
-              const updateParams =
-                dialect === "postgres"
-                  ? [instance.validFrom, instance.typeId, instance.id]
-                  : [
-                      instance.validFrom,
-                      instance.typeId,
-                      instance.id,
-                      instance.validFrom,
-                    ];
-              yield* tx.execute(updateValidToSql, updateParams);
-            } else {
-              // Close transaction time on current slice
-              const closeSql = `UPDATE operon_objects SET tx_to = ${
-                dialect === "postgres" ? "$1" : "?"
-              } WHERE type_id = ${dialect === "postgres" ? "$2" : "?"} AND id = ${
-                dialect === "postgres" ? "$3" : "?"
-              } AND tx_to IS NULL;`;
-              yield* tx.execute(closeSql, [now, instance.typeId, instance.id]);
-            }
-          } else if (instance.version !== 1) {
-            return yield* Effect.fail(
-              new ConcurrentModificationError({
-                actualVersion: instance.version,
-                expectedVersion: 1,
-                objectId: instance.id,
-              })
-            );
-          }
-
-          // Insert new bitemporal slice
-          const insertSql = `INSERT INTO operon_objects (id, type_id, version, properties, valid_from, valid_to, tx_from, tx_to, branch) 
-                             VALUES (${
-                               dialect === "postgres"
-                                 ? "$1, $2, $3, $4, $5, $6, $7, $8, $9"
-                                 : "?, ?, ?, ?, ?, ?, ?, ?, ?"
-                             });`;
-          const params = [
-            instance.id,
-            instance.typeId,
-            instance.version,
-            JSON.stringify(instance.properties),
-            validFrom,
-            instance.validTo ?? null,
-            now,
-            null,
-            "main",
-          ];
-          yield* tx.execute(insertSql, params);
-
-          return {
-            ...instance,
-            lastModifiedAt: now,
-            validFrom,
-          };
-        })
-      )
+      .transaction(executePutTransaction)
       .pipe(Effect.catchTag("StorageError", Effect.die));
   }
 
@@ -452,7 +598,7 @@ export class SqlBitemporalStore implements ObjectStore {
 
     return this.driver
       .execute(closeSql, [now, typeId, id])
-      .pipe(Effect.asVoid, Effect.orDie);
+      .pipe(Effect.asVoid, Effect.catchTag("StorageError", Effect.die));
   }
 
   public findObjects(
@@ -471,7 +617,8 @@ export class SqlBitemporalStore implements ObjectStore {
           const inst: ObjectInstance = {
             id: row.id,
             lastModifiedAt: row.tx_from,
-            properties: JSON.parse(row.properties) as Record<string, unknown>,
+            // SAFETY: Object properties serialized to SQL conform to ObjectProperties
+            properties: parseJson(row.properties) as ObjectProperties,
             typeId: row.type_id as ObjectTypeId,
             validFrom: row.valid_from,
             validTo: row.valid_to ?? undefined,
@@ -483,7 +630,7 @@ export class SqlBitemporalStore implements ObjectStore {
         }
         return instances;
       }),
-      Effect.orDie
+      Effect.catchTag("StorageError", Effect.die)
     );
   }
 
@@ -491,22 +638,27 @@ export class SqlBitemporalStore implements ObjectStore {
     const now = Date.now();
     const insertSql = `INSERT INTO operon_links (link_type_id, source_id, target_id, properties, valid_from, valid_to, tx_from, tx_to) 
                        VALUES (${
-                         this.dialect === "postgres"
-                           ? "$1, $2, $3, $4, $5, $6, $7, $8"
-                           : "?, ?, ?, ?, ?, ?, ?, ?"
-                       });`;
+                         this.dialect === "postgres" ? "$1" : "?"
+                       }, ${this.dialect === "postgres" ? "$2" : "?"}, ${
+                         this.dialect === "postgres" ? "$3" : "?"
+                       }, ${this.dialect === "postgres" ? "$4" : "?"}, ${
+                         this.dialect === "postgres" ? "$5" : "?"
+                       }, ${this.dialect === "postgres" ? "$6" : "?"}, ${
+                         this.dialect === "postgres" ? "$7" : "?"
+                       }, ${this.dialect === "postgres" ? "$8" : "?"});`;
+
     return this.driver
       .execute(insertSql, [
         link.linkTypeId,
         link.sourceId,
         link.targetId,
-        JSON.stringify(link.metadata ?? {}),
+        serializeJson(link.metadata ?? {}),
         link.createdAt,
         null,
         now,
         null,
       ])
-      .pipe(Effect.asVoid, Effect.orDie);
+      .pipe(Effect.asVoid, Effect.catchTag("StorageError", Effect.die));
   }
 
   public getLinks(
@@ -526,13 +678,13 @@ export class SqlBitemporalStore implements ObjectStore {
           return {
             createdAt: row.tx_from,
             linkTypeId: row.link_type_id as LinkTypeId,
-            metadata: JSON.parse(row.properties) as Record<string, unknown>,
+            metadata: parseJson(row.properties) as Record<string, unknown>,
             sourceId: row.source_id,
             targetId: row.target_id,
           };
         })
       ),
-      Effect.orDie
+      Effect.catchTag("StorageError", Effect.die)
     );
   }
 
@@ -542,27 +694,29 @@ export class SqlBitemporalStore implements ObjectStore {
     validTime: number,
     txTime: number
   ): Effect.Effect<ObjectInstance | undefined, StorageError> {
-    const query = SqlSchemaGenerator.compileBitemporalQuery(
-      typeId,
+    const query = SqlSchemaGenerator.compileBitemporalQuery({
+      dialect: this.dialect,
       id,
-      validTime,
       txTime,
-      this.dialect
-    );
+      typeId,
+      validTime,
+    });
 
     return this.driver.execute(query.sql, query.params).pipe(
-      Effect.map((res) => {
-        if (res.rows.length === 0) return undefined;
-        const row = res.rows[0] as SqlBitemporalRecord;
-        return {
-          id: row.id,
-          lastModifiedAt: row.tx_from,
-          properties: JSON.parse(row.properties) as Record<string, unknown>,
-          typeId: row.type_id as ObjectTypeId,
-          validFrom: row.valid_from,
-          validTo: row.valid_to ?? undefined,
-          version: row.version,
-        };
+      Effect.map((res): ObjectInstance | undefined => {
+        const row = res.rows[0] as SqlBitemporalRecord | undefined;
+        return row
+          ? {
+              id: row.id,
+              lastModifiedAt: row.tx_from,
+              // SAFETY: Object properties serialized to SQL conform to ObjectProperties
+              properties: parseJson(row.properties) as ObjectProperties,
+              typeId: row.type_id as ObjectTypeId,
+              validFrom: row.valid_from,
+              validTo: row.valid_to ?? undefined,
+              version: row.version,
+            }
+          : undefined;
       })
     );
   }
@@ -573,133 +727,44 @@ export class SqlBitemporalStore implements ObjectStore {
     const now = Date.now();
     const dialect = this.dialect;
 
-    return this.driver
-      .transaction((tx) =>
-        Effect.gen(function* () {
-          // Process each mutation in the batch
-          for (const mutation of batch.mutations) {
-            if (mutation.type === "put" && mutation.instance) {
-              const instance = mutation.instance;
-              const query = SqlSchemaGenerator.compilePointLookup(
-                instance.typeId,
-                instance.id,
-                dialect
-              );
-              const existingRes = yield* tx.execute(query.sql, query.params);
-
-              let validFrom = instance.validFrom ?? now;
-              if (existingRes.rows.length > 0) {
-                const current = existingRes.rows[0] as SqlBitemporalRecord;
-                if (current.version !== instance.version - 1) {
-                  return yield* Effect.fail(
-                    new ConcurrentModificationError({
-                      actualVersion: instance.version,
-                      expectedVersion: current.version + 1,
-                      objectId: instance.id,
-                    })
-                  );
-                }
-
-                if (instance.validFrom === undefined) {
-                  validFrom = current.valid_from;
-                }
-
-                const closeSql = `UPDATE operon_objects SET tx_to = ${
-                  dialect === "postgres" ? "$1" : "?"
-                } WHERE type_id = ${dialect === "postgres" ? "$2" : "?"} AND id = ${
-                  dialect === "postgres" ? "$3" : "?"
-                } AND tx_to IS NULL;`;
-                yield* tx.execute(closeSql, [
-                  now,
-                  instance.typeId,
-                  instance.id,
-                ]);
-              } else if (instance.version !== 1) {
-                return yield* Effect.fail(
-                  new ConcurrentModificationError({
-                    actualVersion: instance.version,
-                    expectedVersion: 1,
-                    objectId: instance.id,
-                  })
-                );
-              }
-
-              const insertSql = `INSERT INTO operon_objects (id, type_id, version, properties, valid_from, valid_to, tx_from, tx_to, branch) 
-                                 VALUES (${
-                                   dialect === "postgres"
-                                     ? "$1, $2, $3, $4, $5, $6, $7, $8, $9"
-                                     : "?, ?, ?, ?, ?, ?, ?, ?, ?"
-                                 });`;
-              const params = [
-                instance.id,
-                instance.typeId,
-                instance.version,
-                JSON.stringify(instance.properties),
-                validFrom,
-                instance.validTo ?? null,
-                now,
-                null,
-                "main",
-              ];
-              yield* tx.execute(insertSql, params);
-            } else if (
-              mutation.type === "delete" &&
-              mutation.typeId &&
-              mutation.id
-            ) {
-              const closeSql = `UPDATE operon_objects SET tx_to = ${
-                dialect === "postgres" ? "$1" : "?"
-              } WHERE type_id = ${dialect === "postgres" ? "$2" : "?"} AND id = ${
-                dialect === "postgres" ? "$3" : "?"
-              } AND tx_to IS NULL;`;
-              yield* tx.execute(closeSql, [now, mutation.typeId, mutation.id]);
-            }
-          }
-
-          // Process links if any
-          if (batch.links) {
-            for (const link of batch.links) {
-              const insertLinkSql = `INSERT INTO operon_links (link_type_id, source_id, target_id, properties, valid_from, valid_to, tx_from, tx_to)
-                                     VALUES (${
-                                       dialect === "postgres"
-                                         ? "$1, $2, $3, $4, $5, $6, $7, $8"
-                                         : "?, ?, ?, ?, ?, ?, ?, ?"
-                                     });`;
-              const linkParams = [
-                link.linkTypeId,
-                link.sourceId,
-                link.targetId,
-                JSON.stringify(link.metadata ?? {}),
-                link.createdAt ?? now,
-                null,
-                now,
-                null,
-              ];
-              yield* tx.execute(insertLinkSql, linkParams);
-            }
-          }
-        })
-      )
-      .pipe(
-        Effect.mapError((failure: unknown) => {
-          if (
-            failure &&
-            typeof failure === "object" &&
-            "_tag" in failure &&
-            failure._tag === "ConcurrentModificationError"
-          ) {
-            return failure as ConcurrentModificationError;
-          }
-          const msg =
-            failure && typeof failure === "object" && "message" in failure
-              ? String((failure as { message: unknown }).message)
-              : String(failure);
-          return new ConcurrentModificationError({
-            actualVersion: 0,
-            expectedVersion: 0,
-            objectId: `transaction_failure: ${msg}`,
-          });
-        })
+    const executeBatchTransaction = Effect.fn(
+      "SqlBitemporalStore.executeBatchTransaction"
+    )(function* (tx: SqlDriver) {
+      yield* Effect.forEach(
+        batch.mutations,
+        (mutation) => applyAtomicMutation(tx, dialect, mutation, now),
+        { concurrency: 1, discard: true }
       );
+
+      if (batch.links) {
+        yield* Effect.forEach(
+          batch.links,
+          (link) => applyAtomicLink(tx, dialect, link, now),
+          { concurrency: 1, discard: true }
+        );
+      }
+    });
+
+    return this.driver.transaction(executeBatchTransaction).pipe(
+      Effect.mapError((failure: unknown) => {
+        if (
+          failure &&
+          typeof failure === "object" &&
+          "_tag" in failure &&
+          failure._tag === "ConcurrentModificationError"
+        ) {
+          return failure as ConcurrentModificationError;
+        }
+        const msg =
+          failure && typeof failure === "object" && "message" in failure
+            ? String((failure as { message: unknown }).message)
+            : String(failure);
+        return new ConcurrentModificationError({
+          actualVersion: 0,
+          expectedVersion: 0,
+          objectId: `transaction_failure: ${msg}`,
+        });
+      })
+    );
   }
 }

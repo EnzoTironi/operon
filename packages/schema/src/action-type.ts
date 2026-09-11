@@ -1,10 +1,11 @@
 import type { Effect } from "effect";
 import { Schema } from "effect";
 
+import type { ActionParameters } from "./actions.js";
 import type { ObjectInstance } from "./object-type.js";
 import type { AgentAuthorizationTier, SecurityContext } from "./security.js";
 import { DecisionVerdict } from "./security.js";
-import type { ActionTypeId, ObjectTypeId } from "./types.js";
+import { ActionTypeId, ObjectTypeId } from "./types.js";
 
 export const RiskTier = Schema.Literals(["low", "medium", "high", "critical"]);
 export type RiskTier = typeof RiskTier.Type;
@@ -69,9 +70,25 @@ export type ActionMutationHandler<Params> = (
 ) => Effect.Effect<readonly ObjectInstance[], Error>;
 
 /**
+ * Definition of an Action Side Effect
+ */
+export interface ActionSideEffect<Params = ActionParameters> {
+  readonly id: string;
+  readonly description: string;
+  readonly execute: (
+    params: Params,
+    context: ActionEvaluationContext
+  ) => Effect.Effect<void, Error>;
+  readonly compensate?: (
+    params: Params,
+    context: ActionEvaluationContext
+  ) => Effect.Effect<void>;
+}
+
+/**
  * Definition of an Action Type
  */
-export interface ActionType<Params = any> {
+export interface ActionType<Params = ActionParameters> {
   readonly id: ActionTypeId;
   readonly name: string;
   readonly description: string;
@@ -87,21 +104,10 @@ export interface ActionType<Params = any> {
     readonly maxStalenessMs: number;
   }[];
   readonly mutation?: ActionMutationHandler<Params>;
-  readonly sideEffects?: readonly {
-    readonly id: string;
-    readonly description: string;
-    readonly execute: (
-      params: Params,
-      context: ActionEvaluationContext
-    ) => Effect.Effect<void, Error>;
-    readonly compensate?: (
-      params: Params,
-      context: ActionEvaluationContext
-    ) => Effect.Effect<void>;
-  }[];
+  readonly sideEffects?: readonly ActionSideEffect<Params>[];
 }
 
-export function defineActionType<Params>(config: {
+export function defineActionType<Params = ActionParameters>(config: {
   readonly id: string;
   readonly name: string;
   readonly description: string;
@@ -117,31 +123,22 @@ export function defineActionType<Params>(config: {
     readonly maxStalenessMs: number;
   }[];
   readonly mutation?: ActionMutationHandler<Params>;
-  readonly sideEffects?: readonly {
-    readonly id: string;
-    readonly description: string;
-    readonly execute: (
-      params: Params,
-      context: ActionEvaluationContext
-    ) => Effect.Effect<void, Error>;
-    readonly compensate?: (
-      params: Params,
-      context: ActionEvaluationContext
-    ) => Effect.Effect<void>;
-  }[];
+  readonly sideEffects?: readonly ActionSideEffect<Params>[];
 }): ActionType<Params> {
   return {
     ...config,
-    id: config.id as ActionTypeId,
+    id: ActionTypeId.make(config.id),
     mutation: config.mutation,
     requiredFreshnessProperties: config.requiredFreshnessProperties?.map(
       (p) => ({
         ...p,
-        objectTypeId: p.objectTypeId as ObjectTypeId,
+        objectTypeId: ObjectTypeId.make(p.objectTypeId),
       })
     ),
     sideEffects: config.sideEffects,
     submissionCriteria: config.submissionCriteria ?? [],
-    targetObjectTypeId: config.targetObjectTypeId as ObjectTypeId | undefined,
+    targetObjectTypeId: config.targetObjectTypeId
+      ? ObjectTypeId.make(config.targetObjectTypeId)
+      : undefined,
   };
 }

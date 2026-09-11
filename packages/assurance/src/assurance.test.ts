@@ -1,5 +1,10 @@
-import * as fs from "node:fs";
-import path from "node:path";
+import {
+  joinPath,
+  makeDirSync,
+  makeTempDirSync,
+  rmDirRecursiveSync,
+  writeTextFileSync,
+} from "./fs-io.js";
 
 import type {
   ConsentScope,
@@ -392,26 +397,24 @@ describe("@operon/assurance test suite", () => {
 
     it("scans directories and detects leakage of protected material or paths", () =>
       Effect.gen(function* () {
-        const tempDir = fs.mkdtempSync(
-          path.join(process.cwd(), ".tmp-assurance-test-")
+        const tempDir = makeTempDirSync(
+          joinPath(process.cwd(), ".tmp-assurance-test-")
         );
         yield* Effect.addFinalizer(() =>
           Effect.sync(() => {
-            fs.rmSync(tempDir, { recursive: true, force: true });
+            rmDirRecursiveSync(tempDir);
           })
         );
 
         // Create clean files
-        fs.writeFileSync(
-          path.join(tempDir, "README.md"),
-          "# Operon Public",
-          "utf-8"
+        writeTextFileSync(
+          joinPath(tempDir, "README.md"),
+          "# Operon Public"
         );
-        fs.mkdirSync(path.join(tempDir, "src"));
-        fs.writeFileSync(
-          path.join(tempDir, "src/main.ts"),
-          "export const v = 1;",
-          "utf-8"
+        makeDirSync(joinPath(tempDir, "src"));
+        writeTextFileSync(
+          joinPath(tempDir, "src/main.ts"),
+          "export const v = 1;"
         );
 
         // Scan clean dir
@@ -422,10 +425,9 @@ describe("@operon/assurance test suite", () => {
         expect(cleanScan.violations.length).toBe(0);
 
         // Inject protected content into a file
-        fs.writeFileSync(
-          path.join(tempDir, "src/leaked.ts"),
-          "const secret = '__OPERON_PROTECTED_GOLD__';",
-          "utf-8"
+        writeTextFileSync(
+          joinPath(tempDir, "src/leaked.ts"),
+          "const secret = '__OPERON_PROTECTED_GOLD__';"
         );
 
         const dirtyScan = yield* boundary.scanDirectory(tempDir, {

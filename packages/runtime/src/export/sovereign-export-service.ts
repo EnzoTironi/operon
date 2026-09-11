@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 
+import { serializeJson } from "@operon/schema";
 import type {
   SovereignExportBundle,
   SovereignExportedDecision,
@@ -8,7 +9,7 @@ import type {
   SovereignExportedReceipt,
   SovereignRestoreReport,
 } from "@operon/schema";
-import { Effect } from "effect";
+import { Clock, Effect } from "effect";
 
 import {
   ExportSecretLeakageError,
@@ -152,97 +153,100 @@ export class SovereignExportService {
    * Creates a sovereign export bundle, stripping all secrets and credentials (OPR-FULL-045)
    * Fails with ExportSecretLeakageError if strictMode is enabled and sensitive keys were present.
    */
-  createExportBundle(params: {
-    readonly canonicalDefinitions?: readonly unknown[];
-    readonly decisions: readonly SovereignExportedDecision[];
-    readonly entities: readonly SovereignExportedEntity[];
-    readonly evidenceDossiers?: readonly SovereignExportedDossier[];
-    readonly receipts: readonly SovereignExportedReceipt[];
-    readonly sourceCellId: string;
-    readonly strictRejectOnSecret?: boolean;
-    readonly tenantId: string;
-  }): Effect.Effect<SovereignExportBundle, ExportSecretLeakageError> {
-    return Effect.gen(function* () {
-      const sanitizedEntities: SovereignExportedEntity[] = [];
-      const allStrippedKeys: string[] = [];
+  readonly createExportBundle = Effect.fn(
+    "SovereignExportService.createExportBundle"
+  )(function* (
+    this: SovereignExportService,
+    params: {
+      readonly canonicalDefinitions?: readonly unknown[];
+      readonly decisions: readonly SovereignExportedDecision[];
+      readonly entities: readonly SovereignExportedEntity[];
+      readonly evidenceDossiers?: readonly SovereignExportedDossier[];
+      readonly receipts: readonly SovereignExportedReceipt[];
+      readonly sourceCellId: string;
+      readonly strictRejectOnSecret?: boolean;
+      readonly tenantId: string;
+    }
+  ): Effect.fn.Return<SovereignExportBundle, ExportSecretLeakageError> {
+    const sanitizedEntities: SovereignExportedEntity[] = [];
+    const allStrippedKeys: string[] = [];
 
-      for (const entity of params.entities) {
-        const { sanitized, strippedKeys } = sanitizeProperties(
-          entity.properties
-        );
-        allStrippedKeys.push(...strippedKeys);
-        sanitizedEntities.push({
-          id: entity.id,
-          lastModifiedAt: entity.lastModifiedAt,
-          properties: sanitized,
-          typeId: entity.typeId,
-          version: entity.version,
-        });
-      }
+    for (const entity of params.entities) {
+      const { sanitized, strippedKeys } = sanitizeProperties(entity.properties);
+      allStrippedKeys.push(...strippedKeys);
+      sanitizedEntities.push({
+        id: entity.id,
+        lastModifiedAt: entity.lastModifiedAt,
+        properties: sanitized,
+        typeId: entity.typeId,
+        version: entity.version,
+      });
+    }
 
-      if (params.strictRejectOnSecret && allStrippedKeys.length > 0) {
-        return yield* Effect.fail(
-          new ExportSecretLeakageError({
-            detectedKeys: allStrippedKeys,
-            message: `Sovereign export aborted: sensitive keys detected in source entities: ${allStrippedKeys.join(", ")}`,
-            tenantId: params.tenantId,
-          })
-        );
-      }
-
-      const definitions = params.canonicalDefinitions ?? [];
-      const dossiers = params.evidenceDossiers ?? [];
-
-      const checksum = computeChecksum({
-        canonicalDefinitions: definitions,
-        decisions: params.decisions,
-        entities: sanitizedEntities,
-        evidenceDossiers: dossiers,
-        receipts: params.receipts,
+    if (params.strictRejectOnSecret && allStrippedKeys.length > 0) {
+      return yield* new ExportSecretLeakageError({
+        detectedKeys: allStrippedKeys,
+        message: `Sovereign export aborted: sensitive keys detected in source entities: ${allStrippedKeys.join(", ")}`,
         tenantId: params.tenantId,
       });
+    }
 
-      const exportId = `export-${randomUUID()}`;
-      const exportedAt = new Date().toISOString();
+    const definitions = params.canonicalDefinitions ?? [];
+    const dossiers = params.evidenceDossiers ?? [];
 
-      const bundle: SovereignExportBundle = {
-        canonicalDefinitions: definitions,
-        decisions: params.decisions,
-        entities: sanitizedEntities,
-        evidenceDossiers: dossiers,
-        metadata: {
-          checksum,
-          decisionCount: params.decisions.length,
-          entityCount: sanitizedEntities.length,
-          exportedAt,
-          exportId,
-          formatVersion: "1.0.0",
-          receiptCount: params.receipts.length,
-          sourceCellId: params.sourceCellId,
-          tenantId: params.tenantId,
-        },
-        receipts: params.receipts,
-        secretsSanitized: true,
-      };
-
-      return bundle;
+    const checksum = computeChecksum({
+      canonicalDefinitions: definitions,
+      decisions: params.decisions,
+      entities: sanitizedEntities,
+      evidenceDossiers: dossiers,
+      receipts: params.receipts,
+      tenantId: params.tenantId,
     });
-  }
+
+    const exportId = `export-${randomUUID()}`;
+    const now = yield* Clock.currentTimeMillis;
+    const exportedAt = new Date(now).toISOString();
+
+    const bundle: SovereignExportBundle = {
+      canonicalDefinitions: definitions,
+      decisions: params.decisions,
+      entities: sanitizedEntities,
+      evidenceDossiers: dossiers,
+      metadata: {
+        checksum,
+        decisionCount: params.decisions.length,
+        entityCount: sanitizedEntities.length,
+        exportedAt,
+        exportId,
+        formatVersion: "1.0.0",
+        receiptCount: params.receipts.length,
+        sourceCellId: params.sourceCellId,
+        tenantId: params.tenantId,
+      },
+      receipts: params.receipts,
+      secretsSanitized: true,
+    };
+
+    return bundle;
+  });
 
   /**
    * Restores a sovereign export bundle into a clean target cell (OPR-FULL-045, FULL-ACC-045)
    * Verifies checksum integrity, preserves canonical identities, and strictly forbids side-effect replay.
    */
-  restoreBundle(params: {
-    readonly attemptSideEffectReplay?: boolean;
-    readonly bundle: SovereignExportBundle;
-    readonly targetCellId: string;
-    readonly targetStorage: ExportRestoreTargetStorage;
-  }): Effect.Effect<
-    SovereignRestoreReport,
-    RestoreIntegrityMismatchError | RestoreSideEffectReplayForbiddenError
-  > {
-    return Effect.gen(function* () {
+  readonly restoreBundle = Effect.fn("SovereignExportService.restoreBundle")(
+    function* (
+      this: SovereignExportService,
+      params: {
+        readonly attemptSideEffectReplay?: boolean;
+        readonly bundle: SovereignExportBundle;
+        readonly targetCellId: string;
+        readonly targetStorage: ExportRestoreTargetStorage;
+      }
+    ): Effect.fn.Return<
+      SovereignRestoreReport,
+      RestoreIntegrityMismatchError | RestoreSideEffectReplayForbiddenError
+    > {
       const { bundle, targetCellId, targetStorage } = params;
 
       // Check integrity
@@ -256,58 +260,66 @@ export class SovereignExportService {
       });
 
       if (bundle.metadata.checksum !== expectedChecksum) {
-        return yield* Effect.fail(
-          new RestoreIntegrityMismatchError({
-            actualChecksum: expectedChecksum,
-            expectedChecksum: bundle.metadata.checksum,
-            exportId: bundle.metadata.exportId,
-            message: `Restore aborted: bundle checksum mismatch. Expected "${bundle.metadata.checksum}", computed "${expectedChecksum}"`,
-          })
-        );
+        return yield* new RestoreIntegrityMismatchError({
+          actualChecksum: expectedChecksum,
+          expectedChecksum: bundle.metadata.checksum,
+          exportId: bundle.metadata.exportId,
+          message: `Restore aborted: bundle checksum mismatch. Expected "${bundle.metadata.checksum}", computed "${expectedChecksum}"`,
+        });
       }
 
       // Prohibit side effect replay (FULL-ACC-045: "nenhuma notificação histórica é reenviada")
       if (params.attemptSideEffectReplay) {
-        return yield* Effect.fail(
-          new RestoreSideEffectReplayForbiddenError({
-            attemptedEffectType: "HISTORICAL_NOTIFICATION_REPLAY",
-            message:
-              "Restore pipeline strictly forbids re-dispatching historical side effects or notifications",
-            restoreId: `restore-${randomUUID()}`,
-          })
-        );
+        return yield* new RestoreSideEffectReplayForbiddenError({
+          attemptedEffectType: "HISTORICAL_NOTIFICATION_REPLAY",
+          message:
+            "Restore pipeline strictly forbids re-dispatching historical side effects or notifications",
+          restoreId: `restore-${randomUUID()}`,
+        });
       }
 
       // Restore entities
-      for (const entity of bundle.entities) {
-        yield* targetStorage.saveEntity(entity);
-      }
+      yield* Effect.forEach(
+        bundle.entities,
+        (entity) => targetStorage.saveEntity(entity),
+        { concurrency: 1 }
+      );
 
       // Restore decisions
-      for (const decision of bundle.decisions) {
-        yield* targetStorage.saveDecision(decision);
-      }
+      yield* Effect.forEach(
+        bundle.decisions,
+        (decision) => targetStorage.saveDecision(decision),
+        { concurrency: 1 }
+      );
 
       // Restore receipts
-      for (const receipt of bundle.receipts) {
-        yield* targetStorage.saveReceipt(receipt);
-      }
+      yield* Effect.forEach(
+        bundle.receipts,
+        (receipt) => targetStorage.saveReceipt(receipt),
+        { concurrency: 1 }
+      );
 
       // Verification of queries: check every entity matches in the target storage
       let queryVerificationPassed = true;
-      for (const expectedEntity of bundle.entities) {
-        const stored = yield* targetStorage.getEntity(expectedEntity.id);
-        if (
-          !stored ||
-          stored.version !== expectedEntity.version ||
-          stored.lastModifiedAt !== expectedEntity.lastModifiedAt ||
-          JSON.stringify(stored.properties) !==
-            JSON.stringify(expectedEntity.properties)
-        ) {
-          queryVerificationPassed = false;
-          break;
-        }
-      }
+      yield* Effect.forEach(
+        bundle.entities,
+        Effect.fn("SovereignExportService.verifyEntity")(
+          function* (expectedEntity) {
+            if (!queryVerificationPassed) return;
+            const stored = yield* targetStorage.getEntity(expectedEntity.id);
+            if (
+              !stored ||
+              stored.version !== expectedEntity.version ||
+              stored.lastModifiedAt !== expectedEntity.lastModifiedAt ||
+              serializeJson(stored.properties) !==
+                serializeJson(expectedEntity.properties)
+            ) {
+              queryVerificationPassed = false;
+            }
+          }
+        ),
+        { concurrency: 1 }
+      );
 
       const dossiersMatchSource = bundle.evidenceDossiers.every((d) =>
         Boolean(d.dossierId && d.operationId)
@@ -321,7 +333,7 @@ export class SovereignExportService {
         outboxSideEffectsDispatched: 0,
         queryVerificationPassed,
         receiptsRestored: bundle.receipts.length,
-        restoredAt: new Date().toISOString(),
+        restoredAt: new Date(yield* Clock.currentTimeMillis).toISOString(),
         restoreId: `restore-${randomUUID()}`,
         sourceCellId: bundle.metadata.sourceCellId,
         targetCellId,
@@ -329,6 +341,6 @@ export class SovereignExportService {
       };
 
       return report;
-    });
-  }
+    }
+  );
 }

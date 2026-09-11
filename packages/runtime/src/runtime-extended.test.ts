@@ -190,7 +190,10 @@ describe("Runtime Extended: Approvals, Migration, Verification & Resilience", ()
       });
 
       const readiness = await Effect.runPromise(
-        evaluateStructuralReadinessL2([PatientType], [invalidLink])
+        evaluateStructuralReadinessL2({
+          linkTypes: [invalidLink],
+          objectTypes: [PatientType],
+        })
       );
 
       expect(readiness.isReady).toBe(false);

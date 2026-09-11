@@ -1,7 +1,7 @@
 import { createHmac, createVerify } from "node:crypto";
 
 import type { SecurityContext, Subject, SubjectType } from "@operon/schema";
-import { Config, Effect, Option } from "effect";
+import { Clock, Config, Effect, Option } from "effect";
 
 import { AuthenticationError, AuthorizationError } from "./errors.js";
 
@@ -75,249 +75,240 @@ export interface OidcVerifierConfig {
 export class OidcTokenVerifier {
   public constructor(private readonly config: OidcVerifierConfig) {}
 
-  public verifyToken(
-    token: string
-  ): Effect.Effect<OidcTokenClaims, AuthenticationError> {
-    return Effect.gen({ self: this }, function* () {
-      const parts = token.split(".");
-      if (parts.length !== 3) {
-        return yield* Effect.fail(
-          new AuthenticationError({
-            reason: "Invalid JWT format: expected header.payload.signature",
-          })
-        );
-      }
-
-      const [rawHeader, rawPayload, rawSig] = parts;
-      const { claims, header } = yield* Effect.try({
-        catch: (error) =>
-          new AuthenticationError({
-            reason: `Failed to decode JWT base64url: ${String(error)}`,
-          }),
-        try: () => ({
-          claims: JSON.parse(
-            Buffer.from(rawPayload, "base64url").toString("utf-8")
-          ) as OidcTokenClaims,
-          header: JSON.parse(
-            Buffer.from(rawHeader, "base64url").toString("utf-8")
-          ) as OidcTokenHeader,
-        }),
+  private decodeJwtParts(token: string): Effect.Effect<
+    {
+      claims: OidcTokenClaims;
+      header: OidcTokenHeader;
+      rawHeader: string;
+      rawPayload: string;
+      rawSig: string;
+    },
+    AuthenticationError
+  > {
+    const parts = token.split(".");
+    if (parts.length !== 3) {
+      return new AuthenticationError({
+        reason: "Invalid JWT format: expected header.payload.signature",
       });
+    }
 
-      // 1. Signature Verification
-      if (!["HS256", "RS256"].includes(header.alg)) {
-        return yield* Effect.fail(
-          new AuthenticationError({
-            reason: `Unsupported JWT algorithm: ${String(header.alg)}`,
-          })
-        );
-      }
-
-      const isAsymmetric = this.config.secretOrPublicKey.includes("BEGIN ");
-      const allowed =
-        this.config.allowedAlgorithms ?? (isAsymmetric ? ["RS256"] : ["HS256"]);
-      if (!allowed.includes(header.alg)) {
-        return yield* Effect.fail(
-          new AuthenticationError({
-            reason: `Algorithm ${header.alg} is not allowed for this key type (allowed: ${allowed.join(", ")})`,
-          })
-        );
-      }
-
-      if (header.alg === "HS256" && isAsymmetric) {
-        return yield* Effect.fail(
-          new AuthenticationError({
-            reason:
-              "HS256 is not permitted with an asymmetric PEM key (algorithm confusion prevention)",
-          })
-        );
-      }
-
-      const signedData = `${rawHeader}.${rawPayload}`;
-      const sigBuffer = Buffer.from(rawSig, "base64url");
-
-      if (header.alg === "HS256") {
-        const expectedHmac = createHmac("sha256", this.config.secretOrPublicKey)
-          .update(signedData)
-          .digest();
-        if (
-          sigBuffer.length !== expectedHmac.length ||
-          !sigBuffer.equals(expectedHmac)
-        ) {
-          return yield* Effect.fail(
-            new AuthenticationError({
-              reason: "Invalid HS256 JWT signature",
-            })
-          );
-        }
-      } else if (header.alg === "RS256") {
-        const verifier = createVerify("RSA-SHA256");
-        verifier.update(signedData);
-        const isValid = verifier.verify(
-          this.config.secretOrPublicKey,
-          sigBuffer
-        );
-        if (!isValid) {
-          return yield* Effect.fail(
-            new AuthenticationError({
-              reason: "Invalid RS256 JWT signature",
-            })
-          );
-        }
-      } else {
-        return yield* Effect.fail(
-          new AuthenticationError({
-            reason: `Unsupported JWT algorithm: ${String(header.alg)}`,
-          })
-        );
-      }
-
-      // 2. Standard Claims Verification
-      const nowSec = Math.floor(Date.now() / 1000);
-      const tolerance = this.config.clockToleranceSeconds ?? 60;
-
-      if (claims.exp !== undefined && nowSec > claims.exp + tolerance) {
-        return yield* Effect.fail(
-          new AuthenticationError({
-            reason: `Token expired at ${claims.exp}, current time is ${nowSec}`,
-          })
-        );
-      }
-
-      if (claims.nbf !== undefined && nowSec < claims.nbf - tolerance) {
-        return yield* Effect.fail(
-          new AuthenticationError({
-            reason: `Token not valid before ${claims.nbf}, current time is ${nowSec}`,
-          })
-        );
-      }
-
-      if (
-        this.config.expectedIssuer &&
-        claims.iss !== this.config.expectedIssuer
-      ) {
-        return yield* Effect.fail(
-          new AuthenticationError({
-            reason: `Token issuer '${String(claims.iss)}' does not match expected '${this.config.expectedIssuer}'`,
-          })
-        );
-      }
-
-      if (this.config.expectedAudience) {
-        const aud = claims.aud;
-        const audMatches = Array.isArray(aud)
-          ? aud.includes(this.config.expectedAudience)
-          : aud === this.config.expectedAudience;
-        if (!audMatches) {
-          return yield* Effect.fail(
-            new AuthenticationError({
-              reason: `Token audience '${String(claims.aud)}' does not match expected '${this.config.expectedAudience}'`,
-            })
-          );
-        }
-      }
-
-      // 3. Revocation check
-      if (claims.jti && TokenRevocationRegistry.isRevoked(claims.jti)) {
-        return yield* Effect.fail(
-          new AuthenticationError({
-            reason: `Token has been revoked: ${claims.jti}`,
-          })
-        );
-      }
-
-      return claims;
+    const [rawHeader, rawPayload, rawSig] = parts;
+    return Effect.try({
+      catch: (error) =>
+        new AuthenticationError({
+          reason: `Failed to decode JWT base64url: ${String(error)}`,
+        }),
+      try: () => ({
+        claims: JSON.parse(
+          Buffer.from(rawPayload, "base64url").toString("utf-8")
+        ) as OidcTokenClaims,
+        header: JSON.parse(
+          Buffer.from(rawHeader, "base64url").toString("utf-8")
+        ) as OidcTokenHeader,
+        rawHeader,
+        rawPayload,
+        rawSig,
+      }),
     });
   }
+
+  private verifySignature(
+    header: OidcTokenHeader,
+    signedData: string,
+    rawSig: string
+  ): Effect.Effect<void, AuthenticationError> {
+    if (!["HS256", "RS256"].includes(header.alg)) {
+      return new AuthenticationError({
+        reason: `Unsupported JWT algorithm: ${String(header.alg)}`,
+      });
+    }
+
+    const isAsymmetric = this.config.secretOrPublicKey.includes("BEGIN ");
+    const allowed =
+      this.config.allowedAlgorithms ?? (isAsymmetric ? ["RS256"] : ["HS256"]);
+    if (!allowed.includes(header.alg)) {
+      return new AuthenticationError({
+        reason: `Algorithm ${header.alg} is not allowed for this key type (allowed: ${allowed.join(", ")})`,
+      });
+    }
+
+    if (header.alg === "HS256" && isAsymmetric) {
+      return new AuthenticationError({
+        reason:
+          "HS256 is not permitted with an asymmetric PEM key (algorithm confusion prevention)",
+      });
+    }
+
+    const sigBuffer = Buffer.from(rawSig, "base64url");
+    if (header.alg === "HS256") {
+      const expectedHmac = createHmac("sha256", this.config.secretOrPublicKey)
+        .update(signedData)
+        .digest();
+      if (
+        sigBuffer.length !== expectedHmac.length ||
+        !sigBuffer.equals(expectedHmac)
+      ) {
+        return new AuthenticationError({
+          reason: "Invalid HS256 JWT signature",
+        });
+      }
+      return Effect.void;
+    }
+
+    const verifier = createVerify("RSA-SHA256");
+    verifier.update(signedData);
+    const isValid = verifier.verify(this.config.secretOrPublicKey, sigBuffer);
+    if (!isValid) {
+      return new AuthenticationError({
+        reason: "Invalid RS256 JWT signature",
+      });
+    }
+    return Effect.void;
+  }
+
+  private verifyClaims(
+    claims: OidcTokenClaims,
+    nowSec: number
+  ): Effect.Effect<void, AuthenticationError> {
+    const tolerance = this.config.clockToleranceSeconds ?? 60;
+
+    if (claims.exp !== undefined && nowSec > claims.exp + tolerance) {
+      return new AuthenticationError({
+        reason: `Token expired at ${claims.exp}, current time is ${nowSec}`,
+      });
+    }
+
+    if (claims.nbf !== undefined && nowSec < claims.nbf - tolerance) {
+      return new AuthenticationError({
+        reason: `Token not valid before ${claims.nbf}, current time is ${nowSec}`,
+      });
+    }
+
+    if (
+      this.config.expectedIssuer &&
+      claims.iss !== this.config.expectedIssuer
+    ) {
+      return new AuthenticationError({
+        reason: `Token issuer '${String(claims.iss)}' does not match expected '${this.config.expectedIssuer}'`,
+      });
+    }
+
+    if (this.config.expectedAudience) {
+      const aud = claims.aud;
+      const audMatches = Array.isArray(aud)
+        ? aud.includes(this.config.expectedAudience)
+        : aud === this.config.expectedAudience;
+      if (!audMatches) {
+        return new AuthenticationError({
+          reason: `Token audience '${String(claims.aud)}' does not match expected '${this.config.expectedAudience}'`,
+        });
+      }
+    }
+
+    if (claims.jti && TokenRevocationRegistry.isRevoked(claims.jti)) {
+      return new AuthenticationError({
+        reason: `Token has been revoked: ${claims.jti}`,
+      });
+    }
+
+    return Effect.void;
+  }
+
+  readonly verifyToken = Effect.fn("OidcTokenVerifier.verifyToken")(function* (
+    this: OidcTokenVerifier,
+    token: string
+  ): Effect.fn.Return<OidcTokenClaims, AuthenticationError> {
+    const decoded = yield* this.decodeJwtParts(token);
+    yield* this.verifySignature(
+      decoded.header,
+      `${decoded.rawHeader}.${decoded.rawPayload}`,
+      decoded.rawSig
+    );
+    const now = yield* Clock.currentTimeMillis;
+    yield* this.verifyClaims(decoded.claims, Math.floor(now / 1000));
+    return decoded.claims;
+  });
 }
 
 /**
  * Resolves external-agent token into canonical AgentContext
  * Guarantees tenant non-disclosure on unauthorized or mismatched tenant reference.
  */
-export function resolveAgentContext(
+export const resolveAgentContext = Effect.fn("resolveAgentContext")(function* (
   token: string,
   verifier: OidcTokenVerifier,
   options?: ResolveAgentContextOptions
-): Effect.Effect<AgentContext, AuthenticationError | AuthorizationError> {
-  return Effect.gen(function* () {
-    const claims = yield* verifier.verifyToken(token);
+): Effect.fn.Return<AgentContext, AuthenticationError | AuthorizationError> {
+  const claims = yield* verifier.verifyToken(token);
 
-    if (!claims.sub) {
-      return yield* Effect.fail(
-        new AuthenticationError({
-          reason: "Token claims missing required subject (sub)",
-        })
-      );
-    }
+  if (!claims.sub) {
+    return yield* new AuthenticationError({
+      reason: "Token claims missing required subject (sub)",
+    });
+  }
 
-    const envTenantId = yield* Effect.option(Config.string("OPERON_TENANT_ID"));
-    const tenantId =
-      claims.tenantId ??
-      (claims.attributes?.tenantId as string | undefined) ??
-      Option.getOrUndefined(envTenantId) ??
-      "tenant-default";
+  const envTenantId = yield* Effect.option(Config.string("OPERON_TENANT_ID"));
+  const tenantId =
+    claims.tenantId ??
+    (claims.attributes?.tenantId as string | undefined) ??
+    Option.getOrUndefined(envTenantId) ??
+    "tenant-default";
 
-    // Non-disclosure security boundary:
-    // When tenant is not matched, return generic Access denied without revealing tenant or entity existence
-    if (options?.expectedTenantId && tenantId !== options.expectedTenantId) {
-      return yield* Effect.fail(
-        new AuthorizationError({
-          reason: "Access denied",
-        })
-      );
-    }
+  // Non-disclosure security boundary:
+  // When tenant is not matched, return generic Access denied without revealing tenant or entity existence
+  if (options?.expectedTenantId && tenantId !== options.expectedTenantId) {
+    return yield* new AuthorizationError({
+      reason: "Access denied",
+    });
+  }
 
-    const envEnvironmentId = yield* Effect.option(
-      Config.string("OPERON_ENVIRONMENT_ID")
-    );
-    const environmentId =
-      (claims.attributes?.environmentId as string | undefined) ??
-      Option.getOrUndefined(envEnvironmentId) ??
-      "default";
+  const envEnvironmentId = yield* Effect.option(
+    Config.string("OPERON_ENVIRONMENT_ID")
+  );
+  const environmentId =
+    (claims.attributes?.environmentId as string | undefined) ??
+    Option.getOrUndefined(envEnvironmentId) ??
+    "default";
 
-    if (
-      options?.expectedEnvironmentId &&
-      environmentId !== options.expectedEnvironmentId
-    ) {
-      return yield* Effect.fail(
-        new AuthorizationError({
-          reason: "Access denied",
-        })
-      );
-    }
+  if (
+    options?.expectedEnvironmentId &&
+    environmentId !== options.expectedEnvironmentId
+  ) {
+    return yield* new AuthorizationError({
+      reason: "Access denied",
+    });
+  }
 
-    const sponsorId =
-      (claims.attributes?.sponsorId as string | undefined) ??
-      claims.name ??
-      claims.sub;
+  const sponsorId =
+    (claims.attributes?.sponsorId as string | undefined) ??
+    claims.name ??
+    claims.sub;
 
-    const rawGrants = claims.attributes?.grants;
-    const grants: readonly string[] = Array.isArray(rawGrants)
-      ? rawGrants.map(String)
-      : (claims.roles ?? []);
+  const rawGrants = claims.attributes?.grants;
+  const grants: readonly string[] = Array.isArray(rawGrants)
+    ? rawGrants.map(String)
+    : (claims.roles ?? []);
 
-    const envProfile = yield* Effect.option(Config.string("OPERON_PROFILE"));
-    const rawProfile =
-      (claims.attributes?.profile as string | undefined) ??
-      Option.getOrUndefined(envProfile) ??
-      "external-agent";
+  const envProfile = yield* Effect.option(Config.string("OPERON_PROFILE"));
+  const rawProfile =
+    (claims.attributes?.profile as string | undefined) ??
+    Option.getOrUndefined(envProfile) ??
+    "external-agent";
 
-    const profile: OperonProfile =
-      rawProfile === "production" || rawProfile === "local"
-        ? rawProfile
-        : "external-agent";
+  const profile: OperonProfile =
+    rawProfile === "production" || rawProfile === "local"
+      ? rawProfile
+      : "external-agent";
 
-    return {
-      actorId: claims.sub,
-      environmentId,
-      grants,
-      profile,
-      sponsorId,
-      tenantId,
-    };
-  });
-}
+  return {
+    actorId: claims.sub,
+    environmentId,
+    grants,
+    profile,
+    sponsorId,
+    tenantId,
+  };
+});
 
 /**
  * Maps enterprise IdP Claims (Okta, Azure AD, Keycloak) to Operon SecurityContext
@@ -370,20 +361,16 @@ export class HttpAuthMiddleware {
     clientIp?: string
   ): Effect.Effect<SecurityContext, AuthenticationError | AuthorizationError> {
     if (!authorizationHeader) {
-      return Effect.fail(
-        new AuthenticationError({
-          reason: "Missing Authorization header",
-        })
-      );
+      return new AuthenticationError({
+        reason: "Missing Authorization header",
+      });
     }
 
     const [scheme, token] = authorizationHeader.trim().split(/\s+/u);
     if (scheme?.toLowerCase() !== "bearer" || !token) {
-      return Effect.fail(
-        new AuthenticationError({
-          reason: "Authorization header must use Bearer scheme: Bearer <token>",
-        })
-      );
+      return new AuthenticationError({
+        reason: "Authorization header must use Bearer scheme: Bearer <token>",
+      });
     }
 
     return this.verifier

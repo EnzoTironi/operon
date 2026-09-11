@@ -106,13 +106,13 @@ describe("Gate G3 Exit Verification: Isolated Enterprise Profile (S15, S16, S17,
 
       // Deny uncontracted link traversal outside negotiated contract
       const traversalExit = await Effect.runPromiseExit(
-        federationService.traverseFederatedLink(
+        federationService.traverseFederatedLink({
           contract,
-          "P-8801",
-          "PRIVATE_FINANCIAL_LEDGER", // not permitted!
-          "FIN-99",
-          "2026-09-11T12:00:00.000Z"
-        )
+          currentTime: "2026-09-11T12:00:00.000Z",
+          linkRelation: "PRIVATE_FINANCIAL_LEDGER", // not permitted!
+          sourceEntityId: "P-8801",
+          targetEntityId: "FIN-99",
+        })
       );
 
       expect(Exit.isFailure(traversalExit)).toBe(true);

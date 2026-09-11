@@ -1,5 +1,11 @@
-import type { ObjectInstance, ObjectTypeId } from "@operon/schema";
-import { Effect } from "effect";
+import { serializeJson } from "@operon/schema";
+import type {
+  ObjectInstance,
+  ObjectProperties,
+  ObjectTypeId,
+} from "@operon/schema";
+import type { Schema } from "effect";
+import { Clock, Effect } from "effect";
 
 import type { BitemporalObjectStore } from "./bitemporal-store.js";
 import type { ConcurrentModificationError } from "./errors.js";
@@ -13,9 +19,9 @@ export interface CdcEvent {
   readonly sourceSystem: string;
   readonly table: string;
   readonly operation: CdcOperation;
-  readonly primaryKey: Record<string, unknown>;
-  readonly beforeState?: Record<string, unknown>;
-  readonly afterState?: Record<string, unknown>;
+  readonly primaryKey: Record<string, Schema.Json>;
+  readonly beforeState?: Record<string, Schema.Json>;
+  readonly afterState?: Record<string, Schema.Json>;
   readonly capturedAt: number;
 }
 
@@ -23,8 +29,8 @@ export interface ShadowDiff {
   readonly objectTypeId: ObjectTypeId;
   readonly objectId: string;
   readonly match: boolean;
-  readonly legacyProperties: Record<string, unknown>;
-  readonly operonProperties: Record<string, unknown>;
+  readonly legacyProperties: ObjectProperties;
+  readonly operonProperties: ObjectProperties;
   readonly divergentKeys: readonly string[];
 }
 
@@ -67,15 +73,16 @@ export class MigrationEngine {
   /**
    * Ingest a Change Data Capture event from a legacy ERP / database
    */
-  ingestCdcEvent(
-    event: CdcEvent,
-    objectTypeId: ObjectTypeId,
-    mapper: (raw: Record<string, unknown>) => {
-      readonly id: string;
-      readonly properties: Record<string, unknown>;
-    }
-  ): Effect.Effect<void, ConcurrentModificationError> {
-    return Effect.gen({ self: this }, function* () {
+  readonly ingestCdcEvent = Effect.fn("MigrationEngine.ingestCdcEvent")(
+    function* (
+      this: MigrationEngine,
+      event: CdcEvent,
+      objectTypeId: ObjectTypeId,
+      mapper: (raw: Record<string, Schema.Json>) => {
+        readonly id: string;
+        readonly properties: ObjectProperties;
+      }
+    ): Effect.fn.Return<void, ConcurrentModificationError> {
       this.totalEvents += 1;
       const targetData = event.afterState ?? event.beforeState ?? {};
       const { id, properties } = mapper(targetData);
@@ -83,12 +90,13 @@ export class MigrationEngine {
       if (event.operation === "delete") {
         // Soft delete / tombstone representation
         const existing = yield* this.store.getObject(objectTypeId, id);
+        const now = yield* Clock.currentTimeMillis;
         yield* this.store.putObject({
           id,
           lastModifiedAt: event.capturedAt,
           properties: { ...properties, _deleted: true },
           provenance: {
-            ingestedAt: Date.now(),
+            ingestedAt: now,
             recordedAt: event.capturedAt,
             sourceSystem: `cdc:${event.sourceSystem}`,
           },
@@ -101,13 +109,14 @@ export class MigrationEngine {
       // Query existing object if any to increment version
       const existing = yield* this.store.getObject(objectTypeId, id);
       const nextVersion = existing ? existing.version + 1 : 1;
+      const now = yield* Clock.currentTimeMillis;
 
       const newInstance: ObjectInstance = {
         id,
         lastModifiedAt: event.capturedAt,
         properties,
         provenance: {
-          ingestedAt: Date.now(),
+          ingestedAt: now,
           recordedAt: event.capturedAt,
           sourceSystem: `cdc:${event.sourceSystem}`,
         },
@@ -116,56 +125,57 @@ export class MigrationEngine {
       };
 
       yield* this.store.putObject(newInstance, event.capturedAt);
-    });
-  }
+    }
+  );
 
   /**
    * Perform shadow diff comparison between legacy system record and Operon OSv2
    */
-  compareShadowRecord(
+  readonly compareShadowRecord = Effect.fn(
+    "MigrationEngine.compareShadowRecord"
+  )(function* (
+    this: MigrationEngine,
     objectTypeId: ObjectTypeId,
     objectId: string,
-    legacyProperties: Record<string, unknown>
-  ): Effect.Effect<ShadowDiff> {
-    return Effect.gen({ self: this }, function* () {
-      this.totalComparisons += 1;
-      const operonObj = yield* this.store.getObject(objectTypeId, objectId);
-      const operonProps = operonObj ? operonObj.properties : {};
+    legacyProperties: ObjectProperties
+  ): Effect.fn.Return<ShadowDiff> {
+    this.totalComparisons += 1;
+    const operonObj = yield* this.store.getObject(objectTypeId, objectId);
+    const operonProps = operonObj ? operonObj.properties : {};
 
-      const divergentKeys: string[] = [];
-      const checkedKeys = new Set([
-        ...Object.keys(legacyProperties),
-        ...Object.keys(operonProps),
-      ]);
+    const divergentKeys: string[] = [];
+    const checkedKeys = new Set([
+      ...Object.keys(legacyProperties),
+      ...Object.keys(operonProps),
+    ]);
 
-      for (const key of checkedKeys) {
-        if (key.startsWith("_")) {
-          continue;
-        }
-        const legVal = legacyProperties[key];
-        const opVal = operonProps[key];
-        if (JSON.stringify(legVal) !== JSON.stringify(opVal)) {
-          divergentKeys.push(key);
-        }
+    for (const key of checkedKeys) {
+      if (key.startsWith("_")) {
+        continue;
       }
-
-      const match = divergentKeys.length === 0;
-      if (match) {
-        this.matches += 1;
-      } else {
-        this.divergences += 1;
+      const legVal = legacyProperties[key];
+      const opVal = operonProps[key];
+      if (serializeJson(legVal) !== serializeJson(opVal)) {
+        divergentKeys.push(key);
       }
+    }
 
-      return {
-        divergentKeys,
-        legacyProperties,
-        match,
-        objectId,
-        objectTypeId,
-        operonProperties: operonProps,
-      };
-    });
-  }
+    const match = divergentKeys.length === 0;
+    if (match) {
+      this.matches += 1;
+    } else {
+      this.divergences += 1;
+    }
+
+    return {
+      divergentKeys,
+      legacyProperties,
+      match,
+      objectId,
+      objectTypeId,
+      operonProperties: operonProps,
+    };
+  });
 
   /**
    * Returns calculated consistency and cutover readiness score

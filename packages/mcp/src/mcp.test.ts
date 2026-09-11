@@ -874,7 +874,9 @@ describe("@operon/mcp", () => {
       mutation: (params, ctx) =>
         Effect.gen(function* () {
           const obj = yield* ctx.getObject("Patient" as any, params.patientId);
-          if (!obj) return [];
+          if (!obj) {
+            return [];
+          }
           return [
             {
               ...obj,

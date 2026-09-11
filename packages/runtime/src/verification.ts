@@ -7,6 +7,7 @@ import type {
   OntologyBranch,
   OntologyProposal,
 } from "@operon/schema";
+import type { Schema } from "effect";
 import { Data, Effect } from "effect";
 
 export class StructuralVerificationError extends Data.TaggedError(
@@ -22,7 +23,7 @@ export class StructuralVerificationError extends Data.TaggedError(
  */
 export interface AgentOutputAssertion {
   readonly property: string;
-  readonly assertedValue: unknown;
+  readonly assertedValue: Schema.Json;
   readonly sourceObjectId?: string;
   readonly sourceVersion?: number;
   readonly sourceProperty?: string;
@@ -32,7 +33,7 @@ export interface AgentOutputAssertion {
 export interface AgentDecisionOutput {
   readonly outputId: string;
   readonly actionTypeId: string;
-  readonly proposedParameters: Record<string, unknown>;
+  readonly proposedParameters: Record<string, Schema.Json>;
   readonly assertions: readonly AgentOutputAssertion[];
   readonly requiredQuestionsAnswered: readonly string[];
   readonly agentTier: number;
@@ -51,7 +52,7 @@ export interface GoverningPolicy {
   readonly forbiddenParameters?: readonly string[];
   readonly scenarioRedLines?: readonly {
     readonly property: string;
-    readonly condition: (val: unknown) => boolean;
+    readonly condition: (val: Schema.Json) => boolean;
     readonly description: string;
   }[];
 }
@@ -77,6 +78,67 @@ export interface DecisionQualityL2 {
   readonly issues: readonly string[];
 }
 
+function checkAssertionContradiction(
+  assertion: AgentOutputAssertion,
+  objectMap: Map<string, ObjectInstance>
+): string | undefined {
+  if (!assertion.sourceObjectId) {
+    return undefined;
+  }
+  const sourceObj = objectMap.get(assertion.sourceObjectId);
+  if (!sourceObj) {
+    return `Assertion on '${assertion.property}' references nonexistent object '${assertion.sourceObjectId}'`;
+  }
+  if (
+    assertion.sourceVersion !== undefined &&
+    assertion.sourceVersion !== sourceObj.version
+  ) {
+    return `Assertion on '${assertion.property}' references version ${assertion.sourceVersion}, but context object '${sourceObj.id}' is version ${sourceObj.version}`;
+  }
+  if (assertion.sourceProperty) {
+    const props = sourceObj.properties;
+    if (
+      !(assertion.sourceProperty in props) ||
+      props[assertion.sourceProperty] === undefined
+    ) {
+      return `Assertion on '${assertion.property}' references nonexistent property '${assertion.sourceProperty}' on object '${sourceObj.id}'`;
+    }
+    const actualVal = props[assertion.sourceProperty];
+    if (actualVal !== assertion.assertedValue) {
+      return `Contradiction on '${assertion.property}': asserted '${String(assertion.assertedValue)}', but context object '${sourceObj.id}' has '${String(actualVal)}'`;
+    }
+  }
+  return undefined;
+}
+
+function collectPolicyViolations(
+  output: AgentDecisionOutput,
+  policy: GoverningPolicy
+): string[] {
+  const violations: string[] = [];
+  if (output.agentTier > policy.allowedAgentTier) {
+    violations.push(
+      `Agent tier ${output.agentTier} exceeds policy maximum allowed tier ${policy.allowedAgentTier}`
+    );
+  }
+  if (policy.forbiddenParameters) {
+    for (const forbidden of policy.forbiddenParameters) {
+      if (forbidden in output.proposedParameters) {
+        violations.push(`Output contains forbidden parameter '${forbidden}'`);
+      }
+    }
+  }
+  if (policy.scenarioRedLines) {
+    for (const redLine of policy.scenarioRedLines) {
+      const val = output.proposedParameters[redLine.property];
+      if (val !== undefined && redLine.condition(val)) {
+        violations.push(`Scenario red line violated: ${redLine.description}`);
+      }
+    }
+  }
+  return violations;
+}
+
 /**
  * Chapter 16 Joint Formalization of Two-Layer 4C:
  * Evaluates Layer 2 Output Quality (Correct, Complete, Cited, Compliant).
@@ -96,45 +158,12 @@ export function evaluateDecisionQualityL2(
     const contradictions: string[] = [];
     const uncitedAssertions: string[] = [];
     const missingMustAnswer: string[] = [];
-    const violations: string[] = [];
 
     // 1. Correct(o, c): Factual assertions in output agree with context objects
     for (const assertion of output.assertions) {
-      if (assertion.sourceObjectId) {
-        const sourceObj = objectMap.get(assertion.sourceObjectId);
-        if (sourceObj) {
-          if (
-            assertion.sourceVersion !== undefined &&
-            assertion.sourceVersion !== sourceObj.version
-          ) {
-            contradictions.push(
-              `Assertion on '${assertion.property}' references version ${assertion.sourceVersion}, but context object '${sourceObj.id}' is version ${sourceObj.version}`
-            );
-          }
-
-          if (assertion.sourceProperty) {
-            const props = sourceObj.properties as Record<string, unknown>;
-            if (
-              assertion.sourceProperty in props &&
-              props[assertion.sourceProperty] !== undefined
-            ) {
-              const actualVal = props[assertion.sourceProperty];
-              if (actualVal !== assertion.assertedValue) {
-                contradictions.push(
-                  `Contradiction on '${assertion.property}': asserted '${String(assertion.assertedValue)}', but context object '${sourceObj.id}' has '${String(actualVal)}'`
-                );
-              }
-            } else {
-              contradictions.push(
-                `Assertion on '${assertion.property}' references nonexistent property '${assertion.sourceProperty}' on object '${sourceObj.id}'`
-              );
-            }
-          }
-        } else {
-          contradictions.push(
-            `Assertion on '${assertion.property}' references nonexistent object '${assertion.sourceObjectId}'`
-          );
-        }
+      const contradiction = checkAssertionContradiction(assertion, objectMap);
+      if (contradiction) {
+        contradictions.push(contradiction);
       }
     }
 
@@ -158,28 +187,7 @@ export function evaluateDecisionQualityL2(
     }
 
     // 4. Compliant(o, π): Stays within agent tier and respects scenario red lines
-    if (output.agentTier > policy.allowedAgentTier) {
-      violations.push(
-        `Agent tier ${output.agentTier} exceeds policy maximum allowed tier ${policy.allowedAgentTier}`
-      );
-    }
-
-    if (policy.forbiddenParameters) {
-      for (const forbidden of policy.forbiddenParameters) {
-        if (forbidden in output.proposedParameters) {
-          violations.push(`Output contains forbidden parameter '${forbidden}'`);
-        }
-      }
-    }
-
-    if (policy.scenarioRedLines) {
-      for (const redLine of policy.scenarioRedLines) {
-        const val = output.proposedParameters[redLine.property];
-        if (val !== undefined && redLine.condition(val)) {
-          violations.push(`Scenario red line violated: ${redLine.description}`);
-        }
-      }
-    }
+    const violations = collectPolicyViolations(output, policy);
 
     const issues = [
       ...contradictions,
@@ -249,60 +257,89 @@ export interface VedoInvariantSuite {
   readonly transitions?: readonly VedoTransitionConstraint[];
 }
 
+export interface StructuralReadinessOptions {
+  readonly objectTypes: readonly ObjectType[];
+  readonly linkTypes: readonly LinkType[];
+  readonly interfaceTypes?: readonly InterfaceType[];
+  readonly actionTypes?: readonly ActionType[];
+  readonly branch?: OntologyBranch;
+  readonly upstreamMainTimestamp?: number;
+}
+
+function checkDanglingLinks(
+  linkTypes: readonly LinkType[],
+  objectTypeIds: ReadonlySet<string>
+): string[] {
+  const dangling: string[] = [];
+  for (const link of linkTypes) {
+    if (!objectTypeIds.has(link.sourceTypeId as string)) {
+      dangling.push(
+        `Link ${link.id}: source object type '${link.sourceTypeId}' does not exist.`
+      );
+    }
+    if (!objectTypeIds.has(link.targetTypeId as string)) {
+      dangling.push(
+        `Link ${link.id}: target object type '${link.targetTypeId}' does not exist.`
+      );
+    }
+  }
+  return dangling;
+}
+
+function checkInterfaceCompliance(
+  objectTypes: readonly ObjectType[],
+  interfaceTypes: readonly InterfaceType[]
+): string[] {
+  const missing: string[] = [];
+  const interfaceMap = new Map(interfaceTypes.map((i) => [i.id, i]));
+  for (const obj of objectTypes) {
+    if (!obj.implementedInterfaces) {
+      continue;
+    }
+    for (const ifaceId of obj.implementedInterfaces) {
+      const iface = interfaceMap.get(ifaceId);
+      if (!iface) {
+        missing.push(
+          `Object ${obj.id} implements unknown interface '${ifaceId}'.`
+        );
+        continue;
+      }
+      for (const requiredProp of Object.keys(iface.properties)) {
+        if (!(requiredProp in obj.properties)) {
+          missing.push(
+            `Object ${obj.id} implements interface '${ifaceId}' but is missing required property '${requiredProp}'.`
+          );
+        }
+      }
+    }
+  }
+  return missing;
+}
+
 /**
  * Structural schema verification (dangling links, interfaces, branch timestamps)
  */
 export function evaluateStructuralReadinessL2(
-  objectTypes: readonly ObjectType[],
-  linkTypes: readonly LinkType[],
-  interfaceTypes: readonly InterfaceType[] = [],
-  actionTypes: readonly ActionType<any>[] = [],
-  branch?: OntologyBranch,
-  upstreamMainTimestamp?: number
+  options: StructuralReadinessOptions
 ): Effect.Effect<StructuralReadinessL2> {
   return Effect.sync(() => {
+    const {
+      objectTypes,
+      linkTypes,
+      interfaceTypes = [],
+      actionTypes = [],
+      branch,
+      upstreamMainTimestamp,
+    } = options;
+
     const objectTypeIds = new Set(objectTypes.map((o) => o.id as string));
-    const danglingLinkReferences: string[] = [];
-    const missingInterfaceProperties: string[] = [];
+    const danglingLinkReferences = checkDanglingLinks(linkTypes, objectTypeIds);
+    const missingInterfaceProperties = checkInterfaceCompliance(
+      objectTypes,
+      interfaceTypes
+    );
     const consistencyIssues: string[] = [];
     const issues: string[] = [];
-
-    // 1. Correctness: Link target validity
-    for (const link of linkTypes) {
-      if (!objectTypeIds.has(link.sourceTypeId as string)) {
-        danglingLinkReferences.push(
-          `Link ${link.id}: source object type '${link.sourceTypeId}' does not exist.`
-        );
-      }
-      if (!objectTypeIds.has(link.targetTypeId as string)) {
-        danglingLinkReferences.push(
-          `Link ${link.id}: target object type '${link.targetTypeId}' does not exist.`
-        );
-      }
-    }
-
-    // 2. Completeness: Interface compliance
-    const interfaceMap = new Map(interfaceTypes.map((i) => [i.id, i]));
-    for (const obj of objectTypes) {
-      if (obj.implementedInterfaces) {
-        for (const ifaceId of obj.implementedInterfaces) {
-          const iface = interfaceMap.get(ifaceId);
-          if (!iface) {
-            missingInterfaceProperties.push(
-              `Object ${obj.id} implements unknown interface '${ifaceId}'.`
-            );
-            continue;
-          }
-          for (const requiredProp of Object.keys(iface.properties)) {
-            if (!(requiredProp in obj.properties)) {
-              missingInterfaceProperties.push(
-                `Object ${obj.id} implements interface '${ifaceId}' but is missing required property '${requiredProp}'.`
-              );
-            }
-          }
-        }
-      }
-    }
 
     // 3. Currency: Branch lineage freshness
     let isStale = false;
@@ -365,49 +402,96 @@ export function evaluateStructuralReadinessL2(
  * Continuous invariant verification engine for multi-stakeholder proposals.
  */
 export class CROVEngine {
-  verifyProposal(
+  readonly verifyProposal = Effect.fn("CROVEngine.verifyProposal")(function* (
     proposal: OntologyProposal,
     activeObjectTypes: readonly ObjectType[],
     activeLinkTypes: readonly LinkType[],
     activeInterfaces: readonly InterfaceType[] = []
-  ): Effect.Effect<StructuralReadinessL2, StructuralVerificationError> {
-    return Effect.gen(function* () {
-      const mergedObjects = [
-        ...activeObjectTypes.filter(
-          (o) =>
-            !proposal.changeSet.deletedObjectTypeIds.includes(o.id as string)
-        ),
-        ...proposal.changeSet.addedObjectTypes,
-        ...proposal.changeSet.modifiedObjectTypes,
-      ];
+  ) {
+    const mergedObjects = [
+      ...activeObjectTypes.filter(
+        (o) => !proposal.changeSet.deletedObjectTypeIds.includes(o.id as string)
+      ),
+      ...proposal.changeSet.addedObjectTypes,
+      ...proposal.changeSet.modifiedObjectTypes,
+    ];
 
-      const mergedLinks = [
-        ...activeLinkTypes.filter(
-          (l) => !proposal.changeSet.deletedLinkTypeIds.includes(l.id as string)
-        ),
-        ...proposal.changeSet.addedLinkTypes,
-        ...proposal.changeSet.modifiedLinkTypes,
-      ];
+    const mergedLinks = [
+      ...activeLinkTypes.filter(
+        (l) => !proposal.changeSet.deletedLinkTypeIds.includes(l.id as string)
+      ),
+      ...proposal.changeSet.addedLinkTypes,
+      ...proposal.changeSet.modifiedLinkTypes,
+    ];
 
-      const readiness = yield* evaluateStructuralReadinessL2(
-        mergedObjects,
-        mergedLinks,
-        activeInterfaces,
-        proposal.changeSet.addedActionTypes
-      );
+    const readiness = yield* evaluateStructuralReadinessL2({
+      actionTypes: proposal.changeSet.addedActionTypes,
+      interfaceTypes: activeInterfaces,
+      linkTypes: mergedLinks,
+      objectTypes: mergedObjects,
+    });
 
-      if (!readiness.isReady) {
-        return yield* Effect.fail(
-          new StructuralVerificationError({
-            message: `Proposal ${proposal.id} fails CROV structural verification.`,
-            issues: readiness.issues,
-          })
+    if (!readiness.isReady) {
+      return yield* new StructuralVerificationError({
+        issues: readiness.issues,
+        message: `Proposal ${proposal.id} fails CROV structural verification.`,
+      });
+    }
+
+    return readiness;
+  });
+}
+
+function checkBoundaryViolations(
+  boundaries: readonly VedoBoundaryConstraint[] | VedoBoundaryConstraint,
+  nextProperties: Record<string, Schema.Json>
+): string[] {
+  const violations: string[] = [];
+  const boundsList = Array.isArray(boundaries) ? boundaries : [boundaries];
+  for (const boundary of boundsList) {
+    const val = nextProperties[boundary.property];
+    if (typeof val === "number") {
+      if (boundary.min !== undefined && val < boundary.min) {
+        violations.push(
+          `Property '${boundary.property}' value ${val} is below minimum bound ${boundary.min}.`
         );
       }
-
-      return readiness;
-    });
+      if (boundary.max !== undefined && val > boundary.max) {
+        violations.push(
+          `Property '${boundary.property}' value ${val} exceeds maximum bound ${boundary.max}.`
+        );
+      }
+    }
   }
+  return violations;
+}
+
+function checkTransitionViolations(
+  transitions: readonly VedoTransitionConstraint[] | VedoTransitionConstraint,
+  nextProperties: Record<string, Schema.Json>,
+  previousProperties: Record<string, Schema.Json>
+): string[] {
+  const violations: string[] = [];
+  const transitionsList = Array.isArray(transitions)
+    ? transitions
+    : [transitions];
+  for (const transition of transitionsList) {
+    const prevVal = previousProperties[transition.property];
+    const nextVal = nextProperties[transition.property];
+    if (
+      typeof prevVal === "string" &&
+      typeof nextVal === "string" &&
+      prevVal !== nextVal
+    ) {
+      const allowed = transition.allowedTransitions[prevVal] ?? [];
+      if (!allowed.includes(nextVal)) {
+        violations.push(
+          `Illegal state transition for '${transition.property}': cannot transition from '${prevVal}' to '${nextVal}'. Allowed: [${allowed.join(", ")}].`
+        );
+      }
+    }
+  }
+  return violations;
 }
 
 /**
@@ -421,73 +505,40 @@ export class VEDOVerifier {
     this.suites.set(suite.objectTypeId, suite);
   }
 
-  verifyMutation(
+  readonly verifyMutation = Effect.fn("VEDOVerifier.verifyMutation")(function* (
+    this: VEDOVerifier,
     objectTypeId: string,
-    nextProperties: Record<string, unknown>,
-    previousProperties?: Record<string, unknown>
-  ): Effect.Effect<void, StructuralVerificationError> {
-    return Effect.gen({ self: this }, function* () {
-      const suite = this.suites.get(objectTypeId);
-      if (!suite) {
-        return; // No invariant suite registered for this type
-      }
+    nextProperties: Record<string, Schema.Json>,
+    previousProperties?: Record<string, Schema.Json>
+  ) {
+    const suite = this.suites.get(objectTypeId);
+    if (!suite) {
+      return; // No invariant suite registered for this type
+    }
 
-      const violations: string[] = [];
+    const violations: string[] = [];
 
-      // Boundary constraints
-      if (suite.boundaries) {
-        const boundsList = Array.isArray(suite.boundaries)
-          ? suite.boundaries
-          : [suite.boundaries];
-        for (const boundary of boundsList) {
-          const val = nextProperties[boundary.property];
-          if (typeof val === "number") {
-            if (boundary.min !== undefined && val < boundary.min) {
-              violations.push(
-                `Property '${boundary.property}' value ${val} is below minimum bound ${boundary.min}.`
-              );
-            }
-            if (boundary.max !== undefined && val > boundary.max) {
-              violations.push(
-                `Property '${boundary.property}' value ${val} exceeds maximum bound ${boundary.max}.`
-              );
-            }
-          }
-        }
-      }
+    if (suite.boundaries) {
+      violations.push(
+        ...checkBoundaryViolations(suite.boundaries, nextProperties)
+      );
+    }
 
-      // State transition constraints
-      if (suite.transitions && previousProperties) {
-        const transitionsList = Array.isArray(suite.transitions)
-          ? suite.transitions
-          : [suite.transitions];
-        for (const transition of transitionsList) {
-          const prevVal = previousProperties[transition.property];
-          const nextVal = nextProperties[transition.property];
+    if (suite.transitions && previousProperties) {
+      violations.push(
+        ...checkTransitionViolations(
+          suite.transitions,
+          nextProperties,
+          previousProperties
+        )
+      );
+    }
 
-          if (
-            typeof prevVal === "string" &&
-            typeof nextVal === "string" &&
-            prevVal !== nextVal
-          ) {
-            const allowed = transition.allowedTransitions[prevVal] ?? [];
-            if (!allowed.includes(nextVal)) {
-              violations.push(
-                `Illegal state transition for '${transition.property}': cannot transition from '${prevVal}' to '${nextVal}'. Allowed: [${allowed.join(", ")}].`
-              );
-            }
-          }
-        }
-      }
-
-      if (violations.length > 0) {
-        return yield* Effect.fail(
-          new StructuralVerificationError({
-            message: `VEDO formal invariant check failed for ${objectTypeId}.`,
-            issues: violations,
-          })
-        );
-      }
-    });
-  }
+    if (violations.length > 0) {
+      return yield* new StructuralVerificationError({
+        issues: violations,
+        message: `VEDO formal invariant check failed for ${objectTypeId}.`,
+      });
+    }
+  });
 }

@@ -8,7 +8,7 @@ import type {
   MultiCellSagaOutcome,
   MultiCellStepResult,
 } from "@operon/schema";
-import { Cause, Effect, Exit } from "effect";
+import { Cause, Clock, Effect, Exit } from "effect";
 
 import {
   FederationAttributionMissingError,
@@ -53,67 +53,277 @@ export interface FilteredFederatedView {
   readonly schemaType: string;
 }
 
+export interface TraverseFederatedLinkOptions {
+  readonly contract: FederatedViewContract;
+  readonly sourceEntityId: string;
+  readonly linkRelation: string;
+  readonly targetEntityId: string;
+  readonly currentTime?: string;
+}
+
+function extractCompensationErrorMessage(cause: Cause.Cause<unknown>): string {
+  const failReason = cause.reasons.find(Cause.isFailReason);
+  const failError = failReason?.error;
+  if (failError && typeof failError === "object" && "message" in failError) {
+    return String((failError as { message: unknown }).message);
+  }
+  return String(failError ?? Cause.pretty(cause));
+}
+
+const compensateSingleStep = Effect.fn("compensateSingleStep")(function* (
+  step: MultiCellOperationStep,
+  executeCompensation: (
+    step: MultiCellOperationStep
+  ) => Effect.Effect<string, unknown>,
+  stepResults: MultiCellStepResult[]
+): Effect.fn.Return<boolean, never> {
+  const compExecutedAt = new Date(yield* Clock.currentTimeMillis).toISOString();
+  const compExit = yield* Effect.exit(executeCompensation(step));
+  const resultIndex = stepResults.findIndex((r) => r.stepId === step.stepId);
+
+  if (Exit.isFailure(compExit)) {
+    const compError = extractCompensationErrorMessage(compExit.cause);
+    if (resultIndex !== -1) {
+      stepResults[resultIndex] = {
+        cellId: step.cellId,
+        error: `Compensation failed: ${compError}`,
+        executedAt: compExecutedAt,
+        status: "COMPENSATION_FAILED",
+        stepId: step.stepId,
+      };
+    }
+    return true;
+  }
+
+  if (resultIndex !== -1) {
+    stepResults[resultIndex] = {
+      cellId: step.cellId,
+      executedAt: compExecutedAt,
+      receiptId: compExit.value,
+      status: "COMPENSATED",
+      stepId: step.stepId,
+    };
+  }
+  return false;
+});
+
+const compensateCommittedSteps = Effect.fn("compensateCommittedSteps")(
+  function* (
+    committedSteps: MultiCellOperationStep[],
+    cellExecutors: Record<string, CellStepExecutor>,
+    stepResults: MultiCellStepResult[]
+  ): Effect.fn.Return<boolean, never> {
+    const stepsToCompensate = committedSteps
+      .toReversed()
+      .filter((s) => s.compensatingAction);
+
+    const outcomes = yield* Effect.forEach(
+      stepsToCompensate,
+      (step) => {
+        const executor = cellExecutors[step.cellId];
+        if (!executor?.executeCompensation) {
+          return Effect.succeed(false);
+        }
+        return compensateSingleStep(
+          step,
+          executor.executeCompensation,
+          stepResults
+        );
+      },
+      { concurrency: 1 }
+    );
+
+    return outcomes.some(Boolean);
+  }
+);
+
 /**
  * FederationService (S15, OPR-FULL-044, OPR-FULL-046):
  * Manages federated contracted views, selective export, uncontracted link traversal denial,
  * remote claim attribution with explicit uncertainty, and multi-cell sagas without fictional global commits.
  */
+const executeSingleCellStep = Effect.fn("executeSingleCellStep")(function* (
+  step: MultiCellOperationStep,
+  executor: CellStepExecutor | undefined,
+  coordinatorCellId: string
+): Effect.fn.Return<
+  | {
+      readonly _tag: "Success";
+      readonly step: MultiCellOperationStep;
+      readonly result: MultiCellStepResult;
+    }
+  | {
+      readonly _tag: "Failed";
+      readonly result: MultiCellStepResult;
+      readonly remoteClaim?: FederatedRemoteClaim;
+    },
+  never
+> {
+  const stepExecutedAt = new Date(yield* Clock.currentTimeMillis).toISOString();
+
+  if (!executor) {
+    const failureStatus = "UNREACHABLE";
+    const result: MultiCellStepResult = {
+      cellId: step.cellId,
+      error: `No executor registered for cell "${step.cellId}"`,
+      executedAt: stepExecutedAt,
+      status: failureStatus,
+      stepId: step.stepId,
+    };
+
+    const remoteClaim: FederatedRemoteClaim = {
+      attribution: {
+        assertedAt: stepExecutedAt,
+        sourceAuthority: coordinatorCellId,
+        sourceCellId: step.cellId,
+      },
+      claimId: `claim-${randomUUID()}`,
+      claimType: "CELL_UNREACHABLE_PENDING",
+      payload: {
+        actionName: step.actionName,
+        error: `No executor for cell ${step.cellId}`,
+        stepPayload: step.payload,
+      },
+      subjectEntityId: step.stepId,
+      targetCellId: coordinatorCellId,
+      uncertainty: {
+        reconciliationNotes: `Remote cell ${step.cellId} unreachable during saga execution`,
+        status: "UNREACHABLE",
+      },
+    };
+
+    return {
+      _tag: "Failed" as const,
+      result,
+      remoteClaim,
+    };
+  }
+
+  const stepExit = yield* Effect.exit(executor.executeStep(step));
+  if (Exit.isFailure(stepExit)) {
+    const failReason = stepExit.cause.reasons.find(Cause.isFailReason);
+    const failError = failReason?.error;
+    const errorMsg =
+      failError && typeof failError === "object" && "message" in failError
+        ? String((failError as { message: unknown }).message)
+        : String(failError ?? Cause.pretty(stepExit.cause));
+
+    const isUnreachable =
+      errorMsg.toLowerCase().includes("unreachable") ||
+      errorMsg.toLowerCase().includes("offline") ||
+      errorMsg.toLowerCase().includes("timeout");
+
+    const status = isUnreachable ? "UNREACHABLE" : "FAILED";
+
+    const result: MultiCellStepResult = {
+      cellId: step.cellId,
+      error: errorMsg,
+      executedAt: stepExecutedAt,
+      status,
+      stepId: step.stepId,
+    };
+
+    let remoteClaim: FederatedRemoteClaim | undefined = undefined;
+    if (isUnreachable) {
+      remoteClaim = {
+        attribution: {
+          assertedAt: stepExecutedAt,
+          sourceAuthority: coordinatorCellId,
+          sourceCellId: step.cellId,
+        },
+        claimId: `claim-${randomUUID()}`,
+        claimType: "REMOTE_STEP_UNREACHABLE_PENDING",
+        payload: {
+          actionName: step.actionName,
+          error: errorMsg,
+          stepPayload: step.payload,
+        },
+        subjectEntityId: step.stepId,
+        targetCellId: coordinatorCellId,
+        uncertainty: {
+          reconciliationNotes: `Remote cell ${step.cellId} timed out or offline during step ${step.stepId}`,
+          status: "UNREACHABLE",
+        },
+      };
+    }
+
+    return {
+      _tag: "Failed" as const,
+      result,
+      remoteClaim,
+    };
+  }
+
+  const receiptId = stepExit.value;
+  const result: MultiCellStepResult = {
+    cellId: step.cellId,
+    executedAt: stepExecutedAt,
+    receiptId,
+    status: "COMMITTED",
+    stepId: step.stepId,
+  };
+
+  return {
+    _tag: "Success" as const,
+    step,
+    result,
+  };
+});
+
 export class FederationService {
   /**
    * Filters an entity's data according to a negotiated FederatedViewContract (OPR-FULL-044, FULL-ACC-044)
    * Any properties not explicitly in allowedProperties are omitted.
    * Access is denied if contract is revoked or expired.
    */
-  filterFederatedView(
-    contract: FederatedViewContract,
-    schemaType: string,
-    entityData: Record<string, unknown>,
-    currentTime: string = new Date().toISOString()
-  ): Effect.Effect<
-    FilteredFederatedView,
-    | FederationContractRevokedError
-    | FederationContractExpiredError
-    | UncontractedLinkTraversalError
-  > {
-    return Effect.gen(function* () {
+  filterFederatedView = Effect.fn("FederationService.filterFederatedView")(
+    function* (
+      this: FederationService,
+      contract: FederatedViewContract,
+      schemaType: string,
+      entityData: Record<string, unknown>,
+      currentTime?: string
+    ): Effect.fn.Return<
+      FilteredFederatedView,
+      | FederationContractRevokedError
+      | FederationContractExpiredError
+      | UncontractedLinkTraversalError
+    > {
+      const now = yield* Clock.currentTimeMillis;
+      const effectiveTime = currentTime ?? new Date(now).toISOString();
+
       if (contract.revoked) {
-        return yield* Effect.fail(
-          new FederationContractRevokedError({
-            contractId: contract.contractId,
-            message: `Federation contract "${contract.contractId}" is revoked`,
-            sourceCellId: contract.sourceCellId,
-            targetCellId: contract.targetCellId,
-          })
-        );
+        return yield* new FederationContractRevokedError({
+          contractId: contract.contractId,
+          message: `Federation contract "${contract.contractId}" is revoked`,
+          sourceCellId: contract.sourceCellId,
+          targetCellId: contract.targetCellId,
+        });
       }
 
       if (contract.validityWindow) {
-        const attempted = Date.parse(currentTime);
+        const attempted = Date.parse(effectiveTime);
         const until = Date.parse(contract.validityWindow.validUntil);
         const from = Date.parse(contract.validityWindow.validFrom);
         if (attempted < from || attempted > until) {
-          return yield* Effect.fail(
-            new FederationContractExpiredError({
-              attemptedAt: currentTime,
-              contractId: contract.contractId,
-              message: `Federation contract "${contract.contractId}" is outside validity window (${contract.validityWindow.validFrom} to ${contract.validityWindow.validUntil})`,
-              validUntil: contract.validityWindow.validUntil,
-            })
-          );
+          return yield* new FederationContractExpiredError({
+            attemptedAt: effectiveTime,
+            contractId: contract.contractId,
+            message: `Federation contract "${contract.contractId}" is outside validity window (${contract.validityWindow.validFrom} to ${contract.validityWindow.validUntil})`,
+            validUntil: contract.validityWindow.validUntil,
+          });
         }
       }
 
       if (!contract.allowedSchemaTypes.includes(schemaType)) {
-        return yield* Effect.fail(
-          new UncontractedLinkTraversalError({
-            contractId: contract.contractId,
-            linkRelation: schemaType,
-            message: `Schema type "${schemaType}" is not permitted under contract "${contract.contractId}"`,
-            requestedPath: `schemaType:${schemaType}`,
-            sourceCellId: contract.sourceCellId,
-            targetCellId: contract.targetCellId,
-          })
-        );
+        return yield* new UncontractedLinkTraversalError({
+          contractId: contract.contractId,
+          linkRelation: schemaType,
+          message: `Schema type "${schemaType}" is not permitted under contract "${contract.contractId}"`,
+          requestedPath: `schemaType:${schemaType}`,
+          sourceCellId: contract.sourceCellId,
+          targetCellId: contract.targetCellId,
+        });
       }
 
       const allowedProps = contract.allowedProperties[schemaType] ?? [];
@@ -129,66 +339,67 @@ export class FederationService {
         exportedData,
         schemaType,
       };
-    });
-  }
+    }
+  );
 
   /**
    * Validates whether navigation along a link relation between two cells is contracted (FULL-ACC-044)
    * Fails explicitly with UncontractedLinkTraversalError if the link is private/uncontracted.
    */
-  traverseFederatedLink(
-    contract: FederatedViewContract,
-    sourceEntityId: string,
-    linkRelation: string,
-    targetEntityId: string,
-    currentTime: string = new Date().toISOString()
-  ): Effect.Effect<
-    LinkTraversalResult,
-    | FederationContractRevokedError
-    | FederationContractExpiredError
-    | UncontractedLinkTraversalError
-  > {
-    return Effect.gen(function* () {
+  traverseFederatedLink = Effect.fn("FederationService.traverseFederatedLink")(
+    function* (
+      this: FederationService,
+      options: TraverseFederatedLinkOptions
+    ): Effect.fn.Return<
+      LinkTraversalResult,
+      | FederationContractRevokedError
+      | FederationContractExpiredError
+      | UncontractedLinkTraversalError
+    > {
+      const {
+        contract,
+        sourceEntityId,
+        linkRelation,
+        targetEntityId,
+        currentTime,
+      } = options;
+      const now = yield* Clock.currentTimeMillis;
+      const effectiveTime = currentTime ?? new Date(now).toISOString();
+
       if (contract.revoked) {
-        return yield* Effect.fail(
-          new FederationContractRevokedError({
-            contractId: contract.contractId,
-            message: `Federation contract "${contract.contractId}" is revoked`,
-            sourceCellId: contract.sourceCellId,
-            targetCellId: contract.targetCellId,
-          })
-        );
+        return yield* new FederationContractRevokedError({
+          contractId: contract.contractId,
+          message: `Federation contract "${contract.contractId}" is revoked`,
+          sourceCellId: contract.sourceCellId,
+          targetCellId: contract.targetCellId,
+        });
       }
 
       if (contract.validityWindow) {
-        const attempted = Date.parse(currentTime);
+        const attempted = Date.parse(effectiveTime);
         const until = Date.parse(contract.validityWindow.validUntil);
         const from = Date.parse(contract.validityWindow.validFrom);
         if (attempted < from || attempted > until) {
-          return yield* Effect.fail(
-            new FederationContractExpiredError({
-              attemptedAt: currentTime,
-              contractId: contract.contractId,
-              message: `Federation contract "${contract.contractId}" is outside validity window`,
-              validUntil: contract.validityWindow.validUntil,
-            })
-          );
+          return yield* new FederationContractExpiredError({
+            attemptedAt: effectiveTime,
+            contractId: contract.contractId,
+            message: `Federation contract "${contract.contractId}" is outside validity window`,
+            validUntil: contract.validityWindow.validUntil,
+          });
         }
       }
 
       const requestedPath = `${sourceEntityId} -> [${linkRelation}] -> ${targetEntityId}`;
 
       if (!contract.allowedLinkRelations.includes(linkRelation)) {
-        return yield* Effect.fail(
-          new UncontractedLinkTraversalError({
-            contractId: contract.contractId,
-            linkRelation,
-            message: `Link relation "${linkRelation}" is not contracted between cell "${contract.sourceCellId}" and cell "${contract.targetCellId}"`,
-            requestedPath,
-            sourceCellId: contract.sourceCellId,
-            targetCellId: contract.targetCellId,
-          })
-        );
+        return yield* new UncontractedLinkTraversalError({
+          contractId: contract.contractId,
+          linkRelation,
+          message: `Link relation "${linkRelation}" is not contracted between cell "${contract.sourceCellId}" and cell "${contract.targetCellId}"`,
+          requestedPath,
+          sourceCellId: contract.sourceCellId,
+          targetCellId: contract.targetCellId,
+        });
       }
 
       return {
@@ -198,32 +409,38 @@ export class FederationService {
         sourceEntityId,
         targetEntityId,
       };
-    });
-  }
+    }
+  );
 
   /**
    * Records a remote claim, ensuring source attribution and uncertainty are explicitly retained (S15, OPR-FULL-046)
    */
-  recordRemoteClaim(claim: {
-    readonly attribution: {
-      readonly assertedAt: string;
-      readonly sourceAuthority: string;
-      readonly sourceCellId: string;
-      readonly sourceSignature?: string;
-    };
-    readonly claimId?: string;
-    readonly claimType: string;
-    readonly payload: Record<string, unknown>;
-    readonly subjectEntityId: string;
-    readonly targetCellId: string;
-    readonly uncertainty: {
-      readonly freshnessDeadlineMs?: number;
-      readonly lastVerifiedAt?: string;
-      readonly reconciliationNotes?: string;
-      readonly status: "FRESH" | "STALE" | "UNREACHABLE" | "DISPUTED";
-    };
-  }): Effect.Effect<FederatedRemoteClaim, FederationAttributionMissingError> {
-    return Effect.gen(function* () {
+  recordRemoteClaim = Effect.fn("FederationService.recordRemoteClaim")(
+    function* (
+      this: FederationService,
+      claim: {
+        readonly attribution: {
+          readonly assertedAt: string;
+          readonly sourceAuthority: string;
+          readonly sourceCellId: string;
+          readonly sourceSignature?: string;
+        };
+        readonly claimId?: string;
+        readonly claimType: string;
+        readonly payload: Record<string, unknown>;
+        readonly subjectEntityId: string;
+        readonly targetCellId: string;
+        readonly uncertainty: {
+          readonly freshnessDeadlineMs?: number;
+          readonly lastVerifiedAt?: string;
+          readonly reconciliationNotes?: string;
+          readonly status: "FRESH" | "STALE" | "UNREACHABLE" | "DISPUTED";
+        };
+      }
+    ): Effect.fn.Return<
+      FederatedRemoteClaim,
+      FederationAttributionMissingError
+    > {
       const missingFields: string[] = [];
       if (!claim.attribution.sourceCellId) {
         missingFields.push("attribution.sourceCellId");
@@ -236,13 +453,11 @@ export class FederationService {
       }
 
       if (missingFields.length > 0) {
-        return yield* Effect.fail(
-          new FederationAttributionMissingError({
-            claimId: claim.claimId,
-            message: `Remote claim missing mandatory attribution: ${missingFields.join(", ")}`,
-            missingFields,
-          })
-        );
+        return yield* new FederationAttributionMissingError({
+          claimId: claim.claimId,
+          message: `Remote claim missing mandatory attribution: ${missingFields.join(", ")}`,
+          missingFields,
+        });
       }
 
       const fullClaim: FederatedRemoteClaim = {
@@ -256,122 +471,71 @@ export class FederationService {
       };
 
       return fullClaim;
-    });
-  }
+    }
+  );
 
   /**
    * Executes a multi-cell saga without promising or inventing a global commit (OPR-FULL-046, FULL-ACC-046)
    * If any step fails or becomes unreachable, previous committed steps are compensated.
    * Returns honest outcome algebra with explicit partial state and remote uncertainty.
    */
-  executeMultiCellSaga(
-    plan: MultiCellOperationPlan,
-    cellExecutors: Record<string, CellStepExecutor>
-  ): Effect.Effect<MultiCellSagaOutcome, never> {
-    return Effect.gen(function* () {
-      const stepResults: MultiCellStepResult[] = [];
-      const remotePendingClaims: FederatedRemoteClaim[] = [];
-      const committedSteps: MultiCellOperationStep[] = [];
-      let stepFailureOccurred = false;
-
-      for (const step of plan.steps) {
-        const executor = cellExecutors[step.cellId];
-        const stepExecutedAt = new Date().toISOString();
-
-        if (!executor) {
-          stepFailureOccurred = true;
-          const failureStatus = "UNREACHABLE";
-          stepResults.push({
-            cellId: step.cellId,
-            error: `No executor registered for cell "${step.cellId}"`,
-            executedAt: stepExecutedAt,
-            status: failureStatus,
-            stepId: step.stepId,
-          });
-
-          remotePendingClaims.push({
-            attribution: {
-              assertedAt: stepExecutedAt,
-              sourceAuthority: plan.coordinatorCellId,
-              sourceCellId: step.cellId,
-            },
-            claimId: `claim-${randomUUID()}`,
-            claimType: "CELL_UNREACHABLE_PENDING",
-            payload: {
-              actionName: step.actionName,
-              error: `No executor for cell ${step.cellId}`,
-              stepPayload: step.payload,
-            },
-            subjectEntityId: step.stepId,
-            targetCellId: plan.coordinatorCellId,
-            uncertainty: {
-              reconciliationNotes: `Remote cell ${step.cellId} unreachable during saga execution`,
-              status: "UNREACHABLE",
-            },
-          });
-          break;
-        }
-
-        const stepExit = yield* Effect.exit(executor.executeStep(step));
-        if (Exit.isFailure(stepExit)) {
-          stepFailureOccurred = true;
-          const failReason = stepExit.cause.reasons.find(Cause.isFailReason);
-          const failError = failReason?.error;
-          const errorMsg =
-            failError && typeof failError === "object" && "message" in failError
-              ? String((failError as { message: unknown }).message)
-              : String(failError ?? Cause.pretty(stepExit.cause));
-
-          const isUnreachable =
-            errorMsg.toLowerCase().includes("unreachable") ||
-            errorMsg.toLowerCase().includes("offline") ||
-            errorMsg.toLowerCase().includes("timeout");
-
-          const status = isUnreachable ? "UNREACHABLE" : "FAILED";
-
-          stepResults.push({
-            cellId: step.cellId,
-            error: errorMsg,
-            executedAt: stepExecutedAt,
-            status,
-            stepId: step.stepId,
-          });
-
-          if (isUnreachable) {
-            remotePendingClaims.push({
-              attribution: {
-                assertedAt: stepExecutedAt,
-                sourceAuthority: plan.coordinatorCellId,
-                sourceCellId: step.cellId,
-              },
-              claimId: `claim-${randomUUID()}`,
-              claimType: "REMOTE_STEP_UNREACHABLE_PENDING",
-              payload: {
-                actionName: step.actionName,
-                error: errorMsg,
-                stepPayload: step.payload,
-              },
-              subjectEntityId: step.stepId,
-              targetCellId: plan.coordinatorCellId,
-              uncertainty: {
-                reconciliationNotes: `Remote cell ${step.cellId} timed out or offline during step ${step.stepId}`,
-                status: "UNREACHABLE",
-              },
-            });
-          }
-          break;
-        }
-
-        const receiptId = stepExit.value;
-        stepResults.push({
-          cellId: step.cellId,
-          executedAt: stepExecutedAt,
-          receiptId,
-          status: "COMMITTED",
-          stepId: step.stepId,
-        });
-        committedSteps.push(step);
+  executeMultiCellSaga = Effect.fn("FederationService.executeMultiCellSaga")(
+    function* (
+      this: FederationService,
+      plan: MultiCellOperationPlan,
+      cellExecutors: Record<string, CellStepExecutor>
+    ): Effect.fn.Return<MultiCellSagaOutcome, never> {
+      interface SagaState {
+        readonly committedSteps: MultiCellOperationStep[];
+        readonly remotePendingClaims: FederatedRemoteClaim[];
+        readonly stepFailureOccurred: boolean;
+        readonly stepResults: MultiCellStepResult[];
       }
+
+      const finalState = yield* Effect.reduce(
+        plan.steps,
+        (): SagaState => ({
+          committedSteps: [],
+          remotePendingClaims: [],
+          stepFailureOccurred: false,
+          stepResults: [],
+        }),
+        (state, step) => {
+          if (state.stepFailureOccurred) {
+            return Effect.succeed(state);
+          }
+          return Effect.gen(function* () {
+            const outcome = yield* executeSingleCellStep(
+              step,
+              cellExecutors[step.cellId],
+              plan.coordinatorCellId
+            );
+            if (outcome._tag === "Failed") {
+              return {
+                committedSteps: state.committedSteps,
+                remotePendingClaims: outcome.remoteClaim
+                  ? [...state.remotePendingClaims, outcome.remoteClaim]
+                  : state.remotePendingClaims,
+                stepFailureOccurred: true,
+                stepResults: [...state.stepResults, outcome.result],
+              };
+            }
+            return {
+              committedSteps: [...state.committedSteps, outcome.step],
+              remotePendingClaims: state.remotePendingClaims,
+              stepFailureOccurred: false,
+              stepResults: [...state.stepResults, outcome.result],
+            };
+          });
+        }
+      );
+
+      const {
+        committedSteps,
+        remotePendingClaims,
+        stepFailureOccurred,
+        stepResults,
+      } = finalState;
 
       if (!stepFailureOccurred) {
         return {
@@ -383,60 +547,11 @@ export class FederationService {
         };
       }
 
-      // Rollback committed steps in reverse order using registered compensating actions
-      let anyCompensationFailed = false;
-      for (let i = committedSteps.length - 1; i >= 0; i--) {
-        const stepToCompensate = committedSteps[i];
-        if (!stepToCompensate) {
-          continue;
-        }
-
-        const executor = cellExecutors[stepToCompensate.cellId];
-        const compExecutedAt = new Date().toISOString();
-
-        if (
-          stepToCompensate.compensatingAction &&
-          executor?.executeCompensation
-        ) {
-          const compExit = yield* Effect.exit(
-            executor.executeCompensation(stepToCompensate)
-          );
-
-          const resultIndex = stepResults.findIndex(
-            (r) => r.stepId === stepToCompensate.stepId
-          );
-
-          if (Exit.isFailure(compExit)) {
-            anyCompensationFailed = true;
-            const failReason = compExit.cause.reasons.find(Cause.isFailReason);
-            const failError = failReason?.error;
-            const compError =
-              failError &&
-              typeof failError === "object" &&
-              "message" in failError
-                ? String((failError as { message: unknown }).message)
-                : String(failError ?? Cause.pretty(compExit.cause));
-
-            if (resultIndex !== -1) {
-              stepResults[resultIndex] = {
-                cellId: stepToCompensate.cellId,
-                error: `Compensation failed: ${compError}`,
-                executedAt: compExecutedAt,
-                status: "COMPENSATION_FAILED",
-                stepId: stepToCompensate.stepId,
-              };
-            }
-          } else if (resultIndex !== -1) {
-            stepResults[resultIndex] = {
-              cellId: stepToCompensate.cellId,
-              executedAt: compExecutedAt,
-              receiptId: compExit.value,
-              status: "COMPENSATED",
-              stepId: stepToCompensate.stepId,
-            };
-          }
-        }
-      }
+      const anyCompensationFailed = yield* compensateCommittedSteps(
+        committedSteps,
+        cellExecutors,
+        stepResults
+      );
 
       return {
         globalCommitPromised: false,
@@ -447,6 +562,6 @@ export class FederationService {
           : "PARTIALLY_FAILED_COMPENSATED",
         stepResults,
       };
-    });
-  }
+    }
+  );
 }

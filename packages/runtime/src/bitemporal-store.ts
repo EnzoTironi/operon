@@ -32,7 +32,7 @@ export class BitemporalObjectStore implements ObjectStore {
     const key = BitemporalObjectStore.toKey(typeId, id);
     const versions = this.timeline.get(key);
     if (!versions || versions.length === 0) {
-      return Effect.succeed(undefined);
+      return Effect.void as Effect.Effect<undefined>;
     }
     const latest = versions.at(-1);
     return Effect.succeed(latest);
@@ -46,17 +46,15 @@ export class BitemporalObjectStore implements ObjectStore {
     const key = BitemporalObjectStore.toKey(typeId, id);
     const versions = this.timeline.get(key);
     if (!versions) {
-      return Effect.succeed(undefined);
+      return Effect.void as Effect.Effect<undefined>;
     }
-    const matched = versions
-      .filter((v) => {
-        const from = v.bitemporal.validTime.validFrom;
-        const to = v.bitemporal.validTime.validTo;
-        return (
-          from <= validTimestamp && (to === undefined || to > validTimestamp)
-        );
-      })
-      .at(-1);
+    const matched = versions.findLast((v) => {
+      const from = v.bitemporal.validTime.validFrom;
+      const to = v.bitemporal.validTime.validTo;
+      return (
+        from <= validTimestamp && (to === undefined || to > validTimestamp)
+      );
+    });
 
     return Effect.succeed(matched);
   }
@@ -69,18 +67,16 @@ export class BitemporalObjectStore implements ObjectStore {
     const key = BitemporalObjectStore.toKey(typeId, id);
     const versions = this.timeline.get(key);
     if (!versions) {
-      return Effect.succeed(undefined);
+      return Effect.void as Effect.Effect<undefined>;
     }
-    const matched = versions
-      .filter((v) => {
-        const recorded = v.bitemporal.transactionTime.recordedAt;
-        const superseded = v.bitemporal.transactionTime.supersededAt;
-        return (
-          recorded <= transactionTimestamp &&
-          (superseded === undefined || superseded > transactionTimestamp)
-        );
-      })
-      .at(-1);
+    const matched = versions.findLast((v) => {
+      const recorded = v.bitemporal.transactionTime.recordedAt;
+      const superseded = v.bitemporal.transactionTime.supersededAt;
+      return (
+        recorded <= transactionTimestamp &&
+        (superseded === undefined || superseded > transactionTimestamp)
+      );
+    });
 
     return Effect.succeed(matched);
   }
@@ -159,9 +155,9 @@ export class BitemporalObjectStore implements ObjectStore {
   ): Effect.Effect<readonly ObjectInstance[]> {
     const results: ObjectInstance[] = [];
     for (const [key, versions] of this.timeline.entries()) {
-      if (key.startsWith(`${typeId}:`) && versions.length > 0) {
-        const latest = versions.at(-1)!;
-        if (!predicate || predicate(latest)) {
+      if (key.startsWith(`${typeId}:`)) {
+        const latest = versions.at(-1);
+        if (latest && (!predicate || predicate(latest))) {
           results.push(latest);
         }
       }

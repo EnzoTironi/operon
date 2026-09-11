@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 
+import { serializeJson } from "@operon/schema";
 import type {
   CalibrationMetricRecord,
   ModelDefinitionRecord,
@@ -7,7 +8,7 @@ import type {
   ObjectType,
   SixPartPrediction,
 } from "@operon/schema";
-import { Context, Effect, Layer } from "effect";
+import { Clock, Context, Effect, Layer } from "effect";
 
 import {
   ModelOutOfScopeError,
@@ -38,7 +39,7 @@ export class PredictionService extends Context.Service<
       readonly hardRules?: readonly HardDeterministicRule[];
       readonly input: Record<string, unknown>;
       readonly modelId: string;
-      readonly objectType?: ObjectType<any>;
+      readonly objectType?: ObjectType;
       readonly promptReleaseId?: string;
       readonly runner: (input: Record<string, unknown>) => Effect.Effect<
         {
@@ -78,6 +79,87 @@ export class PredictionService extends Context.Service<
   }
 >()("operon/runtime/PredictionService") {}
 
+function validateApplicabilityEnvelope(
+  model: ModelDefinitionRecord,
+  input: Record<string, unknown>
+): Effect.Effect<void, ModelOutOfScopeError> {
+  const envelope = model.applicabilityEnvelope;
+  if (!envelope.featureRanges) {
+    return Effect.void;
+  }
+
+  for (const [feature, range] of Object.entries(envelope.featureRanges)) {
+    const val = input[feature];
+    if (typeof val === "number") {
+      if (range.min !== undefined && val < range.min) {
+        return new ModelOutOfScopeError({
+          details: `Feature '${feature}' value ${val} is below envelope minimum ${range.min}`,
+          feature,
+          message: `Input outside applicability envelope for model '${model.modelId}'`,
+          modelId: model.modelId,
+        });
+      }
+      if (range.max !== undefined && val > range.max) {
+        return new ModelOutOfScopeError({
+          details: `Feature '${feature}' value ${val} is above envelope maximum ${range.max}`,
+          feature,
+          message: `Input outside applicability envelope for model '${model.modelId}'`,
+          modelId: model.modelId,
+        });
+      }
+    }
+  }
+
+  return Effect.void;
+}
+
+function validateHardRules(
+  hardRules: readonly HardDeterministicRule[],
+  input: Record<string, unknown>
+): Effect.Effect<void, RulePrecedenceViolationError> {
+  for (const rule of hardRules) {
+    const ruleRes = rule.check(input);
+    if (ruleRes.violated) {
+      return new RulePrecedenceViolationError({
+        attemptedAction: String(input.action ?? "INFERENCE"),
+        explanation: ruleRes.reason,
+        message: `Deterministic hard rule '${rule.ruleId}' denied action regardless of model confidence`,
+        modelConfidence: 1,
+        ruleId: rule.ruleId,
+      });
+    }
+  }
+  return Effect.void;
+}
+
+function evaluateReadinessResult(
+  contextInstance?: ObjectInstance,
+  objectType?: ObjectType
+) {
+  if (!contextInstance || !objectType) {
+    return {
+      complete: true,
+      consistent: true,
+      correct: true,
+      current: true,
+      isReady: true,
+      missingProperties: [] as string[],
+      staleProperties: [] as string[],
+    };
+  }
+
+  const readiness4C = evaluateDecisionReadiness(contextInstance, objectType);
+  return {
+    complete: readiness4C.complete.passed,
+    consistent: readiness4C.consistent.passed,
+    correct: readiness4C.correct.passed,
+    current: readiness4C.current.passed,
+    isReady: readiness4C.isReady,
+    missingProperties: [...readiness4C.complete.missingProperties],
+    staleProperties: readiness4C.current.staleProperties.map((s) => s.property),
+  };
+}
+
 /**
  * Live layer for PredictionService
  */
@@ -101,97 +183,32 @@ export const PredictionServiceLive = Layer.sync(PredictionService, () => {
 
       const model = modelRegistry.get(modelId);
       if (!model) {
-        return yield* Effect.fail(
-          new ModelOutOfScopeError({
-            details: "Model not registered",
-            feature: "modelId",
-            message: `Model '${modelId}' is not registered in prediction service`,
-            modelId,
-          })
-        );
+        return yield* new ModelOutOfScopeError({
+          details: "Model not registered",
+          feature: "modelId",
+          message: `Model '${modelId}' is not registered in prediction service`,
+          modelId,
+        });
       }
 
       // 1. Check Applicability Envelope (OPR-FUN-004)
-      const envelope = model.applicabilityEnvelope;
-      if (envelope.featureRanges) {
-        for (const [feature, range] of Object.entries(envelope.featureRanges)) {
-          const val = input[feature];
-          if (typeof val === "number") {
-            if (range.min !== undefined && val < range.min) {
-              return yield* Effect.fail(
-                new ModelOutOfScopeError({
-                  details: `Feature '${feature}' value ${val} is below envelope minimum ${range.min}`,
-                  feature,
-                  message: `Input outside applicability envelope for model '${modelId}'`,
-                  modelId,
-                })
-              );
-            }
-            if (range.max !== undefined && val > range.max) {
-              return yield* Effect.fail(
-                new ModelOutOfScopeError({
-                  details: `Feature '${feature}' value ${val} is above envelope maximum ${range.max}`,
-                  feature,
-                  message: `Input outside applicability envelope for model '${modelId}'`,
-                  modelId,
-                })
-              );
-            }
-          }
-        }
-      }
+      yield* validateApplicabilityEnvelope(model, input);
 
       // 2. Deterministic Hard Rules Retain Final Authority (OPR-FUN-006)
-      for (const rule of hardRules) {
-        const ruleRes = rule.check(input);
-        if (ruleRes.violated) {
-          return yield* Effect.fail(
-            new RulePrecedenceViolationError({
-              attemptedAction: String(input.action ?? "INFERENCE"),
-              explanation: ruleRes.reason,
-              message: `Deterministic hard rule '${rule.ruleId}' denied action regardless of model confidence`,
-              modelConfidence: 1,
-              ruleId: rule.ruleId,
-            })
-          );
-        }
-      }
+      yield* validateHardRules(hardRules, input);
 
       // 3. Evaluate 4C Decision Readiness (OPR-FUN-005)
-      let readinessResult = {
-        complete: true,
-        consistent: true,
-        correct: true,
-        current: true,
-        isReady: true,
-        missingProperties: [] as string[],
-        staleProperties: [] as string[],
-      };
-
-      if (contextInstance && objectType) {
-        const readiness4C = evaluateDecisionReadiness(
-          contextInstance,
-          objectType
-        );
-        readinessResult = {
-          complete: readiness4C.complete.passed,
-          consistent: readiness4C.consistent.passed,
-          correct: readiness4C.correct.passed,
-          current: readiness4C.current.passed,
-          isReady: readiness4C.isReady,
-          missingProperties: [...readiness4C.complete.missingProperties],
-          staleProperties: readiness4C.current.staleProperties.map(
-            (s) => s.property
-          ),
-        };
-      }
+      const readinessResult = evaluateReadinessResult(
+        contextInstance,
+        objectType
+      );
 
       // 4. Execute model runner
       const runResult = yield* runner(input);
 
       // Compute logic hash
       const logicHash = createHash("sha256")
-        .update(model.modelId + model.version + JSON.stringify(input))
+        .update(model.modelId + model.version + serializeJson(input))
         .digest("hex");
 
       // 5. Construct Six-Part Prediction (OPR-FUN-005)
@@ -224,42 +241,42 @@ export const PredictionServiceLive = Layer.sync(PredictionService, () => {
     ),
 
     recordObservation: Effect.fn("PredictionService.recordObservation")(
-      (params) =>
-        Effect.sync(() => {
-          const { agreed, modelId, ruleOverridden } = params;
-          const current = calibrationMap.get(modelId) ?? {
-            calculatedAt: Date.now(),
-            calibrationScore: 1,
-            deterministicOverrides: 0,
-            metricId: `cal-${modelId}`,
-            modelId,
-            modelVersion: "1.0.0",
-            observedAgreements: 0,
-            totalPredictions: 0,
-          };
+      function* (params) {
+        const { agreed, modelId, ruleOverridden } = params;
+        const now = yield* Clock.currentTimeMillis;
+        const current = calibrationMap.get(modelId) ?? {
+          calculatedAt: now,
+          calibrationScore: 1,
+          deterministicOverrides: 0,
+          metricId: `cal-${modelId}`,
+          modelId,
+          modelVersion: "1.0.0",
+          observedAgreements: 0,
+          totalPredictions: 0,
+        };
 
-          const totalPredictions = current.totalPredictions + 1;
-          const observedAgreements =
-            current.observedAgreements + (agreed ? 1 : 0);
-          const deterministicOverrides =
-            current.deterministicOverrides + (ruleOverridden ? 1 : 0);
-          const calibrationScore =
-            totalPredictions > 0 ? observedAgreements / totalPredictions : 0;
+        const totalPredictions = current.totalPredictions + 1;
+        const observedAgreements =
+          current.observedAgreements + (agreed ? 1 : 0);
+        const deterministicOverrides =
+          current.deterministicOverrides + (ruleOverridden ? 1 : 0);
+        const calibrationScore =
+          totalPredictions > 0 ? observedAgreements / totalPredictions : 0;
 
-          const updated: CalibrationMetricRecord = {
-            calculatedAt: Date.now(),
-            calibrationScore,
-            deterministicOverrides,
-            metricId: current.metricId,
-            modelId,
-            modelVersion: current.modelVersion,
-            observedAgreements,
-            totalPredictions,
-          };
+        const updated: CalibrationMetricRecord = {
+          calculatedAt: now,
+          calibrationScore,
+          deterministicOverrides,
+          metricId: current.metricId,
+          modelId,
+          modelVersion: current.modelVersion,
+          observedAgreements,
+          totalPredictions,
+        };
 
-          calibrationMap.set(modelId, updated);
-          return updated;
-        })
+        calibrationMap.set(modelId, updated);
+        return updated;
+      }
     ),
 
     registerModel: Effect.fn("PredictionService.registerModel")(

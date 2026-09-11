@@ -30,7 +30,7 @@ export const Claim = Schema.Struct({
   effectiveTime: Schema.Number, // Valid time (T_v)
   evidenceDigest: Schema.String,
   propertyName: Schema.String,
-  propertyValue: Schema.Unknown,
+  propertyValue: Schema.Json,
   recordedAt: Schema.Number, // Transaction time (T_t)
   sourceSystem: Schema.String,
   state: ClaimState,
@@ -61,7 +61,7 @@ export const CanonicalEvidenceEnvelope = Schema.Struct({
   envelopeId: Schema.String,
   evidenceClosure: Schema.optional(EvidenceClosure),
   externalId: Schema.String,
-  rawPayload: Schema.Unknown,
+  rawPayload: Schema.Json,
   receivedAt: Schema.Number,
   sourceSystem: Schema.String,
   targetTypeId: ObjectTypeId,

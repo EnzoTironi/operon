@@ -7,7 +7,7 @@ export interface ValueType<T> {
   readonly id: string;
   readonly unit?: string;
   readonly description: string;
-  readonly schema: Schema.Schema<T>;
+  readonly schema: Schema.Codec<T, unknown, never>;
 }
 
 /**
@@ -15,7 +15,7 @@ export interface ValueType<T> {
  */
 export function defineValueType<T>(config: {
   readonly id: string;
-  readonly schema: Schema.Schema<T>;
+  readonly schema: Schema.Codec<T, unknown, never>;
   readonly unit?: string;
   readonly description: string;
 }): ValueType<T> {

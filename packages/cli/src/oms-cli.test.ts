@@ -1,27 +1,25 @@
-import * as fs from "node:fs";
-import path from "node:path";
-
-import { computeCanonicalDigest } from "@operon/schema";
-import { Effect } from "effect";
+import { computeCanonicalDigest, serializeJson } from "@operon/schema";
+import { Clock, Effect, Random } from "effect";
 import { describe, expect, it } from "vitest";
 
+import { resolvePath, unlinkFileSync, writeTextFileSync } from "./fs-io.js";
 import { runCli } from "./index.js";
 
 const makeScopedTempFile = (prefix: string, content: string) =>
   Effect.acquireRelease(
-    Effect.sync(() => {
-      const filePath = path.resolve(
+    Effect.gen(function* () {
+      const now = yield* Clock.currentTimeMillis;
+      const rand = yield* Random.nextInt;
+      const filePath = resolvePath(
         process.cwd(),
-        `.${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}.json`
+        `.${prefix}-${now}-${Math.abs(rand).toString(36).slice(0, 4)}.json`
       );
-      fs.writeFileSync(filePath, content, "utf-8");
+      writeTextFileSync(filePath, content);
       return filePath;
     }),
     (filePath) =>
       Effect.sync(() => {
-        if (fs.existsSync(filePath)) {
-          fs.unlinkSync(filePath);
-        }
+        unlinkFileSync(filePath);
       })
   );
 
@@ -62,7 +60,7 @@ describe("V0-CH-02 & V0-CH-03: CLI OMS authoring and publication lifecycle", () 
       const candidateDigest = computeCanonicalDigest(sampleArtifact);
       const artifactFile = yield* makeScopedTempFile(
         "cli-artifact-v0b",
-        JSON.stringify(sampleArtifact, null, 2)
+        serializeJson(sampleArtifact)
       );
       const stateFile = yield* makeScopedTempFile("cli-state-oms", "{}");
       const prevEnvState = process.env.OPERON_STATE_PATH;

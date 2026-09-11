@@ -94,15 +94,12 @@ export class ModelBoundaryService extends Context.Service<
   }
 >()("operon/runtime/ModelBoundaryService") {}
 
-function evaluateCandidate(
+function checkRegistry(
   input: ModelCandidateInput,
   registry: RegistryContext
-): ModelCandidateEvaluation {
+): { violations: string[]; isRejected: boolean } {
   const violations: string[] = [];
-  let isQuarantined = false;
   let isRejected = false;
-
-  // 1. Validate declared action ID against known action catalog
   if (
     input.declaredActionId !== undefined &&
     !registry.knownActionIds.includes(input.declaredActionId)
@@ -112,8 +109,6 @@ function evaluateCandidate(
     );
     isRejected = true;
   }
-
-  // 2. Validate declared object type against known ontology
   if (
     input.targetObjectType !== undefined &&
     !registry.knownObjectTypes.includes(input.targetObjectType)
@@ -123,25 +118,33 @@ function evaluateCandidate(
     );
     isRejected = true;
   }
+  return { isRejected, violations };
+}
 
-  // 3. Prompt injection and forged authority checks in string fields
-  const stringValues: string[] = [];
-  const extractStrings = (obj: unknown): void => {
-    if (typeof obj === "string") {
-      stringValues.push(obj);
-    } else if (Array.isArray(obj)) {
-      for (const item of obj) {
-        extractStrings(item);
-      }
-    } else if (obj !== null && typeof obj === "object") {
-      for (const val of Object.values(obj as Record<string, unknown>)) {
-        extractStrings(val);
-      }
+function extractStrings(obj: unknown, acc: string[]): void {
+  if (typeof obj === "string") {
+    acc.push(obj);
+  } else if (Array.isArray(obj)) {
+    for (const item of obj) {
+      extractStrings(item, acc);
     }
-  };
-  extractStrings(input.payload);
+  } else if (obj !== null && typeof obj === "object") {
+    for (const val of Object.values(obj as Record<string, unknown>)) {
+      extractStrings(val, acc);
+    }
+  }
+}
 
-  for (const str of stringValues) {
+function checkInjections(payload: Record<string, unknown>): {
+  violations: string[];
+  isQuarantined: boolean;
+} {
+  const violations: string[] = [];
+  let isQuarantined = false;
+  const strings: string[] = [];
+  extractStrings(payload, strings);
+
+  for (const str of strings) {
     for (const pattern of INJECTION_PATTERNS) {
       if (pattern.test(str)) {
         violations.push(
@@ -152,9 +155,17 @@ function evaluateCandidate(
       }
     }
   }
+  return { isQuarantined, violations };
+}
 
-  // 4. Forged authority keys check (model trying to inject approval or bypass)
-  for (const key of Object.keys(input.payload)) {
+function checkAuthorityAndRestricted(
+  payload: Record<string, unknown>,
+  registry: RegistryContext
+): { violations: string[]; isQuarantined: boolean } {
+  const violations: string[] = [];
+  let isQuarantined = false;
+
+  for (const key of Object.keys(payload)) {
     if (FORBIDDEN_AUTHORITY_KEYS.has(key)) {
       violations.push(
         `Model candidate attempted to self-certify authority using reserved field '${key}'`
@@ -163,12 +174,11 @@ function evaluateCandidate(
     }
   }
 
-  // 5. Hidden / restricted fields check
   const restricted = new Set([
     ...DEFAULT_RESTRICTED_FIELDS,
     ...(registry.restrictedFields ?? []),
   ]);
-  for (const key of Object.keys(input.payload)) {
+  for (const key of Object.keys(payload)) {
     if (restricted.has(key)) {
       violations.push(
         `Model candidate contains restricted or hidden field '${key}'`
@@ -176,6 +186,21 @@ function evaluateCandidate(
       isQuarantined = true;
     }
   }
+
+  return { isQuarantined, violations };
+}
+
+function evaluateCandidate(
+  input: ModelCandidateInput,
+  registry: RegistryContext
+): ModelCandidateEvaluation {
+  const reg = checkRegistry(input, registry);
+  const inj = checkInjections(input.payload);
+  const auth = checkAuthorityAndRestricted(input.payload, registry);
+
+  const violations = [...reg.violations, ...inj.violations, ...auth.violations];
+  const isRejected = reg.isRejected;
+  const isQuarantined = inj.isQuarantined || auth.isQuarantined;
 
   const evaluatedAt = Date.now();
 
@@ -226,7 +251,7 @@ export const ModelBoundaryServiceLive = Layer.succeed(
       switch (key.scope) {
         case "CONSUMER": {
           if (check.operation === "definition_change") {
-            return yield* Effect.fail(
+            return yield* 
               new KeyScopeViolationError({
                 attemptedAction: check.operation,
                 keyId: key.keyId,
@@ -234,10 +259,10 @@ export const ModelBoundaryServiceLive = Layer.succeed(
                 message: `Consumer key '${key.keyId}' cannot change governing definitions or guard policies (targetDomain: definition)`,
                 targetDomain: "definition",
               })
-            );
+            ;
           }
           if (check.operation === "self_approval") {
-            return yield* Effect.fail(
+            return yield* 
               new KeyScopeViolationError({
                 attemptedAction: check.operation,
                 keyId: key.keyId,
@@ -245,7 +270,7 @@ export const ModelBoundaryServiceLive = Layer.succeed(
                 message: `Consumer key '${key.keyId}' cannot approve proposals directly without independent review (targetDomain: self_approval)`,
                 targetDomain: "self_approval",
               })
-            );
+            ;
           }
           break;
         }
@@ -254,7 +279,7 @@ export const ModelBoundaryServiceLive = Layer.succeed(
             check.operation === "production_read" ||
             check.operation === "production_write"
           ) {
-            return yield* Effect.fail(
+            return yield* 
               new KeyScopeViolationError({
                 attemptedAction: check.operation,
                 keyId: key.keyId,
@@ -262,10 +287,10 @@ export const ModelBoundaryServiceLive = Layer.succeed(
                 message: `Builder key '${key.keyId}' cannot directly access production business data (targetDomain: production_data); use isolated sandbox resources`,
                 targetDomain: "production_data",
               })
-            );
+            ;
           }
           if (check.operation === "self_approval") {
-            return yield* Effect.fail(
+            return yield* 
               new KeyScopeViolationError({
                 attemptedAction: check.operation,
                 keyId: key.keyId,
@@ -273,7 +298,7 @@ export const ModelBoundaryServiceLive = Layer.succeed(
                 message: `Builder key '${key.keyId}' cannot self-approve or merge its own proposal into production (targetDomain: self_approval)`,
                 targetDomain: "self_approval",
               })
-            );
+            ;
           }
           break;
         }
@@ -296,7 +321,7 @@ export const ModelBoundaryServiceLive = Layer.succeed(
       const evalResult = evaluateCandidate(input, registry);
 
       if (evalResult.verdict !== "ADMITTED" || !evalResult.sanitizedPayload) {
-        return yield* Effect.fail(
+        return yield* 
           new UntrustedCandidateQuarantinedError({
             candidateId: input.candidateId,
             message: `Model candidate '${input.candidateId}' was not admitted: ${evalResult.quarantineReason ?? "Validation failed"}`,
@@ -304,7 +329,7 @@ export const ModelBoundaryServiceLive = Layer.succeed(
             reason: evalResult.quarantineReason ?? "validation_failed",
             violations: evalResult.violations,
           })
-        );
+        ;
       }
 
       return evalResult.sanitizedPayload;

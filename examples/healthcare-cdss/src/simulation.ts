@@ -1,3 +1,4 @@
+import type { ActionExecutionResult, ActionSubmission } from "@operon/runtime";
 import {
   ActionInbox,
   evaluateDecisionReadiness,
@@ -5,6 +6,7 @@ import {
   InMemoryAuditStore,
   InMemoryObjectStore,
 } from "@operon/runtime";
+import type { ActionParameters } from "@operon/schema";
 import { Effect } from "effect";
 
 import {
@@ -12,6 +14,94 @@ import {
   MealObservationType,
   PatientType,
 } from "./ontology.js";
+
+async function simulateUngroundedAttempt<Params extends ActionParameters>(
+  agentSubmission: ActionSubmission<Params>,
+  objectStore: InMemoryObjectStore,
+  auditStore: InMemoryAuditStore
+): Promise<void> {
+  const intercepted = await Effect.runPromise(
+    executeWritePipeline(agentSubmission, objectStore, auditStore).pipe(
+      Effect.as(null),
+      Effect.catchTag("SubmissionCriteriaFailedError", (err) =>
+        Effect.succeed(err)
+      )
+    )
+  );
+
+  if (intercepted) {
+    console.log("   --> [INTERCEPTED BY OPERON GUARD]:", intercepted.reason);
+    console.log(
+      "   --> Operational Ontology stopped ungrounded decision BEFORE trust collapse!"
+    );
+  }
+}
+
+async function checkPatientReadiness(
+  objectStore: InMemoryObjectStore,
+  now: number
+): Promise<void> {
+  const patientObj = await Effect.runPromise(
+    objectStore.getObject(PatientType.id, "P101")
+  );
+  if (patientObj) {
+    const readiness = evaluateDecisionReadiness(patientObj, PatientType, now);
+    console.log(
+      "   --> Patient 4C Decision Readiness:",
+      readiness.isReady ? "READY" : "NOT READY"
+    );
+  }
+}
+
+async function simulatePhysicianReview<Params extends ActionParameters>(
+  secondSubmissionResult: ActionExecutionResult,
+  inbox: ActionInbox,
+  agentSubmission: ActionSubmission<Params>
+): Promise<void> {
+  if (secondSubmissionResult.status !== "proposed") {
+    return;
+  }
+
+  console.log(
+    "   --> Proposal routed to Human Action Inbox (Proposal ID:",
+    secondSubmissionResult.proposalId,
+    ")"
+  );
+  console.log(
+    "   --> Guard Reason:",
+    secondSubmissionResult.decisionRecord.reason
+  );
+
+  const item = inbox.addProposal(
+    agentSubmission,
+    secondSubmissionResult.decisionRecord
+  );
+
+  console.log(
+    "\n5. Attending Physician (Dr. Li) reviews proposal in Action Inbox..."
+  );
+  console.log("   --> AI Proposed: 12U");
+  console.log("   --> Attending Physician sets: 10U (VETO / OVERRIDE)");
+
+  const override = await Effect.runPromise(
+    inbox.rejectProposal(
+      item.id,
+      {
+        id: "physician-dr-li",
+        name: "Dr. Li (Attending Physician)",
+        roles: ["attending_endocrinologist"],
+        type: "user",
+      },
+      "clinical_discretion",
+      "Reduced intake (50%) combined with impaired renal clearance (eGFR 52) warrants 10U dose to prevent nocturnal hypoglycemia"
+    )
+  );
+
+  console.log("   --> [OVERRIDE RECORD CREATED]:");
+  console.log("       Category:", override.reasonCategory);
+  console.log("       Reason:", override.structuredReason);
+  console.log("       Physician:", override.humanSubject.name);
+}
 
 export async function runClinicalSimulation() {
   const objectStore = new InMemoryObjectStore();
@@ -69,21 +159,7 @@ export async function runClinicalSimulation() {
     },
   };
 
-  const interceptedResult = await Effect.runPromise(
-    executeWritePipeline(agentSubmission, objectStore, auditStore).pipe(
-      Effect.result
-    )
-  );
-
-  if (interceptedResult._tag === "Failure") {
-    console.log(
-      "   --> [INTERCEPTED BY OPERON GUARD]:",
-      (interceptedResult.failure as any).reason
-    );
-    console.log(
-      "   --> Operational Ontology stopped ungrounded decision BEFORE trust collapse!"
-    );
-  }
+  await simulateUngroundedAttempt(agentSubmission, objectStore, auditStore);
 
   // Step 3: Event Path - Nurse records handover note as structured MealObservation
   console.log(
@@ -110,16 +186,7 @@ export async function runClinicalSimulation() {
   );
 
   // Check 4C Decision Readiness
-  const patientObj = await Effect.runPromise(
-    objectStore.getObject(PatientType.id, "P101")
-  );
-  if (patientObj) {
-    const readiness = evaluateDecisionReadiness(patientObj, PatientType, now);
-    console.log(
-      "   --> Patient 4C Decision Readiness:",
-      readiness.isReady ? "READY" : "NOT READY"
-    );
-  }
+  await checkPatientReadiness(objectStore, now);
 
   // Step 4: AI Model Re-evaluates with Complete State
   console.log(
@@ -130,48 +197,7 @@ export async function runClinicalSimulation() {
   );
 
   console.log("   --> Pipeline Status:", secondSubmissionResult.status);
-  if (secondSubmissionResult.status === "proposed") {
-    console.log(
-      "   --> Proposal routed to Human Action Inbox (Proposal ID:",
-      secondSubmissionResult.proposalId,
-      ")"
-    );
-    console.log(
-      "   --> Guard Reason:",
-      secondSubmissionResult.decisionRecord.reason
-    );
-
-    const item = inbox.addProposal(
-      agentSubmission,
-      secondSubmissionResult.decisionRecord
-    );
-
-    // Step 5: Attending Physician Reviews in Action Inbox and Exercises Veto
-    console.log(
-      "\n5. Attending Physician (Dr. Li) reviews proposal in Action Inbox..."
-    );
-    console.log("   --> AI Proposed: 12U");
-    console.log("   --> Attending Physician sets: 10U (VETO / OVERRIDE)");
-
-    const override = await Effect.runPromise(
-      inbox.rejectProposal(
-        item.id,
-        {
-          id: "physician-dr-li",
-          name: "Dr. Li (Attending Physician)",
-          roles: ["attending_endocrinologist"],
-          type: "user",
-        },
-        "clinical_discretion",
-        "Reduced intake (50%) combined with impaired renal clearance (eGFR 52) warrants 10U dose to prevent nocturnal hypoglycemia"
-      )
-    );
-
-    console.log("   --> [OVERRIDE RECORD CREATED]:");
-    console.log("       Category:", override.reasonCategory);
-    console.log("       Reason:", override.structuredReason);
-    console.log("       Physician:", override.humanSubject.name);
-  }
+  await simulatePhysicianReview(secondSubmissionResult, inbox, agentSubmission);
 
   // Step 6: Verify Immutable Audit Dossier
   const auditLogs = await Effect.runPromise(auditStore.listDecisions());

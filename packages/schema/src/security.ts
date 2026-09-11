@@ -15,6 +15,7 @@ export const Subject = Schema.Struct({
   name: Schema.String,
   roles: Schema.Array(Schema.String),
   agentTier: Schema.optionalKey(AgentAuthorizationTier),
+  tenantId: Schema.optionalKey(Schema.String),
   metadata: Schema.optionalKey(Schema.Record(Schema.String, Schema.Unknown)),
 });
 export type Subject = typeof Subject.Type;

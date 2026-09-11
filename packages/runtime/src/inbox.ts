@@ -1,9 +1,14 @@
 import { createHash } from "node:crypto";
 
-import type { ActionType, Subject } from "@operon/schema";
-import { computeEffectDigest } from "@operon/schema";
+import type {
+  ActionParameters,
+  ActionType,
+  SecurityContext,
+  Subject,
+} from "@operon/schema";
+import { computeEffectDigest, generatePrefixedId } from "@operon/schema";
 import { OperonTelemetryService } from "@operon/telemetry";
-import { Effect } from "effect";
+import { Clock, Effect } from "effect";
 
 import type {
   AuditStore,
@@ -19,7 +24,10 @@ import {
 } from "./errors.js";
 import type { StorageError } from "./errors.js";
 import type { ObjectStore } from "./object-store.js";
-import type { ActionSubmission } from "./write-pipeline.js";
+import type {
+  ActionExecutionResult,
+  ActionSubmission,
+} from "./write-pipeline.js";
 import { executeWritePipeline } from "./write-pipeline.js";
 
 export type ProposalStatusKind =
@@ -56,7 +64,9 @@ export type ProposalStatus =
       readonly claimedAt?: undefined;
     };
 
-export type ActionProposalItem<Params = unknown> = {
+export type ActionProposalItem<
+  Params extends ActionParameters = ActionParameters,
+> = {
   readonly id: string;
   readonly decisionRecord: DecisionRecord;
   readonly submission: ActionSubmission<Params>;
@@ -70,6 +80,10 @@ export type ActionProposalItem<Params = unknown> = {
   readonly effectDigest: string;
   readonly proposalDigest: string;
 } & ProposalStatus;
+
+export function isActionProposalItem(item: object): item is ActionProposalItem {
+  return "id" in item && "submission" in item && "status" in item;
+}
 
 export interface ApprovalReceipt {
   readonly id: string;
@@ -88,7 +102,7 @@ export interface ApprovalReceipt {
   readonly receiptHash: string;
 }
 
-export interface PrepareProposalIntent<Params = unknown> {
+export interface PrepareProposalIntent<Params = ActionParameters> {
   readonly actionType: ActionType<Params>;
   readonly parameters: Params;
   readonly proposer: Subject;
@@ -114,14 +128,112 @@ export interface InboxFilterOptions {
 }
 
 export interface ActionInboxSnapshot {
-  readonly proposals: readonly ActionProposalItem<unknown>[];
+  readonly proposals: readonly ActionProposalItem[];
   readonly receipts: readonly ApprovalReceipt[];
+}
+
+export interface SerializedProposal {
+  readonly actionTypeId: string;
+  readonly claimedAt?: number;
+  readonly claimedBy?: string;
+  readonly createdAt: number;
+  readonly decisionRecord: DecisionRecord;
+  readonly evidenceHash: string;
+  readonly expiresAt: number;
+  readonly id: string;
+  readonly proposerId: string;
+  readonly rawParameters: ActionParameters;
+  readonly security: SecurityContext;
+  readonly status: ProposalStatusKind;
+}
+
+function resolveProposalStatus(p: SerializedProposal): ProposalStatus {
+  if (p.status === "claimed" && p.claimedBy && p.claimedAt !== undefined) {
+    return {
+      claimedAt: p.claimedAt,
+      claimedBy: p.claimedBy,
+      status: "claimed",
+    };
+  }
+  if (p.status === "approved") {
+    return {
+      claimedAt: p.claimedAt,
+      claimedBy: p.claimedBy,
+      status: "approved",
+    };
+  }
+  if (p.status === "rejected") {
+    return {
+      claimedAt: p.claimedAt,
+      claimedBy: p.claimedBy,
+      status: "rejected",
+    };
+  }
+  if (p.status === "expired") {
+    return { status: "expired" };
+  }
+  return { status: "pending" };
+}
+
+function restoreSingleSnapshot(
+  p: SerializedProposal,
+  actionTypes: readonly ActionType[]
+): ActionProposalItem | undefined {
+  const actionType =
+    actionTypes.find((a) => a.id === p.actionTypeId) ?? actionTypes[0];
+  if (!actionType) {
+    return undefined;
+  }
+  const effectDigest = computeEffectDigest({
+    actionId: actionType.id,
+    normalizedParameters: p.rawParameters,
+    requestedEffects: (actionType.sideEffects ?? []).map((se) => ({
+      description: se.description,
+      effectId: se.id,
+      isLiveExternal: true,
+    })),
+  });
+  const proposalDigest = createHash("sha256")
+    .update(
+      canonicalJson({
+        actionRelease: "1.0.0",
+        actionTypeId: actionType.id,
+        decisionId: p.decisionRecord.id,
+        effectDigest,
+        evidenceHash: p.evidenceHash,
+        parameters: p.rawParameters,
+        policyRelease: "1.0.0",
+        proposerId: p.proposerId,
+      })
+    )
+    .digest("hex");
+
+  const statusEntry = resolveProposalStatus(p);
+
+  return {
+    actionRelease: "1.0.0",
+    createdAt: p.createdAt,
+    decisionRecord: p.decisionRecord,
+    effectDigest,
+    evidenceHash: p.evidenceHash,
+    expiresAt: p.expiresAt,
+    id: p.id,
+    policyRelease: "1.0.0",
+    proposalDigest,
+    proposerId: p.proposerId,
+    submission: {
+      actionType,
+      rawParameters: p.rawParameters,
+      security: p.security,
+    },
+    ...statusEntry,
+  };
 }
 
 export class ActionInbox {
   private static readonly sharedProposals = new WeakMap<
     AuditStore,
-    Map<string, ActionProposalItem<unknown>>
+    Map<string, ActionProposalItem>
   >();
 
   private static readonly sharedReceipts = new WeakMap<
@@ -143,7 +255,7 @@ export class ActionInbox {
     }
   }
 
-  private get proposals(): Map<string, ActionProposalItem<unknown>> {
+  private get proposals(): Map<string, ActionProposalItem> {
     let map = ActionInbox.sharedProposals.get(this.auditStore);
     if (!map) {
       map = new Map();
@@ -161,15 +273,13 @@ export class ActionInbox {
     return map;
   }
 
-  addProposal<Params = unknown>(
+  addProposal<Params extends ActionParameters = ActionParameters>(
     submission: ActionSubmission<Params>,
     decisionRecord: DecisionRecord,
     ttlMs?: number
   ): ActionProposalItem<Params> {
-    const rawParams = (submission.rawParameters ?? {}) as Record<
-      string,
-      unknown
-    >;
+    // SAFETY: ActionSubmission rawParameters conforms to ActionParameters
+    const rawParams = (submission.rawParameters ?? {}) as ActionParameters;
     const actionId = submission.actionType.id;
     const actionRelease = "1.0.0";
     const policyRelease = "1.0.0";
@@ -203,7 +313,7 @@ export class ActionInbox {
     const now = Date.now();
     const expiresAt = now + effectiveTtlMs;
     const proposerId = submission.security.subject.id;
-    const tenantId = (submission.security.subject as any).tenantId;
+    const tenantId = submission.security.subject.tenantId;
 
     const proposalDigest = createHash("sha256")
       .update(
@@ -236,11 +346,13 @@ export class ActionInbox {
       submission,
       tenantId,
     };
-    this.proposals.set(item.id, item as ActionProposalItem<unknown>);
+    if (isActionProposalItem(item)) {
+      this.proposals.set(item.id, item);
+    }
     return item;
   }
 
-  prepare<Params = unknown>(
+  prepare<Params extends ActionParameters = ActionParameters>(
     intent: PrepareProposalIntent<Params>
   ): Effect.Effect<ActionProposalItem<Params>, unknown> {
     const submission: ActionSubmission<Params> = {
@@ -268,7 +380,7 @@ export class ActionInbox {
 
   listProposals(
     options: InboxFilterOptions = {}
-  ): readonly ActionProposalItem<unknown>[] {
+  ): readonly ActionProposalItem[] {
     const now = Date.now();
     for (const [id, p] of this.proposals) {
       if (p.status === "pending" && now > p.expiresAt) {
@@ -308,7 +420,9 @@ export class ActionInbox {
       } else if (sortBy === "id") {
         cmp = a.id.localeCompare(b.id);
       }
-      if (cmp !== 0) return cmp * dir;
+      if (cmp !== 0) {
+        return cmp * dir;
+      }
       return a.id.localeCompare(b.id);
     });
 
@@ -323,7 +437,7 @@ export class ActionInbox {
     return items;
   }
 
-  getPendingProposals(): readonly ActionProposalItem<unknown>[] {
+  getPendingProposals(): readonly ActionProposalItem[] {
     return this.listProposals({
       sortBy: "createdAt",
       sortDirection: "asc",
@@ -331,15 +445,17 @@ export class ActionInbox {
     });
   }
 
-  getProposal(proposalId: string): ActionProposalItem<unknown> | undefined {
+  getProposal(proposalId: string): ActionProposalItem | undefined {
     const proposal = this.proposals.get(proposalId);
     if (
       proposal &&
       proposal.status === "pending" &&
       Date.now() > proposal.expiresAt
     ) {
-      const expired: ActionProposalItem<unknown> = {
+      const expired: ActionProposalItem = {
         ...proposal,
+        claimedAt: undefined,
+        claimedBy: undefined,
         status: "expired",
       };
       this.proposals.set(proposalId, expired);
@@ -423,10 +539,9 @@ export class ActionInbox {
     // 5. Evidence & Effect Hash Binding: verify that current proposal parameters match original hashes
     const currentEffectDigest = computeEffectDigest({
       actionId: proposal.submission.actionType.id,
-      normalizedParameters: (proposal.submission.rawParameters ?? {}) as Record<
-        string,
-        unknown
-      >,
+      // SAFETY: proposal submission rawParameters conforms to ActionParameters
+      normalizedParameters: (proposal.submission.rawParameters ??
+        {}) as ActionParameters,
       requestedEffects: (proposal.submission.actionType.sideEffects ?? []).map(
         (se) => ({
           description: se.description,
@@ -499,22 +614,18 @@ export class ActionInbox {
       },
     };
 
-    return executeWritePipeline(
-      elevatedSubmission,
-      this.objectStore,
-      this.auditStore
-    ).pipe(
-      Effect.flatMap((result) => {
+    const handleExecutedProposal = Effect.fn("handleExecutedProposal")(
+      function* (inbox: ActionInbox, result: ActionExecutionResult) {
         if (result.status === "executed") {
-          const approvedAt = Date.now();
-          this.proposals.set(proposalId, {
+          const approvedAt = yield* Clock.currentTimeMillis;
+          inbox.proposals.set(proposalId, {
             ...proposal,
             claimedAt: proposal.claimedAt ?? approvedAt,
             claimedBy: principal.id,
             status: "approved",
           });
 
-          const receiptId = `rcpt_${approvedAt}_${Math.random().toString(36).slice(2, 7)}`;
+          const receiptId = generatePrefixedId("rcpt", approvedAt);
           const receiptWithoutHash = {
             actionRelease: proposal.actionRelease,
             approvedAt,
@@ -553,7 +664,7 @@ export class ActionInbox {
             ...receiptWithoutHash,
             receiptHash,
           };
-          this.receipts.set(receipt.id, receipt);
+          inbox.receipts.set(receipt.id, receipt);
 
           OperonTelemetryService.getInstance().trackEvent({
             event: "operon_proposal_reviewed",
@@ -567,16 +678,22 @@ export class ActionInbox {
             },
             subject: principal,
           });
-          return Effect.succeed(receipt);
+          return receipt;
         }
-        this.proposals.set(proposalId, { ...proposal, status: "pending" });
-        return Effect.fail(
-          new ProposalExecutionStateError({
-            message: "Approved execution did not resolve to executed state",
-            proposalId,
-          })
-        );
-      }),
+        inbox.proposals.set(proposalId, { ...proposal, status: "pending" });
+        return yield* new ProposalExecutionStateError({
+          message: "Approved execution did not resolve to executed state",
+          proposalId,
+        });
+      }
+    );
+
+    return executeWritePipeline(
+      elevatedSubmission,
+      this.objectStore,
+      this.auditStore
+    ).pipe(
+      Effect.flatMap((res) => handleExecutedProposal(this, res)),
       Effect.tapError(() =>
         Effect.sync(() => {
           this.proposals.set(proposalId, { ...proposal, status: "pending" });
@@ -614,7 +731,9 @@ export class ActionInbox {
     proposalId: string
   ): ApprovalReceipt | undefined {
     for (const r of this.receipts.values()) {
-      if (r.proposalId === proposalId) return r;
+      if (r.proposalId === proposalId) {
+        return r;
+      }
     }
     return undefined;
   }
@@ -628,6 +747,36 @@ export class ActionInbox {
       proposals: [...this.proposals.values()],
       receipts: [...this.receipts.values()],
     };
+  }
+
+  listProposalSnapshots(): readonly SerializedProposal[] {
+    return [...this.proposals.values()].map((p) => ({
+      actionTypeId: p.submission.actionType.id,
+      claimedAt: p.claimedAt,
+      claimedBy: p.claimedBy,
+      createdAt: p.createdAt,
+      decisionRecord: p.decisionRecord,
+      evidenceHash: p.evidenceHash,
+      expiresAt: p.expiresAt,
+      id: p.id,
+      proposerId: p.proposerId,
+      // SAFETY: submission rawParameters conforms to ActionParameters
+      rawParameters: (p.submission.rawParameters ?? {}) as ActionParameters,
+      security: p.submission.security,
+      status: p.status,
+    }));
+  }
+
+  restoreProposalSnapshots(
+    snapshots: readonly SerializedProposal[],
+    actionTypes: readonly ActionType[]
+  ): void {
+    for (const p of snapshots) {
+      const item = restoreSingleSnapshot(p, actionTypes);
+      if (item) {
+        this.proposals.set(p.id, item);
+      }
+    }
   }
 
   importSnapshot(snapshot: ActionInboxSnapshot): void {
@@ -644,65 +793,59 @@ export class ActionInbox {
   /**
    * Human exercises veto / rejects proposal with structured reason (First-Class Override)
    */
-  rejectProposal(
+  readonly rejectProposal = Effect.fn("ActionInbox.rejectProposal")(function* (
+    this: ActionInbox,
     proposalId: string,
     humanSubject: Subject,
     category: OverrideCategory,
     structuredReason: string
-  ): Effect.Effect<
+  ): Effect.fn.Return<
     OverrideRecord,
     ProposalNotFoundError | AuthorizationError | StorageError
   > {
     const proposal = this.proposals.get(proposalId);
     if (!proposal || proposal.status !== "pending") {
-      return Effect.fail(
-        new ProposalNotFoundError({
-          message: `Proposal ${proposalId} not found or not pending`,
-          proposalId,
-        })
-      );
+      return yield* new ProposalNotFoundError({
+        message: `Proposal ${proposalId} not found or not pending`,
+        proposalId,
+      });
     }
 
     if (humanSubject.type === "agent") {
-      return Effect.fail(
-        new AuthorizationError({
-          reason: "Proposal veto/override requires a human operator",
-        })
-      );
+      return yield* new AuthorizationError({
+        reason: "Proposal veto/override requires a human operator",
+      });
     }
 
+    const now = yield* Clock.currentTimeMillis;
     const overrideRecord: OverrideRecord = {
       decisionRecordId: proposal.decisionRecord.id,
       finalDecision: { action: "veto", status: "rejected" },
       humanSubject,
-      id: `override_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+      id: generatePrefixedId("override", now),
       originalProposal: proposal.decisionRecord.parameters,
       reasonCategory: category,
       structuredReason,
-      timestamp: Date.now(),
+      timestamp: now,
     };
 
-    return this.auditStore.appendOverride(overrideRecord).pipe(
-      Effect.as(overrideRecord),
-      Effect.tap(() =>
-        Effect.sync(() => {
-          this.proposals.set(proposalId, { ...proposal, status: "rejected" });
-          OperonTelemetryService.getInstance().trackEvent({
-            event: "operon_proposal_reviewed",
-            properties: {
-              actionId: proposal.submission.actionType.id,
-              overrideCategory: category,
-              overrideReason: structuredReason,
-              proposalId,
-              reviewDurationMs: Date.now() - proposal.createdAt,
-              reviewerId: humanSubject.id,
-              reviewerRole: humanSubject.roles[0] ?? "reviewer",
-              verdict: "rejected",
-            },
-            subject: humanSubject,
-          });
-        })
-      )
-    );
-  }
+    yield* this.auditStore.appendOverride(overrideRecord);
+    this.proposals.set(proposalId, { ...proposal, status: "rejected" });
+    OperonTelemetryService.getInstance().trackEvent({
+      event: "operon_proposal_reviewed",
+      properties: {
+        actionId: proposal.submission.actionType.id,
+        overrideCategory: category,
+        overrideReason: structuredReason,
+        proposalId,
+        reviewDurationMs: now - proposal.createdAt,
+        reviewerId: humanSubject.id,
+        reviewerRole: humanSubject.roles[0] ?? "reviewer",
+        verdict: "rejected",
+      },
+      subject: humanSubject,
+    });
+
+    return overrideRecord;
+  });
 }

@@ -1,28 +1,878 @@
+import type { ActionExecutionResult } from "@operon/runtime";
 import { executeWritePipeline } from "@operon/runtime";
-import { Effect, Schema } from "effect";
+import type {
+  ActionParameters,
+  ActionType,
+  ApprovalRecord,
+  OperationReceipt,
+  OutboxItem,
+} from "@operon/schema";
+import { parseJson } from "@operon/schema";
+import { Effect, Exit, Schema } from "effect";
 
+import { readStdinSync } from "../fs-io.js";
+import { printCli, printCliError, printCliJson } from "../io.js";
+import type { RuntimeContext } from "../state.js";
 import { createRuntimeContext, createSubject } from "../state.js";
 
-async function readStdin(): Promise<string> {
-  const chunks: Buffer[] = [];
-  for await (const chunk of process.stdin) {
-    chunks.push(
-      typeof chunk === "string" ? Buffer.from(chunk) : (chunk as Buffer)
-    );
-  }
-  return Buffer.concat(chunks).toString("utf-8");
+function getFlagValue(
+  args: readonly string[],
+  flag: string
+): string | undefined {
+  const index = args.indexOf(flag);
+  return index === -1 ? undefined : args[index + 1];
 }
 
-function extractErrorMessage(err: unknown): string {
-  if (
-    typeof err === "object" &&
-    err !== null &&
-    "message" in err &&
-    typeof (err as any).message === "string"
-  ) {
-    return (err as any).message;
+function extractErrorMessage(cause: unknown): string {
+  if (cause instanceof Error) {
+    return cause.message;
   }
-  return String(err);
+  return String(cause);
+}
+
+const VALID_AGENT_TIERS = new Set([1, 2, 3, 4]);
+
+function parseAgentTier(
+  rawTier?: string,
+  fallback: 1 | 2 | 3 | 4 = 2
+): 1 | 2 | 3 | 4 {
+  if (!rawTier) {
+    return fallback;
+  }
+  const num = Math.trunc(Number(rawTier));
+  if (VALID_AGENT_TIERS.has(num)) {
+    // SAFETY: VALID_AGENT_TIERS strictly guarantees num is 1, 2, 3, or 4
+    return num as 1 | 2 | 3 | 4;
+  }
+  return fallback;
+}
+
+function parseSubjectType(rawType?: string): "user" | "agent" {
+  if (rawType === "user") {
+    return "user";
+  }
+  return "agent";
+}
+
+function extractSubjectFromArgs(
+  args: readonly string[],
+  defaultTier: 1 | 2 | 3 | 4 = 2
+) {
+  const subjectId = getFlagValue(args, "--subject-id") ?? "cli_agent";
+  const subjectType = parseSubjectType(getFlagValue(args, "--subject-type"));
+  const role = getFlagValue(args, "--role");
+  const roles = role ? [role] : ["operator", "clinician"];
+  const agentTier = parseAgentTier(
+    getFlagValue(args, "--agent-tier"),
+    defaultTier
+  );
+  return createSubject(subjectId, subjectType, roles, agentTier);
+}
+
+function readRawParameters(
+  useStdin: boolean,
+  args: readonly string[]
+): Effect.Effect<ActionParameters, Error> {
+  if (useStdin) {
+    return Effect.try({
+      catch: (cause) =>
+        new Error(`Failed to parse JSON from stdin: ${String(cause)}`),
+      // SAFETY: parsed JSON from stdin as ActionParameters
+      try: () => parseJson(readStdinSync()) as ActionParameters,
+    });
+  }
+  const paramsStr = getFlagValue(args, "--params");
+  if (!paramsStr) {
+    return Effect.succeed({});
+  }
+  return Effect.try({
+    catch: (cause) =>
+      new Error(`--params must be valid JSON: ${String(cause)}`),
+    // SAFETY: parsed JSON from --params flag as ActionParameters
+    try: () => JSON.parse(paramsStr) as ActionParameters,
+  });
+}
+
+function handleActionList(ctx: RuntimeContext, isJson: boolean) {
+  return Effect.sync(() => {
+    const actions = ctx.actionTypes.map((a) => ({
+      defaultExecutionMode: a.defaultExecutionMode,
+      description: a.description,
+      id: a.id,
+      minimumAgentTier: a.minimumAgentTier,
+      name: a.name,
+      riskTier: a.riskTier,
+      targetObjectTypeId: a.targetObjectTypeId,
+    }));
+
+    if (isJson) {
+      printCliJson(actions);
+    } else {
+      printCli("=== OPERON REGISTERED ACTION TYPES ===");
+      for (const a of actions) {
+        printCli(
+          `• ${a.id} (${a.name}) | Risk: ${a.riskTier} | Min Tier: ${a.minimumAgentTier} | Mode: ${a.defaultExecutionMode}`
+        );
+        printCli(`  ${a.description}`);
+      }
+    }
+    return 0;
+  });
+}
+
+function printPreparedResult(prepared: {
+  readonly actionId: string;
+  readonly canonicalDigest: string;
+  readonly expiresAt: number;
+  readonly id: string;
+  readonly objectRevisions: readonly unknown[];
+  readonly predicateDependencies: readonly unknown[];
+  readonly verdict: string;
+}): void {
+  printCli("=== ACTION PREPARED (ZERO BUSINESS SIDE EFFECTS) ===");
+  printCli("Status: PREPARED");
+  printCli(`Prepared ID: ${prepared.id}`);
+  printCli(`Canonical Digest: ${prepared.canonicalDigest}`);
+  printCli(`Action ID: ${prepared.actionId}`);
+  printCli(`Verdict: ${prepared.verdict}`);
+  printCli(`Object Revisions: ${prepared.objectRevisions.length}`);
+  printCli(`Predicate Dependencies: ${prepared.predicateDependencies.length}`);
+  printCli(`Expires At: ${new Date(prepared.expiresAt).toISOString()}`);
+}
+
+function extractPrepareOptions(args: readonly string[]) {
+  const grantId = getFlagValue(args, "--grant-id");
+  const tenantId = getFlagValue(args, "--tenant") ?? "default";
+  const environmentId = getFlagValue(args, "--env") ?? "default";
+  const ttlStr = getFlagValue(args, "--ttl");
+  const ttlMs = ttlStr ? Number(ttlStr) : undefined;
+  const proposer = extractSubjectFromArgs(args, 2);
+  return { environmentId, grantId, proposer, tenantId, ttlMs };
+}
+
+interface PreparedActionOutput {
+  readonly actionId: string;
+  readonly actionRelease: string;
+  readonly canonicalDigest: string;
+  readonly environmentId: string;
+  readonly expiresAt: number;
+  readonly grantId?: string;
+  readonly id: string;
+  readonly normalizedParameters: ActionParameters;
+  readonly objectRevisions: readonly unknown[];
+  readonly predicateDependencies: readonly unknown[];
+  readonly preparedAt: number;
+  readonly proposer: { readonly id: string };
+  readonly requestedEffects: readonly unknown[];
+  readonly reviewReasons?: readonly string[];
+  readonly tenantId: string;
+  readonly verdict: string;
+}
+
+function outputPrepared(prepared: PreparedActionOutput, isJson: boolean): void {
+  if (isJson) {
+    printCli(
+      JSON.stringify(
+        {
+          actionId: prepared.actionId,
+          actionRelease: prepared.actionRelease,
+          canonicalDigest: prepared.canonicalDigest,
+          environmentId: prepared.environmentId,
+          expiresAt: prepared.expiresAt,
+          grantId: prepared.grantId,
+          id: prepared.id,
+          normalizedParameters: prepared.normalizedParameters,
+          objectRevisionsCount: prepared.objectRevisions.length,
+          predicateDependenciesCount: prepared.predicateDependencies.length,
+          preparedAt: prepared.preparedAt,
+          proposerId: prepared.proposer.id,
+          requestedEffectsCount: prepared.requestedEffects.length,
+          reviewReasons: prepared.reviewReasons ?? [],
+          status: "PREPARED",
+          tenantId: prepared.tenantId,
+          verdict: prepared.verdict,
+        },
+        null,
+        2
+      )
+    );
+  } else {
+    printPreparedResult(prepared);
+  }
+}
+
+function isInvalidActionId(id?: string): boolean {
+  return !id || id.startsWith("-");
+}
+
+const handleActionPrepare = Effect.fn("handleActionPrepare")(function* (
+  ctx: RuntimeContext,
+  args: readonly string[],
+  isJson: boolean,
+  useStdin: boolean
+) {
+  const actionId = args[1];
+  if (isInvalidActionId(actionId)) {
+    printCliError("Error: Missing action ID for prepare.");
+    printCliError(
+      "  Usage: operon action prepare <actionId> [--params '<json>' | --stdin] [--grant-id <id>] [--agent-tier <1-4>] [--json]"
+    );
+    return 1;
+  }
+
+  // SAFETY: isInvalidActionId guarantees actionId is a non-empty string
+  const targetActionId = actionId as string;
+  const action = ctx.actionTypes.find((a) => a.id === targetActionId);
+  if (!action) {
+    printCliError(`Error: ActionType '${targetActionId}' not found.`);
+    return 1;
+  }
+
+  const paramsExit = yield* readRawParameters(useStdin, args).pipe(Effect.exit);
+  if (Exit.isFailure(paramsExit)) {
+    printCliError(paramsExit.cause);
+    return 1;
+  }
+
+  const opts = extractPrepareOptions(args);
+  const preparedRes = yield* Effect.exit(
+    ctx.governedActions.prepareAction({
+      actionId: targetActionId,
+      environmentId: opts.environmentId,
+      grantId: opts.grantId,
+      proposer: opts.proposer,
+      rawParameters: paramsExit.value,
+      tenantId: opts.tenantId,
+      ttlMs: opts.ttlMs,
+    })
+  );
+
+  if (Exit.isFailure(preparedRes)) {
+    printCliError(
+      `Error: Action preparation failed: ${extractErrorMessage(preparedRes.cause)}`
+    );
+    return 1;
+  }
+
+  outputPrepared(preparedRes.value, isJson);
+  return 0;
+});
+
+function parseApprovalDecision(rawDecision?: string): "approved" | "rejected" {
+  if (rawDecision === "reject" || rawDecision === "rejected") {
+    return "rejected";
+  }
+  return "approved";
+}
+
+function parseAssuranceLevel(
+  rawAssurance?: string
+): "human_verified" | "delegated_service" {
+  if (rawAssurance === "delegated_service") {
+    return "delegated_service";
+  }
+  return "human_verified";
+}
+
+function printApprovalResult(approval: {
+  readonly approvedAt: number;
+  readonly decision: string;
+  readonly id: string;
+  readonly preparedDigest: string;
+  readonly recordHash: string;
+  readonly reviewerContext: { readonly reviewer: { readonly id: string } };
+}): void {
+  printCli("=== ACTION PROPOSAL APPROVED ===");
+  printCli(`Approval ID: ${approval.id}`);
+  printCli(`Decision: ${approval.decision.toUpperCase()}`);
+  printCli(`Prepared Digest: ${approval.preparedDigest}`);
+  printCli(`Record Hash: ${approval.recordHash}`);
+  printCli(`Reviewer: ${approval.reviewerContext.reviewer.id}`);
+  printCli(`Approved At: ${new Date(approval.approvedAt).toISOString()}`);
+}
+
+function extractReviewerId(args: readonly string[]): string {
+  const specific = getFlagValue(args, "--reviewer-id");
+  if (specific) {
+    return specific;
+  }
+  return getFlagValue(args, "--reviewer") ?? "operator_human";
+}
+
+function extractApproveOptions(args: readonly string[]) {
+  const decision = parseApprovalDecision(getFlagValue(args, "--decision"));
+  const reason = getFlagValue(args, "--reason");
+  const reviewerId = extractReviewerId(args);
+  const role = getFlagValue(args, "--role") ?? "operator";
+  const assurance = parseAssuranceLevel(getFlagValue(args, "--assurance"));
+  const tenantId = getFlagValue(args, "--tenant") ?? "default";
+  const environmentId = getFlagValue(args, "--env") ?? "default";
+  const reviewer = createSubject(reviewerId, "user", [role]);
+  return { assurance, decision, environmentId, reason, reviewer, tenantId };
+}
+
+function outputApproval(approval: ApprovalRecord, isJson: boolean): void {
+  if (isJson) {
+    printCli(
+      JSON.stringify(
+        {
+          approvalId: approval.id,
+          approvedAt: approval.approvedAt,
+          decision: approval.decision,
+          expiresAt: approval.expiresAt,
+          preparedDigest: approval.preparedDigest,
+          recordHash: approval.recordHash,
+          reviewerId: approval.reviewerContext.reviewer.id,
+          status: "APPROVED",
+          viewedDigest: approval.viewedDigest,
+        },
+        null,
+        2
+      )
+    );
+  } else {
+    printApprovalResult(approval);
+  }
+}
+
+const handleActionApprove = Effect.fn("handleActionApprove")(function* (
+  ctx: RuntimeContext,
+  args: readonly string[],
+  isJson: boolean
+) {
+  const preparedDigest = args[1];
+  const viewedDigest = getFlagValue(args, "--viewed-digest");
+
+  if (!preparedDigest || !viewedDigest) {
+    printCliError(
+      "Error: Missing preparedDigest or --viewed-digest for approve."
+    );
+    printCliError(
+      "  Usage: operon action approve <preparedDigest> --viewed-digest <digest> [--decision approve|reject] [--reason <text>] [--json]"
+    );
+    return 1;
+  }
+
+  const opts = extractApproveOptions(args);
+  const approveRes = yield* Effect.exit(
+    ctx.governedActions.approvePreparedAction({
+      decision: opts.decision,
+      preparedDigest,
+      reason: opts.reason,
+      reviewerContext: {
+        assurance: opts.assurance,
+        environmentId: opts.environmentId,
+        reviewer: opts.reviewer,
+        tenantId: opts.tenantId,
+      },
+      viewedDigest,
+    })
+  );
+
+  if (Exit.isFailure(approveRes)) {
+    printCliError(
+      `Error: Approval failed: ${extractErrorMessage(approveRes.cause)}`
+    );
+    return 1;
+  }
+
+  outputApproval(approveRes.value, isJson);
+  return 0;
+});
+
+function printCommitReceipt(receipt: {
+  readonly committedAt: number;
+  readonly operationId: string;
+  readonly outboxItems: readonly unknown[];
+  readonly receiptDigest: string;
+  readonly status: string;
+  readonly updatedObjects: readonly unknown[];
+}): void {
+  printCli("=== LOCAL ATOMIC COMMIT SUCCESSFUL ===");
+  printCli(`Operation ID: ${receipt.operationId}`);
+  printCli(`Status: ${receipt.status}`);
+  printCli(`Receipt Digest: ${receipt.receiptDigest}`);
+  printCli(`Updated Objects: ${receipt.updatedObjects.length}`);
+  printCli(`Outbox Items: ${receipt.outboxItems.length}`);
+  printCli(`Committed At: ${new Date(receipt.committedAt).toISOString()}`);
+}
+
+function extractTenantAndEnv(args: readonly string[]) {
+  const tenantId = getFlagValue(args, "--tenant") ?? "default";
+  const environmentId = getFlagValue(args, "--env") ?? "default";
+  return { environmentId, tenantId };
+}
+
+function outputCommitReceipt(receipt: OperationReceipt, isJson: boolean): void {
+  if (isJson) {
+    printCli(
+      JSON.stringify(
+        {
+          actionId: receipt.actionId,
+          committedAt: receipt.committedAt,
+          decisionRecordId: receipt.decisionRecordId,
+          idempotencyKey: receipt.idempotencyKey,
+          operationId: receipt.operationId,
+          outboxItemsCount: receipt.outboxItems.length,
+          preparedDigest: receipt.preparedDigest,
+          receiptDigest: receipt.receiptDigest,
+          status: receipt.status,
+          updatedObjectsCount: receipt.updatedObjects.length,
+        },
+        null,
+        2
+      )
+    );
+  } else {
+    printCommitReceipt(receipt);
+  }
+}
+
+const loadPreparedAndApproval = Effect.fn("loadPreparedAndApproval")(function* (
+  ctx: RuntimeContext,
+  preparedDigest: string,
+  approvalId: string | undefined,
+  tenantId: string
+) {
+  const preparedRes = yield* Effect.exit(
+    ctx.governedActions.getPreparedAction(preparedDigest, tenantId)
+  );
+  if (Exit.isFailure(preparedRes)) {
+    printCliError(
+      `Error: Prepared action not found for digest '${preparedDigest}'.`
+    );
+    return null;
+  }
+  if (!approvalId) {
+    return { approval: undefined, prepared: preparedRes.value };
+  }
+  const approvalRes = yield* Effect.exit(
+    ctx.governedActions.getApprovalRecord(approvalId, tenantId)
+  );
+  if (Exit.isFailure(approvalRes)) {
+    printCliError(`Error: Approval record not found for id '${approvalId}'.`);
+    return null;
+  }
+  return { approval: approvalRes.value, prepared: preparedRes.value };
+});
+
+const handleActionCommit = Effect.fn("handleActionCommit")(function* (
+  ctx: RuntimeContext,
+  args: readonly string[],
+  isJson: boolean
+) {
+  const preparedDigest = args[1];
+  const idempotencyKey = getFlagValue(args, "--idempotency-key");
+  if (!preparedDigest || !idempotencyKey) {
+    printCliError(
+      "Error: Missing preparedDigest or --idempotency-key for commit."
+    );
+    printCliError(
+      "  Usage: operon action commit <preparedDigest> [--approval-id <id>] --idempotency-key <key> [--json]"
+    );
+    return 1;
+  }
+
+  const approvalId = getFlagValue(args, "--approval-id");
+  const { environmentId, tenantId } = extractTenantAndEnv(args);
+
+  const loaded = yield* loadPreparedAndApproval(
+    ctx,
+    preparedDigest,
+    approvalId,
+    tenantId
+  );
+  if (!loaded) {
+    return 1;
+  }
+
+  const commitRes = yield* Effect.exit(
+    ctx.atomicCommit.commit({
+      approval: loaded.approval,
+      environmentId,
+      idempotencyKey,
+      prepared: loaded.prepared,
+      tenantId,
+    })
+  );
+
+  if (Exit.isFailure(commitRes)) {
+    printCliError(
+      `Error: Commit failed: ${extractErrorMessage(commitRes.cause)}`
+    );
+    return 1;
+  }
+
+  outputCommitReceipt(commitRes.value, isJson);
+  return 0;
+});
+
+function printReceiptStatus(receipt: {
+  readonly committedAt: number;
+  readonly operationId: string;
+  readonly outboxItems: readonly unknown[];
+  readonly preparedDigest: string;
+  readonly receiptDigest: string;
+  readonly status: string;
+  readonly updatedObjects: readonly unknown[];
+}): void {
+  printCli("=== ACTION OPERATION STATUS ===");
+  printCli(`Operation ID: ${receipt.operationId}`);
+  printCli(`Status: ${receipt.status}`);
+  printCli(`Prepared Digest: ${receipt.preparedDigest}`);
+  printCli(`Receipt Digest: ${receipt.receiptDigest}`);
+  printCli(`Updated Objects: ${receipt.updatedObjects.length}`);
+  printCli(`Outbox Items: ${receipt.outboxItems.length}`);
+  printCli(`Committed At: ${new Date(receipt.committedAt).toISOString()}`);
+}
+
+function printOutboxStatus(outbox: {
+  readonly attemptCount: number;
+  readonly command: string;
+  readonly id: string;
+  readonly operationId: string;
+  readonly status: string;
+}): void {
+  printCli("=== OUTBOX ITEM STATUS ===");
+  printCli(`Outbox ID: ${outbox.id}`);
+  printCli(`Status: ${outbox.status}`);
+  printCli(`Operation ID: ${outbox.operationId}`);
+  printCli(`Attempt Count: ${outbox.attemptCount}`);
+  printCli(`Command: ${outbox.command}`);
+}
+
+function outputReceiptStatus(receipt: OperationReceipt, isJson: boolean): void {
+  if (isJson) {
+    printCli(JSON.stringify(receipt, null, 2));
+  } else {
+    printReceiptStatus(receipt);
+  }
+}
+
+function outputOutboxStatus(outbox: OutboxItem, isJson: boolean): void {
+  if (isJson) {
+    printCli(JSON.stringify(outbox, null, 2));
+  } else {
+    printOutboxStatus(outbox);
+  }
+}
+
+const tryPrintReceiptStatus = Effect.fn("tryPrintReceiptStatus")(function* (
+  ctx: RuntimeContext,
+  operationId: string,
+  tenantId: string,
+  isJson: boolean
+) {
+  const receiptRes = yield* Effect.exit(
+    ctx.atomicCommit.getReceipt(operationId, tenantId)
+  );
+  if (Exit.isSuccess(receiptRes) && receiptRes.value) {
+    outputReceiptStatus(receiptRes.value, isJson);
+    return true;
+  }
+  return false;
+});
+
+const tryPrintOutboxStatus = Effect.fn("tryPrintOutboxStatus")(function* (
+  ctx: RuntimeContext,
+  operationId: string,
+  isJson: boolean
+) {
+  const outboxRes = yield* Effect.exit(
+    ctx.atomicCommit.getOutboxItem(operationId)
+  );
+  if (Exit.isSuccess(outboxRes) && outboxRes.value) {
+    outputOutboxStatus(outboxRes.value, isJson);
+    return true;
+  }
+  return false;
+});
+
+const handleActionStatus = Effect.fn("handleActionStatus")(function* (
+  ctx: RuntimeContext,
+  args: readonly string[],
+  isJson: boolean
+) {
+  const operationId = args[1];
+  if (!operationId) {
+    printCliError("Error: Missing operation ID for status.");
+    printCliError("  Usage: operon action status <operationId> [--json]");
+    return 1;
+  }
+
+  const tenantId = getFlagValue(args, "--tenant") ?? "default";
+  const foundReceipt = yield* tryPrintReceiptStatus(
+    ctx,
+    operationId,
+    tenantId,
+    isJson
+  );
+  if (foundReceipt) {
+    return 0;
+  }
+
+  const foundOutbox = yield* tryPrintOutboxStatus(ctx, operationId, isJson);
+  if (foundOutbox) {
+    return 0;
+  }
+
+  printCliError(
+    `Error: Operation or outbox item not found for ID '${operationId}'.`
+  );
+  return 1;
+});
+
+interface DryRunPreview {
+  readonly actionId: string;
+  readonly agentTier: 1 | 2 | 3 | 4;
+  readonly dryRun: true;
+  readonly mode: "proposal" | "automated";
+  readonly parametersValid: boolean;
+  readonly riskTier: string;
+  readonly subject: string;
+}
+
+function determineExecutionMode(
+  agentTier: 1 | 2 | 3 | 4,
+  defaultMode: string
+): "proposal" | "automated" {
+  if (agentTier === 2 || defaultMode === "proposal") {
+    return "proposal";
+  }
+  return "automated";
+}
+
+function outputDryRun(preview: DryRunPreview, isJson: boolean): void {
+  if (isJson) {
+    printCli(JSON.stringify(preview, null, 2));
+    return;
+  }
+  printCli("=== DRY RUN ACTION EXECUTION PREVIEW ===");
+  printCli(`Action: ${preview.actionId} (Risk: ${preview.riskTier})`);
+  printCli(`Agent Tier: ${preview.agentTier}`);
+  printCli(`Parameters Valid: ${preview.parametersValid ? "YES" : "NO"}`);
+  const routeText =
+    preview.mode === "proposal"
+      ? "PROPOSAL_CREATED (Action Inbox)"
+      : "EXECUTED (Governed Write Pipeline)";
+  printCli(`Pipeline Route: ${routeText}`);
+}
+
+interface HandleActionDryRunOptions {
+  readonly action: ActionType;
+  readonly rawParameters: ActionParameters;
+  readonly agentTier: 1 | 2 | 3 | 4;
+  readonly subjectId: string;
+  readonly isJson: boolean;
+}
+
+function handleActionDryRun(options: HandleActionDryRunOptions) {
+  const { action, rawParameters, agentTier, subjectId, isJson } = options;
+  return Effect.sync(() => {
+    const parametersValid = Schema.is(action.parametersSchema)(rawParameters);
+
+    const mode = determineExecutionMode(agentTier, action.defaultExecutionMode);
+    const preview: DryRunPreview = {
+      actionId: action.id,
+      agentTier,
+      dryRun: true,
+      mode,
+      parametersValid,
+      riskTier: action.riskTier,
+      subject: subjectId,
+    };
+
+    outputDryRun(preview, isJson);
+    return preview.parametersValid ? 0 : 1;
+  });
+}
+
+function handleProposedSubmission(
+  ctx: RuntimeContext,
+  submission: Parameters<typeof ctx.inbox.addProposal>[0],
+  result: Extract<ActionExecutionResult, { status: "proposed" }>,
+  isJson: boolean
+): void {
+  ctx.inbox.addProposal(submission, result.decisionRecord);
+  if (isJson) {
+    printCli(
+      JSON.stringify(
+        {
+          decisionRecordId: result.decisionRecord.id,
+          proposalId: result.proposalId,
+          recordHash: result.decisionRecord.recordHash,
+          status: "PROPOSAL_CREATED",
+        },
+        null,
+        2
+      )
+    );
+  } else {
+    printCli("=== ACTION INTERCEPTED BY GOVERNANCE LADDER ===");
+    printCli("Status: PROPOSAL_CREATED (Routed to Action Inbox)");
+    printCli(`Proposal ID: ${result.proposalId}`);
+    printCli(`Decision Hash: ${result.decisionRecord.recordHash}`);
+    printCli(
+      `Next Step: Review with 'operon inbox approve ${result.proposalId} --reviewer <id> --role <role>'`
+    );
+  }
+}
+
+function handleExecutedSubmission(
+  result: Extract<ActionExecutionResult, { status: "executed" }>,
+  isJson: boolean
+): void {
+  if (isJson) {
+    printCli(
+      JSON.stringify(
+        {
+          decisionRecordId: result.decisionRecord.id,
+          recordHash: result.decisionRecord.recordHash,
+          status: "EXECUTED",
+          updatedObjectsCount: result.updatedObjects.length,
+        },
+        null,
+        2
+      )
+    );
+  } else {
+    printCli("=== GOVERNED ACTION EXECUTED SUCCESSFULLY ===");
+    printCli("Status: EXECUTED");
+    printCli(`Decision Hash: ${result.decisionRecord.recordHash}`);
+    printCli(`Committed Updates: ${result.updatedObjects.length} object(s)`);
+  }
+}
+
+function getTargetAction(
+  ctx: RuntimeContext,
+  actionId?: string
+): ActionType | undefined {
+  if (!actionId) {
+    return undefined;
+  }
+  return ctx.actionTypes.find((a) => a.id === actionId);
+}
+
+function printMissingActionError(actionId?: string): void {
+  const label = actionId ? `'${actionId}'` : "none provided";
+  printCliError(`Error: Missing or invalid action ID for submit: ${label}`);
+  printCliError(
+    "  Usage: operon action submit <actionId> [--params '<json>' | --stdin] [--agent-tier <1-4>] [--dry-run] [--json]"
+  );
+}
+
+function extractSubmitSubject(args: readonly string[]) {
+  const subject = extractSubjectFromArgs(args, 4);
+  // SAFETY: extractSubjectFromArgs with default 4 ensures agentTier is 1 | 2 | 3 | 4
+  const agentTier = (subject.agentTier ?? 4) as 1 | 2 | 3 | 4;
+  return { agentTier, subject };
+}
+
+function createSubmission(
+  action: ActionType,
+  rawParameters: ActionParameters,
+  subject: ReturnType<typeof extractSubjectFromArgs>
+) {
+  return {
+    actionType: action,
+    rawParameters,
+    security: {
+      correlationId: `cli_${Date.now()}`,
+      subject,
+      timestamp: Date.now(),
+    },
+  };
+}
+
+interface HandleActionSubmitOptions {
+  readonly ctx: RuntimeContext;
+  readonly args: readonly string[];
+  readonly isJson: boolean;
+  readonly isDryRun: boolean;
+  readonly useStdin: boolean;
+}
+
+function handleActionSubmit(options: HandleActionSubmitOptions) {
+  const { ctx, args, isJson, isDryRun, useStdin } = options;
+  return Effect.gen(function* () {
+    const action = getTargetAction(ctx, args[1]);
+    if (!action) {
+      printMissingActionError(args[1]);
+      return 1;
+    }
+
+    const paramsExit = yield* readRawParameters(useStdin, args).pipe(
+      Effect.exit
+    );
+    if (Exit.isFailure(paramsExit)) {
+      printCliError(paramsExit.cause);
+      return 1;
+    }
+
+    const { agentTier, subject } = extractSubmitSubject(args);
+    if (isDryRun) {
+      return yield* handleActionDryRun({
+        action,
+        agentTier,
+        isJson,
+        rawParameters: paramsExit.value,
+        subjectId: subject.id,
+      });
+    }
+
+    const submission = createSubmission(action, paramsExit.value, subject);
+    const pipelineRes = yield* executeWritePipeline(
+      submission,
+      ctx.objectStore,
+      ctx.auditStore
+    ).pipe(Effect.exit);
+
+    if (Exit.isFailure(pipelineRes)) {
+      printCliError(
+        `Error: Action execution failed: ${extractErrorMessage(pipelineRes.cause)}`
+      );
+      return 1;
+    }
+    const result = pipelineRes.value;
+
+    if (result.status === "proposed") {
+      handleProposedSubmission(ctx, submission, result, isJson);
+      return 0;
+    }
+
+    handleExecutedSubmission(result, isJson);
+    return 0;
+  });
+}
+
+export interface ActionCmdOptions {
+  readonly ctx: RuntimeContext;
+  readonly args: readonly string[];
+  readonly isJson: boolean;
+  readonly isDryRun: boolean;
+  readonly useStdin: boolean;
+}
+
+type ActionCmdHandler = (
+  options: ActionCmdOptions
+) => Effect.Effect<number, unknown, never>;
+
+const ACTION_HANDLERS = {
+  approve: (opts) => handleActionApprove(opts.ctx, opts.args, opts.isJson),
+  commit: (opts) => handleActionCommit(opts.ctx, opts.args, opts.isJson),
+  list: (opts) => handleActionList(opts.ctx, opts.isJson),
+  prepare: (opts) =>
+    handleActionPrepare(opts.ctx, opts.args, opts.isJson, opts.useStdin),
+  status: (opts) => handleActionStatus(opts.ctx, opts.args, opts.isJson),
+  submit: (opts) => handleActionSubmit(opts),
+} as const satisfies Record<string, ActionCmdHandler>;
+
+function getActionHandler(sub?: string): ActionCmdHandler | undefined {
+  if (sub && Object.hasOwn(ACTION_HANDLERS, sub)) {
+    // SAFETY: sub existence verified by Object.hasOwn
+    return ACTION_HANDLERS[sub as keyof typeof ACTION_HANDLERS];
+  }
+  return undefined;
 }
 
 export function runAction(
@@ -32,671 +882,23 @@ export function runAction(
   const isJson = args.includes("--json");
   const isDryRun = args.includes("--dry-run");
   const useStdin = args.includes("--stdin");
+  const dbPath = getFlagValue(args, "--db");
 
-  const dbIndex = args.indexOf("--db");
-  const dbPath = dbIndex === -1 ? undefined : args[dbIndex + 1];
+  const handler = getActionHandler(sub);
 
   return Effect.acquireUseRelease(
     Effect.promise(() => createRuntimeContext(dbPath)),
-    (ctx) =>
-      Effect.gen(function* () {
-        if (sub === "list") {
-          const actions = ctx.actionTypes.map((a) => ({
-            defaultExecutionMode: a.defaultExecutionMode,
-            description: a.description,
-            id: a.id,
-            minimumAgentTier: a.minimumAgentTier,
-            name: a.name,
-            riskTier: a.riskTier,
-            targetObjectTypeId: a.targetObjectTypeId,
-          }));
-
-          if (isJson) {
-            console.log(JSON.stringify(actions, null, 2));
-          } else {
-            console.log("=== OPERON REGISTERED ACTION TYPES ===");
-            for (const a of actions) {
-              console.log(
-                `• ${a.id} (${a.name}) | Risk: ${a.riskTier} | Min Tier: ${a.minimumAgentTier} | Mode: ${a.defaultExecutionMode}`
-              );
-              console.log(`  ${a.description}`);
-            }
-          }
-          return 0;
-        }
-
-        if (sub === "prepare") {
-          const actionId = args[1];
-          if (!actionId || actionId.startsWith("-")) {
-            console.error("Error: Missing action ID for prepare.");
-            console.error(
-              "  Usage: operon action prepare <actionId> [--params '<json>' | --stdin] [--grant-id <id>] [--agent-tier <1-4>] [--json]"
-            );
-            return 1;
-          }
-
-          const action = ctx.actionTypes.find((a) => a.id === actionId);
-          if (!action) {
-            console.error(`Error: ActionType '${actionId}' not found.`);
-            return 1;
-          }
-
-          let rawParameters: unknown = {};
-          if (useStdin) {
-            const stdinBuffer = yield* Effect.promise(() => readStdin());
-            const parseResult = yield* Effect.try({
-              try: () => JSON.parse(String(stdinBuffer).trim() || "{}"),
-              catch: (error) => error,
-            }).pipe(Effect.exit);
-            if (parseResult._tag === "Failure") {
-              console.error(
-                "Error: Failed to parse JSON from stdin.",
-                parseResult.cause
-              );
-              return 1;
-            }
-            rawParameters = parseResult.value;
-          } else {
-            const paramsIndex = args.indexOf("--params");
-            if (paramsIndex !== -1 && args[paramsIndex + 1]) {
-              const parseResult = yield* Effect.try({
-                try: () => JSON.parse(args[paramsIndex + 1]),
-                catch: (error) => error,
-              }).pipe(Effect.exit);
-              if (parseResult._tag === "Failure") {
-                console.error(
-                  "Error: --params must be valid JSON.",
-                  parseResult.cause
-                );
-                return 1;
-              }
-              rawParameters = parseResult.value;
-            }
-          }
-
-          const grantIndex = args.indexOf("--grant-id");
-          const grantId = grantIndex === -1 ? undefined : args[grantIndex + 1];
-
-          const tierIndex = args.indexOf("--agent-tier");
-          const agentTier =
-            tierIndex === -1
-              ? (2 as const)
-              : (Math.trunc(Number(args[tierIndex + 1])) as 1 | 2 | 3 | 4);
-
-          const subjectIdIndex = args.indexOf("--subject-id");
-          const subjectId =
-            subjectIdIndex === -1 ? "cli_agent" : args[subjectIdIndex + 1];
-
-          const subjectTypeIndex = args.indexOf("--subject-type");
-          const subjectType = (
-            subjectTypeIndex === -1 ? "agent" : args[subjectTypeIndex + 1]
-          ) as "user" | "agent";
-
-          const roleIndex = args.indexOf("--role");
-          const roles =
-            roleIndex === -1
-              ? ["operator", "clinician"]
-              : [args[roleIndex + 1]];
-
-          const tenantIndex = args.indexOf("--tenant");
-          const tenantId =
-            tenantIndex === -1 ? "default" : args[tenantIndex + 1];
-
-          const envIndex = args.indexOf("--env");
-          const environmentId =
-            envIndex === -1 ? "default" : args[envIndex + 1];
-
-          const ttlIndex = args.indexOf("--ttl");
-          const ttlMs =
-            ttlIndex === -1 ? undefined : Number(args[ttlIndex + 1]);
-
-          const proposer = createSubject(
-            subjectId,
-            subjectType,
-            roles,
-            agentTier
-          );
-
-          const preparedRes = yield* Effect.exit(
-            ctx.governedActions.prepareAction({
-              actionId,
-              environmentId,
-              grantId,
-              proposer,
-              rawParameters,
-              tenantId,
-              ttlMs,
-            })
-          );
-
-          if (preparedRes._tag === "Failure") {
-            const err = (preparedRes.cause as any)?.error ?? preparedRes.cause;
-            console.error(
-              `Error: Action preparation failed: ${extractErrorMessage(err)}`
-            );
-            return 1;
-          }
-
-          const prepared = preparedRes.value;
-
-          if (isJson) {
-            console.log(
-              JSON.stringify(
-                {
-                  actionId: prepared.actionId,
-                  actionRelease: prepared.actionRelease,
-                  canonicalDigest: prepared.canonicalDigest,
-                  environmentId: prepared.environmentId,
-                  expiresAt: prepared.expiresAt,
-                  grantId: prepared.grantId,
-                  id: prepared.id,
-                  normalizedParameters: prepared.normalizedParameters,
-                  objectRevisionsCount: prepared.objectRevisions.length,
-                  predicateDependenciesCount:
-                    prepared.predicateDependencies.length,
-                  preparedAt: prepared.preparedAt,
-                  proposerId: prepared.proposer.id,
-                  requestedEffectsCount: prepared.requestedEffects.length,
-                  reviewReasons: prepared.reviewReasons ?? [],
-                  status: "PREPARED",
-                  tenantId: prepared.tenantId,
-                  verdict: prepared.verdict,
-                },
-                null,
-                2
-              )
-            );
-          } else {
-            console.log("=== ACTION PREPARED (ZERO BUSINESS SIDE EFFECTS) ===");
-            console.log(`Status: PREPARED`);
-            console.log(`Prepared ID: ${prepared.id}`);
-            console.log(`Canonical Digest: ${prepared.canonicalDigest}`);
-            console.log(`Action ID: ${prepared.actionId}`);
-            console.log(`Verdict: ${prepared.verdict}`);
-            console.log(`Object Revisions: ${prepared.objectRevisions.length}`);
-            console.log(
-              `Predicate Dependencies: ${prepared.predicateDependencies.length}`
-            );
-            console.log(
-              `Expires At: ${new Date(prepared.expiresAt).toISOString()}`
-            );
-          }
-          return 0;
-        }
-
-        if (sub === "approve") {
-          const preparedDigest = args[1];
-          const viewedIndex = args.indexOf("--viewed-digest");
-          const viewedDigest =
-            viewedIndex === -1 ? undefined : args[viewedIndex + 1];
-
-          if (!preparedDigest || !viewedDigest) {
-            console.error(
-              "Error: Missing preparedDigest or --viewed-digest for approve."
-            );
-            console.error(
-              "  Usage: operon action approve <preparedDigest> --viewed-digest <digest> [--decision approve|reject] [--reason <text>] [--json]"
-            );
-            return 1;
-          }
-
-          const decisionIndex = args.indexOf("--decision");
-          const rawDecision =
-            decisionIndex === -1 ? "approve" : args[decisionIndex + 1];
-          const decision =
-            rawDecision === "reject" || rawDecision === "rejected"
-              ? "rejected"
-              : "approved";
-
-          const reasonIndex = args.indexOf("--reason");
-          const reason = reasonIndex === -1 ? undefined : args[reasonIndex + 1];
-
-          const reviewerIndex = args.includes("--reviewer-id")
-            ? args.indexOf("--reviewer-id")
-            : args.indexOf("--reviewer");
-          const reviewerId =
-            reviewerIndex === -1 ? "operator_human" : args[reviewerIndex + 1];
-
-          const roleIndex = args.indexOf("--role");
-          const role = roleIndex === -1 ? "operator" : args[roleIndex + 1];
-
-          const assuranceIndex = args.indexOf("--assurance");
-          const assurance = (
-            assuranceIndex === -1 ||
-            args[assuranceIndex + 1] !== "delegated_service"
-              ? "human_verified"
-              : "delegated_service"
-          ) as "human_verified" | "delegated_service";
-
-          const tenantIndex = args.indexOf("--tenant");
-          const tenantId =
-            tenantIndex === -1 ? "default" : args[tenantIndex + 1];
-
-          const envIndex = args.indexOf("--env");
-          const environmentId =
-            envIndex === -1 ? "default" : args[envIndex + 1];
-
-          const reviewer = createSubject(reviewerId, "user", [role]);
-
-          const approveRes = yield* Effect.exit(
-            ctx.governedActions.approvePreparedAction({
-              decision,
-              preparedDigest,
-              reason,
-              reviewerContext: {
-                assurance,
-                environmentId,
-                reviewer,
-                tenantId,
-              },
-              viewedDigest,
-            })
-          );
-
-          if (approveRes._tag === "Failure") {
-            const err = (approveRes.cause as any)?.error ?? approveRes.cause;
-            console.error(
-              `Error: Approval failed: ${extractErrorMessage(err)}`
-            );
-            return 1;
-          }
-
-          const approval = approveRes.value;
-
-          if (isJson) {
-            console.log(
-              JSON.stringify(
-                {
-                  approvalId: approval.id,
-                  approvedAt: approval.approvedAt,
-                  decision: approval.decision,
-                  expiresAt: approval.expiresAt,
-                  preparedDigest: approval.preparedDigest,
-                  recordHash: approval.recordHash,
-                  reviewerId: approval.reviewerContext.reviewer.id,
-                  status: "APPROVED",
-                  viewedDigest: approval.viewedDigest,
-                },
-                null,
-                2
-              )
-            );
-          } else {
-            console.log("=== ACTION PROPOSAL APPROVED ===");
-            console.log(`Approval ID: ${approval.id}`);
-            console.log(`Decision: ${approval.decision.toUpperCase()}`);
-            console.log(`Prepared Digest: ${approval.preparedDigest}`);
-            console.log(`Record Hash: ${approval.recordHash}`);
-            console.log(`Reviewer: ${approval.reviewerContext.reviewer.id}`);
-            console.log(
-              `Approved At: ${new Date(approval.approvedAt).toISOString()}`
-            );
-          }
-          return 0;
-        }
-
-        if (sub === "commit") {
-          const preparedDigest = args[1];
-          const keyIndex = args.indexOf("--idempotency-key");
-          const idempotencyKey =
-            keyIndex === -1 ? undefined : args[keyIndex + 1];
-
-          if (!preparedDigest || !idempotencyKey) {
-            console.error(
-              "Error: Missing preparedDigest or --idempotency-key for commit."
-            );
-            console.error(
-              "  Usage: operon action commit <preparedDigest> [--approval-id <id>] --idempotency-key <key> [--json]"
-            );
-            return 1;
-          }
-
-          const approvalIndex = args.indexOf("--approval-id");
-          const approvalId =
-            approvalIndex === -1 ? undefined : args[approvalIndex + 1];
-
-          const tenantIndex = args.indexOf("--tenant");
-          const tenantId =
-            tenantIndex === -1 ? "default" : args[tenantIndex + 1];
-
-          const envIndex = args.indexOf("--env");
-          const environmentId =
-            envIndex === -1 ? "default" : args[envIndex + 1];
-
-          const preparedRes = yield* Effect.exit(
-            ctx.governedActions.getPreparedAction(preparedDigest, tenantId)
-          );
-          if (preparedRes._tag === "Failure") {
-            console.error(
-              `Error: Prepared action not found for digest '${preparedDigest}'.`
-            );
-            return 1;
-          }
-          const prepared = preparedRes.value;
-
-          let approval = undefined;
-          if (approvalId) {
-            const approvalRes = yield* Effect.exit(
-              ctx.governedActions.getApprovalRecord(approvalId, tenantId)
-            );
-            if (approvalRes._tag === "Failure") {
-              console.error(
-                `Error: Approval record not found for id '${approvalId}'.`
-              );
-              return 1;
-            }
-            approval = approvalRes.value;
-          }
-
-          const commitRes = yield* Effect.exit(
-            ctx.atomicCommit.commit({
-              approval,
-              environmentId,
-              idempotencyKey,
-              prepared,
-              tenantId,
-            })
-          );
-
-          if (commitRes._tag === "Failure") {
-            const err = (commitRes.cause as any)?.error ?? commitRes.cause;
-            console.error(`Error: Commit failed: ${extractErrorMessage(err)}`);
-            return 1;
-          }
-
-          const receipt = commitRes.value;
-
-          if (isJson) {
-            console.log(
-              JSON.stringify(
-                {
-                  actionId: receipt.actionId,
-                  committedAt: receipt.committedAt,
-                  decisionRecordId: receipt.decisionRecordId,
-                  idempotencyKey: receipt.idempotencyKey,
-                  operationId: receipt.operationId,
-                  outboxItemsCount: receipt.outboxItems.length,
-                  preparedDigest: receipt.preparedDigest,
-                  receiptDigest: receipt.receiptDigest,
-                  status: receipt.status,
-                  updatedObjectsCount: receipt.updatedObjects.length,
-                },
-                null,
-                2
-              )
-            );
-          } else {
-            console.log("=== LOCAL ATOMIC COMMIT SUCCESSFUL ===");
-            console.log(`Operation ID: ${receipt.operationId}`);
-            console.log(`Status: ${receipt.status}`);
-            console.log(`Receipt Digest: ${receipt.receiptDigest}`);
-            console.log(`Updated Objects: ${receipt.updatedObjects.length}`);
-            console.log(`Outbox Items: ${receipt.outboxItems.length}`);
-            console.log(
-              `Committed At: ${new Date(receipt.committedAt).toISOString()}`
-            );
-          }
-          return 0;
-        }
-
-        if (sub === "status") {
-          const operationId = args[1];
-          if (!operationId) {
-            console.error("Error: Missing operation ID for status.");
-            console.error(
-              "  Usage: operon action status <operationId> [--json]"
-            );
-            return 1;
-          }
-
-          const tenantIndex = args.indexOf("--tenant");
-          const tenantId =
-            tenantIndex === -1 ? "default" : args[tenantIndex + 1];
-
-          const receiptRes = yield* Effect.exit(
-            ctx.atomicCommit.getReceipt(operationId, tenantId)
-          );
-
-          if (receiptRes._tag === "Success" && receiptRes.value) {
-            const receipt = receiptRes.value;
-            if (isJson) {
-              console.log(JSON.stringify(receipt, null, 2));
-            } else {
-              console.log("=== ACTION OPERATION STATUS ===");
-              console.log(`Operation ID: ${receipt.operationId}`);
-              console.log(`Status: ${receipt.status}`);
-              console.log(`Prepared Digest: ${receipt.preparedDigest}`);
-              console.log(`Receipt Digest: ${receipt.receiptDigest}`);
-              console.log(`Updated Objects: ${receipt.updatedObjects.length}`);
-              console.log(`Outbox Items: ${receipt.outboxItems.length}`);
-              console.log(
-                `Committed At: ${new Date(receipt.committedAt).toISOString()}`
-              );
-            }
-            return 0;
-          }
-
-          const outboxRes = yield* Effect.exit(
-            ctx.atomicCommit.getOutboxItem(operationId)
-          );
-          if (outboxRes._tag === "Success" && outboxRes.value) {
-            const outbox = outboxRes.value;
-            if (isJson) {
-              console.log(JSON.stringify(outbox, null, 2));
-            } else {
-              console.log("=== OUTBOX ITEM STATUS ===");
-              console.log(`Outbox ID: ${outbox.id}`);
-              console.log(`Status: ${outbox.status}`);
-              console.log(`Operation ID: ${outbox.operationId}`);
-              console.log(`Attempt Count: ${outbox.attemptCount}`);
-              console.log(`Command: ${outbox.command}`);
-            }
-            return 0;
-          }
-
-          console.error(
-            `Error: Operation or outbox item not found for ID '${operationId}'.`
-          );
-          return 1;
-        }
-
-        if (sub === "submit") {
-          const actionId = args[1];
-          if (!actionId) {
-            console.error("Error: Missing action ID for submit.");
-            console.error(
-              "  Usage: operon action submit <actionId> [--params '<json>' | --stdin] [--agent-tier <1-4>] [--dry-run] [--json]"
-            );
-            console.error(
-              '  Example: operon action submit update_vitals --params \'{"patientId":"P001","heartRate":72}\' --agent-tier 4'
-            );
-            return 1;
-          }
-
-          const action = ctx.actionTypes.find((a) => a.id === actionId);
-          if (!action) {
-            console.error(`Error: ActionType '${actionId}' not found.`);
-            console.error(
-              `  Available actions: ${ctx.actionTypes.map((a) => a.id).join(", ")}`
-            );
-            return 1;
-          }
-
-          let rawParameters: unknown = {};
-          if (useStdin) {
-            const stdinBuffer = yield* Effect.promise(() => readStdin());
-            const parseResult = yield* Effect.try({
-              try: () => JSON.parse(String(stdinBuffer).trim() || "{}"),
-              catch: (error) => error,
-            }).pipe(Effect.exit);
-            if (parseResult._tag === "Failure") {
-              console.error(
-                "Error: Failed to parse JSON from stdin.",
-                parseResult.cause
-              );
-              return 1;
-            }
-            rawParameters = parseResult.value;
-          } else {
-            const paramsIndex = args.indexOf("--params");
-            if (paramsIndex !== -1 && args[paramsIndex + 1]) {
-              const parseResult = yield* Effect.try({
-                try: () => JSON.parse(args[paramsIndex + 1]),
-                catch: (error) => error,
-              }).pipe(Effect.exit);
-              if (parseResult._tag === "Failure") {
-                console.error(
-                  "Error: --params must be valid JSON.",
-                  parseResult.cause
-                );
-                return 1;
-              }
-              rawParameters = parseResult.value;
-            }
-          }
-
-          // Subject extraction
-          const tierIndex = args.indexOf("--agent-tier");
-          const agentTier =
-            tierIndex === -1
-              ? (4 as const)
-              : (Math.trunc(Number(args[tierIndex + 1])) as 1 | 2 | 3 | 4);
-
-          const subjectIdIndex = args.indexOf("--subject-id");
-          const subjectId =
-            subjectIdIndex === -1 ? "cli_agent" : args[subjectIdIndex + 1];
-
-          const typeIndex = args.indexOf("--subject-type");
-          const subjectType = (
-            typeIndex === -1 ? "agent" : args[typeIndex + 1]
-          ) as "user" | "agent";
-
-          const roleIndex = args.indexOf("--role");
-          const roles =
-            roleIndex === -1
-              ? ["operator", "clinician"]
-              : [args[roleIndex + 1]];
-
-          const subject = createSubject(
-            subjectId,
-            subjectType,
-            roles,
-            agentTier
-          );
-
-          // Dry run preview
-          if (isDryRun) {
-            const decoded = yield* Schema.decodeUnknownEffect(
-              action.parametersSchema as Schema.Decoder<any>
-            )(rawParameters).pipe(Effect.result);
-            const parametersValid = decoded._tag === "Success";
-
-            const preview = {
-              actionId: action.id,
-              agentTier,
-              dryRun: true,
-              mode:
-                agentTier === 2 || action.defaultExecutionMode === "proposal"
-                  ? "proposal"
-                  : "automated",
-              parametersValid,
-              riskTier: action.riskTier,
-              subject: subject.id,
-            };
-
-            if (isJson) {
-              console.log(JSON.stringify(preview, null, 2));
-            } else {
-              console.log("=== DRY RUN ACTION EXECUTION PREVIEW ===");
-              console.log(
-                `Action: ${preview.actionId} (Risk: ${preview.riskTier})`
-              );
-              console.log(`Agent Tier: ${preview.agentTier}`);
-              console.log(
-                `Parameters Valid: ${preview.parametersValid ? "YES" : "NO"}`
-              );
-              console.log(
-                `Pipeline Route: ${preview.mode === "proposal" ? "PROPOSAL_CREATED (Action Inbox)" : "EXECUTED (Governed Write Pipeline)"}`
-              );
-            }
-            return preview.parametersValid ? 0 : 1;
-          }
-
-          const submission = {
-            actionType: action,
-            rawParameters,
-            security: {
-              correlationId: `cli_${Date.now()}`,
-              subject,
-              timestamp: Date.now(),
-            },
-          };
-
-          const result = yield* executeWritePipeline(
-            submission,
-            ctx.objectStore,
-            ctx.auditStore
-          );
-
-          if (result.status === "proposed") {
-            ctx.inbox.addProposal(submission, result.decisionRecord);
-
-            if (isJson) {
-              console.log(
-                JSON.stringify(
-                  {
-                    decisionRecordId: result.decisionRecord.id,
-                    proposalId: result.proposalId,
-                    recordHash: result.decisionRecord.recordHash,
-                    status: "PROPOSAL_CREATED",
-                  },
-                  null,
-                  2
-                )
-              );
-            } else {
-              console.log("=== ACTION INTERCEPTED BY GOVERNANCE LADDER ===");
-              console.log(`Status: PROPOSAL_CREATED (Routed to Action Inbox)`);
-              console.log(`Proposal ID: ${result.proposalId}`);
-              console.log(`Decision Hash: ${result.decisionRecord.recordHash}`);
-              console.log(
-                `Next Step: Review with 'operon inbox approve ${result.proposalId} --reviewer <id> --role <role>'`
-              );
-            }
-            return 0;
-          }
-
-          if (isJson) {
-            console.log(
-              JSON.stringify(
-                {
-                  decisionRecordId: result.decisionRecord.id,
-                  recordHash: result.decisionRecord.recordHash,
-                  status: "EXECUTED",
-                  updatedObjectsCount: result.updatedObjects.length,
-                },
-                null,
-                2
-              )
-            );
-          } else {
-            console.log("=== GOVERNED ACTION EXECUTED SUCCESSFULLY ===");
-            console.log(`Status: EXECUTED`);
-            console.log(`Decision Hash: ${result.decisionRecord.recordHash}`);
-            console.log(
-              `Committed Updates: ${result.updatedObjects.length} object(s)`
-            );
-          }
-          return 0;
-        }
-
-        console.error(`Error: Unknown action subcommand '${sub ?? ""}'`);
-        console.error(
-          "  Available subcommands: list, prepare, approve, commit, status, submit"
-        );
-        console.error("  Run 'operon action --help' for details.");
-        return 1;
-      }),
+    (ctx) => {
+      if (handler) {
+        return handler({ args, ctx, isDryRun, isJson, useStdin });
+      }
+      printCliError(`Error: Unknown action subcommand '${sub ?? ""}'`);
+      printCliError(
+        "  Available subcommands: list, prepare, approve, commit, status, submit"
+      );
+      printCliError("  Run 'operon action --help' for details.");
+      return Effect.succeed(1);
+    },
     (ctx) => Effect.sync(() => ctx.close())
   ).pipe(
     Effect.annotateLogs({ command: "action", subcommand: args[0] ?? "none" })

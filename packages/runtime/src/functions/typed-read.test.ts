@@ -55,8 +55,14 @@ describe("Typed Read Functions & Predictions (S12 / OPR-FUN-001..006)", () => {
         const ageFactor = 0.9938 ** input.age;
         const genderFactor = input.isFemale ? 1.018 : 1;
         const egfr = Math.round(base * ageFactor * genderFactor);
-        const stage =
-          egfr >= 90 ? "G1_NORMAL" : egfr >= 60 ? "G2_MILD" : "G3_MODERATE";
+        let stage: string;
+        if (egfr >= 90) {
+          stage = "G1_NORMAL";
+        } else if (egfr >= 60) {
+          stage = "G2_MILD";
+        } else {
+          stage = "G3_MODERATE";
+        }
         return { egfr, stage };
       }),
     functionId: "fn_calculate_egfr",

@@ -4,7 +4,7 @@ import type {
   MustAnswerTemplate,
   QualityGateEvaluation,
 } from "@operon/schema";
-import { Context, Effect, Layer } from "effect";
+import { Clock, Context, Effect, Layer } from "effect";
 
 import { CommunicationComplianceViolationError } from "../actions-errors.js";
 import {
@@ -34,6 +34,80 @@ export class QualityGateService extends Context.Service<
   }
 >()("operon/runtime/QualityGateService") {}
 
+function checkCommunicationCompliance(
+  actorId: string,
+  actorTier?: AuthorityTier,
+  lowerText?: string
+): Effect.Effect<void, CommunicationComplianceViolationError> {
+  if (
+    actorTier === "TIER_1_OBSERVE" &&
+    lowerText &&
+    (lowerText.includes("i executed") ||
+      lowerText.includes("i have approved") ||
+      lowerText.includes("action executed") ||
+      lowerText.includes("guarantee this action is safe"))
+  ) {
+    return new CommunicationComplianceViolationError({
+      actorId,
+      actorTier,
+      message: `Observe-tier agent '${actorId}' made unauthorized execution/approval claim in communication`,
+      violationType: "UNAUTHORIZED_EXECUTION_CLAIM",
+    });
+  }
+  return Effect.void;
+}
+
+function checkCitationsResolution(
+  citations: readonly EvidenceCitation[] | undefined,
+  registeredEvidence: Record<string, RegisteredEvidenceSource> | undefined,
+  lowerText: string
+): boolean {
+  if (citations && citations.length > 0) {
+    const resolutionResults = resolveCitationsInternal(
+      citations,
+      registeredEvidence ?? {}
+    );
+    return resolutionResults.every(
+      (res) => res.status === "RESOLVED_SUPPORTED"
+    );
+  }
+  if (
+    lowerText.includes("factual finding") ||
+    lowerText.includes("clinical finding") ||
+    lowerText.includes("diagnosis")
+  ) {
+    return false;
+  }
+  return true;
+}
+
+function determineRouting(
+  passed: boolean,
+  citationsResolved: boolean
+): {
+  reason: string;
+  routing: "ALLOW" | "ROUTE_TO_REVIEW" | "BLOCK";
+} {
+  if (passed) {
+    return {
+      reason:
+        "Quality gate verified: citations resolved and completeness satisfied",
+      routing: "ALLOW",
+    };
+  }
+  if (citationsResolved) {
+    return {
+      reason: "Quality gate failed: mandatory must-answer items omitted",
+      routing: "BLOCK",
+    };
+  }
+  return {
+    reason:
+      "Quality gate failed: uncited or unresolvable claims route to review",
+    routing: "ROUTE_TO_REVIEW",
+  };
+}
+
 /**
  * Live layer for QualityGateService
  */
@@ -54,66 +128,21 @@ export const QualityGateServiceLive = Layer.sync(QualityGateService, () =>
 
       const lowerText = outputText.toLowerCase();
 
-      // 1. Check Communication Compliance (OPR-L2-004)
-      // An observe-tier agent cannot claim it approved or executed an action
-      if (
-        actorTier === "TIER_1_OBSERVE" &&
-        (lowerText.includes("i executed") ||
-          lowerText.includes("i have approved") ||
-          lowerText.includes("action executed") ||
-          lowerText.includes("guarantee this action is safe"))
-      ) {
-        return yield* Effect.fail(
-          new CommunicationComplianceViolationError({
-            actorId,
-            actorTier,
-            message: `Observe-tier agent '${actorId}' made unauthorized execution/approval claim in communication`,
-            violationType: "UNAUTHORIZED_EXECUTION_CLAIM",
-          })
-        );
-      }
+      yield* checkCommunicationCompliance(actorId, actorTier, lowerText);
 
-      // 2. Check Citations Resolution (OPR-L2-003, 006)
-      let citationsResolved = true;
-      if (citations.length > 0) {
-        const resolutionResults = resolveCitationsInternal(
-          citations,
-          registeredEvidence
-        );
-        for (const res of resolutionResults) {
-          if (res.status !== "RESOLVED_SUPPORTED") {
-            citationsResolved = false;
-            break;
-          }
-        }
-      } else if (
-        lowerText.includes("factual finding") ||
-        lowerText.includes("clinical finding") ||
-        lowerText.includes("diagnosis")
-      ) {
-        // Output makes factual clinical/financial claims without citations (L2-006.T01)
-        citationsResolved = false;
-      }
+      const citationsResolved = checkCitationsResolution(
+        citations,
+        registeredEvidence,
+        lowerText
+      );
 
-      // 3. Check Completeness (OPR-L2-002, 006)
-      let completenessPassed = true;
-      if (template) {
-        const compRes = verifyCompletenessInternal(structuredPayload, template);
-        completenessPassed = compRes.passed;
-      }
+      const completenessPassed = template
+        ? verifyCompletenessInternal(structuredPayload, template).passed
+        : true;
 
       const passed = citationsResolved && completenessPassed;
-      const routing = passed
-        ? "ALLOW"
-        : citationsResolved === false
-          ? "ROUTE_TO_REVIEW"
-          : "BLOCK";
-
-      const reason = passed
-        ? "Quality gate verified: citations resolved and completeness satisfied"
-        : citationsResolved
-          ? "Quality gate failed: mandatory must-answer items omitted"
-          : "Quality gate failed: uncited or unresolvable claims route to review";
+      const { reason, routing } = determineRouting(passed, citationsResolved);
+      const now = yield* Clock.currentTimeMillis;
 
       return {
         actorId,
@@ -121,7 +150,7 @@ export const QualityGateServiceLive = Layer.sync(QualityGateService, () =>
         citationsResolved,
         completenessPassed,
         compliancePassed: true,
-        gateId: `gate-${Date.now()}`,
+        gateId: `gate-${now}`,
         passed,
         reason,
         routing,

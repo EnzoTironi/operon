@@ -1,17 +1,20 @@
 import {
   computeAdmissionReceiptDigest,
   computeQueryReceiptDigest,
+  generatePrefixedId,
 } from "@operon/schema";
 import type {
   AdmissionReceipt,
   CanonicalEvidenceEnvelope,
   Claim,
   ObjectInstance,
+  ObjectProperties,
   ObjectTypeId,
   QueryReceipt,
   Subject,
 } from "@operon/schema";
-import { Data, Effect } from "effect";
+import type { Schema } from "effect";
+import { Clock, Data, Effect } from "effect";
 
 import type { BitemporalObjectStore } from "./bitemporal-store.js";
 import type { StorageError } from "./errors.js";
@@ -34,6 +37,155 @@ export class QuarantinedEvidenceError extends Data.TaggedError(
   readonly envelopeId: string;
   readonly reason: string;
 }> {}
+
+function isJsonObject(
+  value: Schema.Json
+): value is Record<string, Schema.Json> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function checkEvidenceAuthorization(
+  principal: Subject,
+  targetTypeId: string
+): Effect.Effect<void, AuthorizationError> {
+  const isAuthorized =
+    principal.roles.includes("admin") ||
+    principal.roles.includes("operator") ||
+    principal.roles.includes("ingest_service") ||
+    principal.roles.includes("domain_specialist");
+  if (!isAuthorized) {
+    return new AuthorizationError({
+      reason: `Principal '${principal.id}' lacks required role to admit evidence into '${targetTypeId}'`,
+    });
+  }
+  return Effect.void;
+}
+
+function classifyIncomingClaims(
+  envelope: CanonicalEvidenceEnvelope,
+  principal: Subject,
+  existingClaims: readonly Claim[],
+  now: number
+): { acceptedClaims: Claim[]; conflictingClaims: Claim[] } {
+  const incomingProperties: Record<string, Schema.Json> = {};
+  if (isJsonObject(envelope.rawPayload)) {
+    for (const [k, v] of Object.entries(envelope.rawPayload)) {
+      incomingProperties[k] = v;
+    }
+  }
+
+  const acceptedClaims: Claim[] = [];
+  const conflictingClaims: Claim[] = [];
+
+  for (const [propName, propVal] of Object.entries(incomingProperties)) {
+    const claimId = generatePrefixedId("clm", now);
+    const existingClaim = existingClaims.find(
+      (c) => c.propertyName === propName && c.state === "accepted"
+    );
+
+    const isConflict =
+      existingClaim &&
+      JSON.stringify(existingClaim.propertyValue) !== JSON.stringify(propVal) &&
+      existingClaim.sourceSystem !== envelope.sourceSystem;
+
+    if (isConflict) {
+      conflictingClaims.push({
+        attribution: principal,
+        claimId,
+        confidence: 0.5,
+        conflictReason: `Conflicting value '${JSON.stringify(propVal)}' from '${envelope.sourceSystem}' vs existing '${JSON.stringify(existingClaim.propertyValue)}' from '${existingClaim.sourceSystem}'`,
+        effectiveTime: envelope.effectiveTime,
+        evidenceDigest: envelope.contentDigest,
+        propertyName: propName,
+        propertyValue: propVal,
+        recordedAt: now,
+        sourceSystem: envelope.sourceSystem,
+        state: "contested",
+        subjectId: envelope.externalId,
+        targetTypeId: envelope.targetTypeId,
+      });
+    } else {
+      acceptedClaims.push({
+        attribution: principal,
+        claimId,
+        confidence: 0.99,
+        effectiveTime: envelope.effectiveTime,
+        evidenceDigest: envelope.contentDigest,
+        propertyName: propName,
+        propertyValue: propVal,
+        recordedAt: now,
+        sourceSystem: envelope.sourceSystem,
+        state: "accepted",
+        subjectId: envelope.externalId,
+        targetTypeId: envelope.targetTypeId,
+      });
+    }
+  }
+
+  return { acceptedClaims, conflictingClaims };
+}
+
+function persistAcceptedClaims(
+  store: ObjectStore,
+  envelope: CanonicalEvidenceEnvelope,
+  acceptedClaims: readonly Claim[],
+  now: number
+): Effect.Effect<void> {
+  if (acceptedClaims.length === 0) {
+    return Effect.void;
+  }
+  return Effect.gen(function* () {
+    const existingObj = yield* store.getObject(
+      envelope.targetTypeId,
+      envelope.externalId
+    );
+
+    const mergedProperties: ObjectProperties = existingObj
+      ? { ...existingObj.properties }
+      : {};
+
+    for (const c of acceptedClaims) {
+      mergedProperties[c.propertyName] = c.propertyValue;
+    }
+
+    const nextVersion = existingObj ? existingObj.version + 1 : 1;
+
+    yield* store
+      .putObject({
+        id: envelope.externalId,
+        lastModifiedAt: now,
+        properties: mergedProperties,
+        typeId: envelope.targetTypeId,
+        validFrom: envelope.effectiveTime,
+        version: nextVersion,
+      })
+      .pipe(Effect.catchTag("ConcurrentModificationError", Effect.die));
+  });
+}
+
+const queryObjPointInTime = Effect.fn("queryObjPointInTime")(function* (
+  store: ObjectStore,
+  targetTypeId: ObjectTypeId,
+  objId: string,
+  asOf: { readonly valid: number; readonly transaction: number }
+): Effect.fn.Return<ObjectInstance | undefined, StorageError> {
+  if ("asOfBitemporal" in store) {
+    return yield* (store as SqlBitemporalStore).asOfBitemporal(
+      targetTypeId,
+      objId,
+      asOf.valid,
+      asOf.transaction
+    );
+  }
+  if ("asOfValidTime" in store) {
+    return yield* (store as BitemporalObjectStore).asOfValidTime(
+      targetTypeId,
+      objId,
+      asOf.valid
+    );
+  }
+  return undefined;
+});
 
 /**
  * Canonical Evidence and Admission Engine (S03, S04 / V1-02)
@@ -64,228 +216,121 @@ export class CanonicalEvidenceEngine {
    * Controls admission of raw evidence envelopes. Contradictory claims remain visible,
    * attributed, and unresolved rather than silently overwriting accepted state.
    */
-  admit(
+  admit = Effect.fn("CanonicalEvidenceEngine.admit")(function* (
+    this: CanonicalEvidenceEngine,
     envelope: CanonicalEvidenceEnvelope,
     principal: Subject
-  ): Effect.Effect<
+  ): Effect.fn.Return<
     AdmissionReceipt,
     AuthorizationError | QuarantinedEvidenceError
   > {
-    return Effect.gen({ self: this }, function* () {
-      // 1. Check authorization
-      const isAuthorized =
-        principal.roles.includes("admin") ||
-        principal.roles.includes("operator") ||
-        principal.roles.includes("ingest_service") ||
-        principal.roles.includes("domain_specialist");
-      if (!isAuthorized) {
-        return yield* Effect.fail(
-          new AuthorizationError({
-            reason: `Principal '${principal.id}' lacks required role to admit evidence into '${envelope.targetTypeId}'`,
-          })
-        );
-      }
+    yield* checkEvidenceAuthorization(principal, envelope.targetTypeId);
 
-      const now = Date.now();
-      const subjectKey = `${envelope.targetTypeId}:${envelope.externalId}`;
-      const existingClaims = this.admittedClaims.get(subjectKey) ?? [];
+    const now = yield* Clock.currentTimeMillis;
+    const subjectKey = `${envelope.targetTypeId}:${envelope.externalId}`;
+    const existingClaims = this.admittedClaims.get(subjectKey) ?? [];
 
-      // 2. Parse claims from envelope
-      const rawPayload = envelope.rawPayload as Record<string, unknown> | null;
-      const incomingProperties: Record<string, unknown> = {};
+    const { acceptedClaims, conflictingClaims } = classifyIncomingClaims(
+      envelope,
+      principal,
+      existingClaims,
+      now
+    );
 
-      if (rawPayload && typeof rawPayload === "object") {
-        for (const [k, v] of Object.entries(rawPayload)) {
-          incomingProperties[k] = v;
-        }
-      }
+    const status = conflictingClaims.length > 0 ? "contested" : "admitted";
 
-      const acceptedClaims: Claim[] = [];
-      const conflictingClaims: Claim[] = [];
+    yield* persistAcceptedClaims(this.store, envelope, acceptedClaims, now);
 
-      for (const [propName, propVal] of Object.entries(incomingProperties)) {
-        const claimId = `clm_${now}_${Math.random().toString(36).slice(2, 8)}`;
-        const existingClaim = existingClaims.find(
-          (c) => c.propertyName === propName && c.state === "accepted"
-        );
+    this.admittedClaims.set(subjectKey, [
+      ...existingClaims,
+      ...acceptedClaims,
+      ...conflictingClaims,
+    ]);
+    this.envelopes.set(envelope.envelopeId, envelope);
 
-        if (
-          existingClaim &&
-          JSON.stringify(existingClaim.propertyValue) !==
-            JSON.stringify(propVal) &&
-          existingClaim.sourceSystem !== envelope.sourceSystem
-        ) {
-          // Contradictory evidence: S03 requires contradictory claims to remain visible, attributed, and unresolved
-          const contestedClaim: Claim = {
-            attribution: principal,
-            claimId,
-            confidence: 0.5,
-            conflictReason: `Conflicting value '${JSON.stringify(propVal)}' from '${envelope.sourceSystem}' vs existing '${JSON.stringify(existingClaim.propertyValue)}' from '${existingClaim.sourceSystem}'`,
-            effectiveTime: envelope.effectiveTime,
-            evidenceDigest: envelope.contentDigest,
-            propertyName: propName,
-            propertyValue: propVal,
-            recordedAt: now,
-            sourceSystem: envelope.sourceSystem,
-            state: "contested",
-            subjectId: envelope.externalId,
-            targetTypeId: envelope.targetTypeId,
-          };
-          conflictingClaims.push(contestedClaim);
-        } else {
-          const acceptedClaim: Claim = {
-            attribution: principal,
-            claimId,
-            confidence: 0.99,
-            effectiveTime: envelope.effectiveTime,
-            evidenceDigest: envelope.contentDigest,
-            propertyName: propName,
-            propertyValue: propVal,
-            recordedAt: now,
-            sourceSystem: envelope.sourceSystem,
-            state: "accepted",
-            subjectId: envelope.externalId,
-            targetTypeId: envelope.targetTypeId,
-          };
-          acceptedClaims.push(acceptedClaim);
-        }
-      }
-
-      const status = conflictingClaims.length > 0 ? "contested" : "admitted";
-
-      // 3. If admitted properties exist, write them into the bitemporal store
-      if (acceptedClaims.length > 0) {
-        const existingObj = yield* this.store
-          .getObject(envelope.targetTypeId, envelope.externalId)
-          .pipe(Effect.orDie);
-
-        const mergedProperties: Record<string, unknown> = existingObj
-          ? { ...existingObj.properties }
-          : {};
-
-        for (const c of acceptedClaims) {
-          mergedProperties[c.propertyName] = c.propertyValue;
-        }
-
-        const nextVersion = existingObj ? existingObj.version + 1 : 1;
-
-        yield* this.store
-          .putObject({
-            id: envelope.externalId,
-            lastModifiedAt: now,
-            properties: mergedProperties,
-            typeId: envelope.targetTypeId,
-            validFrom: envelope.effectiveTime,
-            version: nextVersion,
-          })
-          .pipe(Effect.orDie);
-      }
-
-      // Record claims in registry
-      this.admittedClaims.set(subjectKey, [
-        ...existingClaims,
-        ...acceptedClaims,
-        ...conflictingClaims,
-      ]);
-      this.envelopes.set(envelope.envelopeId, envelope);
-
-      const admissionId = `adm_${now}_${Math.random().toString(36).slice(2, 8)}`;
-      const receiptDigest = computeAdmissionReceiptDigest({
-        admittedAt: now,
-        claims: acceptedClaims,
-        conflictingClaims,
-        envelopeId: envelope.envelopeId,
-        status,
-        subjectId: envelope.externalId,
-        targetTypeId: envelope.targetTypeId,
-      });
-
-      const receipt: AdmissionReceipt = {
-        admissionId,
-        admittedAt: now,
-        admittedBy: principal,
-        bitemporal: {
-          transactionTime: {
-            recordedAt: now,
-          },
-          validTime: {
-            validFrom: envelope.effectiveTime,
-          },
-        },
-        claims: acceptedClaims,
-        conflictingClaims,
-        envelopeId: envelope.envelopeId,
-        receiptDigest,
-        status,
-        subjectId: envelope.externalId,
-        targetTypeId: envelope.targetTypeId,
-      };
-
-      this.receipts.set(admissionId, receipt);
-      return receipt;
+    const admissionId = generatePrefixedId("adm", now);
+    const receiptDigest = computeAdmissionReceiptDigest({
+      admittedAt: now,
+      claims: acceptedClaims,
+      conflictingClaims,
+      envelopeId: envelope.envelopeId,
+      status,
+      subjectId: envelope.externalId,
+      targetTypeId: envelope.targetTypeId,
     });
-  }
+
+    const receipt: AdmissionReceipt = {
+      admissionId,
+      admittedAt: now,
+      admittedBy: principal,
+      bitemporal: {
+        transactionTime: {
+          recordedAt: now,
+        },
+        validTime: {
+          validFrom: envelope.effectiveTime,
+        },
+      },
+      claims: acceptedClaims,
+      conflictingClaims,
+      envelopeId: envelope.envelopeId,
+      receiptDigest,
+      status,
+      subjectId: envelope.externalId,
+      targetTypeId: envelope.targetTypeId,
+    };
+
+    this.receipts.set(admissionId, receipt);
+    return receipt;
+  });
 
   /**
    * query (S04):
    * Point-in-time bitemporal query returning exact independently checkable QueryReceipt.
    */
-  query(
+  query = Effect.fn("CanonicalEvidenceEngine.query")(function* (
+    this: CanonicalEvidenceEngine,
     targetTypeId: ObjectTypeId,
     asOf: { readonly valid: number; readonly transaction: number }
-  ): Effect.Effect<QueryReceipt, StorageError> {
+  ): Effect.fn.Return<QueryReceipt, StorageError> {
     const store = this.store;
-    return Effect.gen(function* () {
-      const allObjects = yield* store
-        .findObjects(targetTypeId)
-        .pipe(Effect.orDie);
+    const allObjects = yield* store.findObjects(targetTypeId);
 
-      const matched: ObjectInstance[] = [];
+    const results = yield* Effect.forEach(
+      allObjects,
+      (obj) => queryObjPointInTime(store, targetTypeId, obj.id, asOf),
+      { concurrency: 10 }
+    );
 
-      for (const obj of allObjects) {
-        if ("asOfBitemporal" in store) {
-          const pointInTime = yield* (
-            store as SqlBitemporalStore
-          ).asOfBitemporal(targetTypeId, obj.id, asOf.valid, asOf.transaction);
-          if (pointInTime) {
-            matched.push(pointInTime);
-          }
-        } else if ("asOfValidTime" in store) {
-          const vMatched = yield* (
-            store as BitemporalObjectStore
-          ).asOfValidTime(targetTypeId, obj.id, asOf.valid);
-          if (vMatched) {
-            matched.push(vMatched);
-          }
-        }
-      }
+    const matched: ObjectInstance[] = results.filter(
+      (r): r is ObjectInstance => r !== undefined
+    );
 
-      const now = Date.now();
-      const queryId = `qry_${now}_${Math.random().toString(36).slice(2, 8)}`;
-      const receiptDigest = computeQueryReceiptDigest({
-        asOf: {
-          transactionTime: asOf.transaction,
-          validTime: asOf.valid,
-        },
-        objects: matched,
-        queryId,
-        targetTypeId,
-      });
-
-      return {
-        asOf: {
-          transactionTime: asOf.transaction,
-          validTime: asOf.valid,
-        },
-        count: matched.length,
-        objects: matched,
-        queriedAt: now,
-        queryId,
-        receiptDigest,
-        targetTypeId,
-      };
+    const now = yield* Clock.currentTimeMillis;
+    const queryId = generatePrefixedId("qry", now);
+    const receiptDigest = computeQueryReceiptDigest({
+      asOf: {
+        transactionTime: asOf.transaction,
+        validTime: asOf.valid,
+      },
+      objects: matched,
+      queryId,
+      targetTypeId,
     });
-  }
+
+    return {
+      asOf: {
+        transactionTime: asOf.transaction,
+        validTime: asOf.valid,
+      },
+      count: matched.length,
+      objects: matched,
+      queriedAt: now,
+      queryId,
+      receiptDigest,
+      targetTypeId,
+    };
+  });
 
   /**
    * Directly executes independent SQL compilation against underlying tables to prove
@@ -298,15 +343,15 @@ export class CanonicalEvidenceEngine {
     txTime: number
   ): Effect.Effect<unknown, StorageError> {
     if (!this.sqlDriver) {
-      return Effect.succeed(undefined);
+      return Effect.void;
     }
-    const compiled = SqlSchemaGenerator.compileBitemporalQuery(
-      targetTypeId,
+    const compiled = SqlSchemaGenerator.compileBitemporalQuery({
+      dialect: "postgres",
       id,
-      validTime,
       txTime,
-      "postgres"
-    );
+      typeId: targetTypeId,
+      validTime,
+    });
     return this.sqlDriver
       .execute(compiled.sql, compiled.params)
       .pipe(Effect.map((res) => res.rows[0] ?? undefined));

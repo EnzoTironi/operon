@@ -1,5 +1,6 @@
+import { serializeJson } from "@operon/schema";
 import type { ObjectInstance } from "@operon/schema";
-import { Effect } from "effect";
+import { Clock, Effect } from "effect";
 
 export type ColumnDataType =
   | "string"
@@ -85,25 +86,31 @@ export class ColumnarBatchTable {
     max: unknown
   ): boolean {
     const col = this.columns.get(columnName);
-    if (!col) return true;
-    if (col.stats.min === undefined || col.stats.max === undefined) return true;
+    if (!col) {
+      return true;
+    }
+    if (col.stats.min === undefined || col.stats.max === undefined) {
+      return true;
+    }
 
     if (
       min !== undefined &&
       min !== null &&
       col.stats.max !== undefined &&
       col.stats.max !== null &&
-      (col.stats.max as any) < min
-    )
+      (col.stats.max as number | string) < (min as number | string)
+    ) {
       return false;
+    }
     if (
       max !== undefined &&
       max !== null &&
       col.stats.min !== undefined &&
       col.stats.min !== null &&
-      (col.stats.min as any) > max
-    )
+      (col.stats.min as number | string) > (max as number | string)
+    ) {
       return false;
+    }
 
     return true;
   }
@@ -113,12 +120,11 @@ export class ColumnarBatchTable {
    */
   public toRecords(): readonly Record<string, unknown>[] {
     const records: Record<string, unknown>[] = [];
-    const colNames = [...this.columns.keys()];
+    const colEntries = [...this.columns.entries()];
 
     for (let r = 0; r < this.rowCount; r++) {
       const row: Record<string, unknown> = {};
-      for (const name of colNames) {
-        const col = this.columns.get(name)!;
+      for (const [name, col] of colEntries) {
         if (col.dictionary && col.dictionaryIndices) {
           const idx = col.dictionaryIndices[r];
           row[name] = idx === null ? null : col.dictionary[idx];
@@ -157,89 +163,115 @@ export class ColumnarBatchTable {
 /**
  * Encodes row objects into ColumnarBatchTable with dictionary compression and statistical indexing.
  */
+function extractColumnValuesAndStats(
+  records: readonly Record<string, unknown>[],
+  colName: string
+) {
+  const values: (unknown | null)[] = [];
+  let nullCount = 0;
+  let minVal: unknown = undefined;
+  let maxVal: unknown = undefined;
+
+  for (const record of records) {
+    const val = record[colName] ?? null;
+    values.push(val);
+
+    if (val === null || val === undefined) {
+      nullCount++;
+    } else {
+      if (
+        minVal === undefined ||
+        (minVal !== null &&
+          (val as number | string) < (minVal as number | string))
+      ) {
+        minVal = val;
+      }
+      if (
+        maxVal === undefined ||
+        (maxVal !== null &&
+          (val as number | string) > (maxVal as number | string))
+      ) {
+        maxVal = val;
+      }
+    }
+  }
+
+  return { maxVal, minVal, nullCount, values };
+}
+
+function tryBuildDictionary(
+  stringVals: readonly (string | null)[],
+  rowCount: number
+): { dictionary: string[]; dictionaryIndices: (number | null)[] } | null {
+  const uniqueSet = new Set<string>();
+  for (const v of stringVals) {
+    if (v !== null) {
+      uniqueSet.add(v);
+    }
+  }
+
+  const uniqueArr = [...uniqueSet];
+  if (uniqueArr.length >= rowCount * 0.7 || uniqueArr.length === 0) {
+    return null;
+  }
+
+  const dictMap = new Map<string, number>();
+  for (const [idx, str] of uniqueArr.entries()) {
+    dictMap.set(str, idx);
+  }
+  const indices = stringVals.map((v) =>
+    v === null ? null : (dictMap.get(v) ?? null)
+  );
+
+  return { dictionary: uniqueArr, dictionaryIndices: indices };
+}
+
+function buildColumnChunk(
+  colName: string,
+  type: ColumnDataType,
+  records: readonly Record<string, unknown>[],
+  rowCount: number
+): ColumnChunk<unknown> {
+  const { maxVal, minVal, nullCount, values } = extractColumnValuesAndStats(
+    records,
+    colName
+  );
+  const stats = { max: maxVal, min: minVal, nullCount, rowCount };
+
+  if (type === "string") {
+    const dict = tryBuildDictionary(values as (string | null)[], rowCount);
+    if (dict) {
+      return {
+        dictionary: dict.dictionary,
+        dictionaryIndices: dict.dictionaryIndices,
+        name: colName,
+        stats,
+        type,
+        values: [],
+      };
+    }
+  }
+
+  return {
+    name: colName,
+    stats,
+    type,
+    values,
+  };
+}
+
+/**
+ * Encodes row objects into ColumnarBatchTable with dictionary compression and statistical indexing.
+ */
 export const ColumnarBatchEncoder = {
   encode(
     records: readonly Record<string, unknown>[],
     schema: Record<string, ColumnDataType>
   ): ColumnarBatchTable {
     const rowCount = records.length;
-    const columnChunks: ColumnChunk<unknown>[] = [];
-
-    for (const [colName, type] of Object.entries(schema)) {
-      const values: (unknown | null)[] = [];
-      let nullCount = 0;
-      let minVal: unknown = undefined;
-      let maxVal: unknown = undefined;
-
-      for (const record of records) {
-        const val = record[colName] ?? null;
-        values.push(val);
-
-        if (val === null || val === undefined) {
-          nullCount++;
-        } else {
-          if (
-            minVal === undefined ||
-            (minVal !== null && (val as any) < minVal)
-          )
-            minVal = val;
-          if (
-            maxVal === undefined ||
-            (maxVal !== null && (val as any) > maxVal)
-          )
-            maxVal = val;
-        }
-      }
-
-      // If string column with low cardinality, apply dictionary encoding
-      if (type === "string") {
-        const stringVals = values as (string | null)[];
-        const uniqueSet = new Set<string>();
-        for (const v of stringVals) {
-          if (v !== null) uniqueSet.add(v);
-        }
-
-        const uniqueArr = [...uniqueSet];
-        // If dictionary saves space (distinct values < 50% of rows), use dictionary page
-        if (uniqueArr.length < rowCount * 0.7 && uniqueArr.length > 0) {
-          const dictMap = new Map<string, number>();
-          for (const [idx, str] of uniqueArr.entries()) {
-            dictMap.set(str, idx);
-          }
-          const indices = stringVals.map((v) =>
-            v === null ? null : dictMap.get(v)!
-          );
-
-          columnChunks.push({
-            name: colName,
-            type,
-            values: [],
-            dictionary: uniqueArr,
-            dictionaryIndices: indices,
-            stats: {
-              max: maxVal,
-              min: minVal,
-              nullCount,
-              rowCount,
-            },
-          });
-          continue;
-        }
-      }
-
-      columnChunks.push({
-        name: colName,
-        stats: {
-          max: maxVal,
-          min: minVal,
-          nullCount,
-          rowCount,
-        },
-        type,
-        values,
-      });
-    }
-
+    const columnChunks = Object.entries(schema).map(([colName, type]) =>
+      buildColumnChunk(colName, type, records, rowCount)
+    );
     return new ColumnarBatchTable(rowCount, columnChunks);
   },
 };
@@ -251,49 +283,47 @@ export const ColumnarParquetArchiver = {
   /**
    * Archives historical object instances into a compressed columnar table.
    */
-  archiveObjectInstances(
+  archiveObjectInstances: Effect.fn(
+    "ColumnarParquetArchiver.archiveObjectInstances"
+  )(function* (
     instances: readonly ObjectInstance[],
     propertyTypes: Record<string, ColumnDataType>
-  ): Effect.Effect<{
-    table: ColumnarBatchTable;
-    metadata: ColumnarMetadata;
-  }> {
-    return Effect.sync(() => {
-      const flattenedRecords: Record<string, unknown>[] = instances.map(
-        (inst) => ({
-          id: inst.id,
-          lastModifiedAt: inst.lastModifiedAt,
-          typeId: inst.typeId,
-          validFrom: inst.validFrom ?? Date.now(),
-          version: inst.version,
-          ...inst.properties,
-        })
-      );
+  ) {
+    const now = yield* Clock.currentTimeMillis;
+    const flattenedRecords: Record<string, unknown>[] = instances.map(
+      (inst) => ({
+        id: inst.id,
+        lastModifiedAt: inst.lastModifiedAt,
+        typeId: inst.typeId,
+        validFrom: inst.validFrom ?? now,
+        version: inst.version,
+        ...inst.properties,
+      })
+    );
 
-      const fullSchema: Record<string, ColumnDataType> = {
-        id: "string",
-        lastModifiedAt: "timestamp",
-        typeId: "string",
-        validFrom: "timestamp",
-        version: "int32",
-        ...propertyTypes,
-      };
+    const fullSchema: Record<string, ColumnDataType> = {
+      id: "string",
+      lastModifiedAt: "timestamp",
+      typeId: "string",
+      validFrom: "timestamp",
+      version: "int32",
+      ...propertyTypes,
+    };
 
-      const table = ColumnarBatchEncoder.encode(flattenedRecords, fullSchema);
-      const binary = table.toBinary();
-      const rawJsonSize = new TextEncoder().encode(
-        JSON.stringify(flattenedRecords)
-      ).byteLength;
+    const table = ColumnarBatchEncoder.encode(flattenedRecords, fullSchema);
+    const binary = table.toBinary();
+    const rawJsonSize = new TextEncoder().encode(
+      serializeJson(flattenedRecords)
+    ).byteLength;
 
-      const metadata: ColumnarMetadata = {
-        rowCount: instances.length,
-        schema: fullSchema,
-        createdAt: Date.now(),
-        compressedSizeBytes: binary.byteLength,
-        uncompressedSizeBytes: rawJsonSize,
-      };
+    const metadata: ColumnarMetadata = {
+      compressedSizeBytes: binary.byteLength,
+      createdAt: now,
+      rowCount: instances.length,
+      schema: fullSchema,
+      uncompressedSizeBytes: rawJsonSize,
+    };
 
-      return { table, metadata };
-    });
-  },
+    return { metadata, table };
+  }),
 };

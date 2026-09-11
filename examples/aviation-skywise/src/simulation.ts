@@ -5,6 +5,7 @@ import {
   InMemoryAuditStore,
   executeWritePipeline,
 } from "@operon/runtime";
+import { ObjectTypeId } from "@operon/schema";
 import { Effect } from "effect";
 
 import {
@@ -35,7 +36,7 @@ export async function runAviationSimulation() {
         model: "A350-900",
         status: "in_service",
         tailNumber,
-        totalFlightHours: 12450,
+        totalFlightHours: 12_450,
       },
       typeId: AircraftType.id,
       version: 0,
@@ -79,7 +80,7 @@ export async function runAviationSimulation() {
     })
   );
   console.log(
-    `   --> Turbine Vibration: ${(telemetrySample.properties as any).vibrationMmS} mm/s (THRESHOLD EXCEEDED: >10 mm/s)`
+    `   --> Turbine Vibration: ${String(telemetrySample.properties.vibrationMmS)} mm/s (THRESHOLD EXCEEDED: >10 mm/s)`
   );
 
   // Step 3: AI Predictive Maintenance Agent Proposes Work Order
@@ -106,7 +107,9 @@ export async function runAviationSimulation() {
       },
       timestamp: Date.now(),
     },
-    stagedLogic: (params: any) =>
+    stagedLogic: (
+      params: typeof ScheduleMaintenanceAction.parametersSchema.Type
+    ) =>
       Effect.succeed([
         {
           id: `WO_${Date.now()}`,
@@ -156,7 +159,7 @@ export async function runAviationSimulation() {
 
   // Step 5: Verify 1-to-1 ActionLog Object & Audit Trail
   const actionLogs = await Effect.runPromise(
-    store.findObjects("ActionLog" as any)
+    store.findObjects(ObjectTypeId.make("ActionLog"))
   );
   const workOrders = await Effect.runPromise(
     store.findObjects(MaintenanceWorkOrderType.id)
@@ -168,7 +171,7 @@ export async function runAviationSimulation() {
     `   - Materialized 1-to-1 ActionLog Objects: ${actionLogs.length}`
   );
   console.log(
-    `   - ActionLog linked to target: ${(actionLogs[0].properties as any).targetObjectId}`
+    `   - ActionLog linked to target: ${String(actionLogs[0]?.properties.targetObjectId)}`
   );
   console.log("\n=== AVIATION SIMULATION COMPLETED SUCCESSFULLY ===");
 
