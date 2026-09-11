@@ -21,6 +21,7 @@ import {
 import type {
   ActionType,
   ApprovalRecord,
+  DiagnosticBundle,
   ExactQueryRequest,
   ObjectInstance,
   ObjectType,
@@ -105,6 +106,9 @@ export interface OperonClient {
     approvalId?: string;
     idempotencyKey: string;
   }) => Effect.Effect<OperationReceipt, unknown>;
+  readonly diagnose: (
+    runId: string
+  ) => Effect.Effect<DiagnosticBundle, unknown, never>;
 }
 
 export function createOperonClient(config: OperonClientConfig): OperonClient {
@@ -322,6 +326,7 @@ export function createOperonClient(config: OperonClientConfig): OperonClient {
     atomicCommit,
     authority,
     commitAction,
+    diagnose: (runId: string) => operonService.diagnose(runId),
     governedActions,
     objects,
     operonService,

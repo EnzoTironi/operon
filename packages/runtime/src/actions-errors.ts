@@ -231,3 +231,14 @@ export class RollbackExecutionError extends Data.TaggedError(
   readonly promotionId: string;
   readonly reason: string;
 }> {}
+
+/**
+ * DiagnosticNotFoundError (S18):
+ * Diagnostic bundle for requested runId not found.
+ */
+export class DiagnosticNotFoundError extends Data.TaggedError(
+  "DiagnosticNotFoundError"
+)<{
+  readonly message: string;
+  readonly runId: string;
+}> {}

@@ -139,7 +139,7 @@ export function createOperonMcpServer(options: OperonMcpServerOptions) {
   const publicationBoundary =
     options.publicationBoundary ?? new PublicationBoundaryService();
 
-  const _operonService =
+  const operonService =
     options.operonService ??
     new OperonServiceImpl(
       governedActionService,
@@ -910,6 +910,22 @@ export function createOperonMcpServer(options: OperonMcpServerOptions) {
           type: "object",
         },
         name: "operon_assurance_verify_receipt",
+      },
+      {
+        description:
+          "Examine operational run diagnostics separating business, policy, and infrastructure outcomes with redacted secrets (S18)",
+        inputSchema: {
+          properties: {
+            runId: {
+              description:
+                "Correlation or run ID to retrieve diagnostic bundle for",
+              type: "string",
+            },
+          },
+          required: ["runId"],
+          type: "object",
+        },
+        name: "operon_diagnose",
       },
     ];
 
@@ -1836,6 +1852,49 @@ export function createOperonMcpServer(options: OperonMcpServerOptions) {
                 null,
                 2
               ),
+              type: "text",
+            },
+          ],
+        };
+      }
+
+      if (name === "operon_diagnose") {
+        const runId = String(args.runId);
+        if (!operonService) {
+          return {
+            content: [
+              {
+                text: JSON.stringify({
+                  error: "ServiceUnavailable",
+                  message: "OperonService is not configured on this MCP server",
+                }),
+                type: "text",
+              },
+            ],
+            isError: true,
+          };
+        }
+
+        const diagExit = yield* Effect.exit(operonService.diagnose(runId));
+        if (diagExit._tag === "Failure") {
+          return {
+            content: [
+              {
+                text: JSON.stringify({
+                  error: "DiagnosticNotFoundError",
+                  message: `Diagnostic bundle for run '${runId}' not found`,
+                }),
+                type: "text",
+              },
+            ],
+            isError: true,
+          };
+        }
+
+        return {
+          content: [
+            {
+              text: JSON.stringify(diagExit.value, null, 2),
               type: "text",
             },
           ],

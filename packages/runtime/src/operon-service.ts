@@ -7,6 +7,8 @@ import { generateDisposableAppView } from "@operon/generated-ui";
 import type {
   ApprovalRecord,
   ConsentScope,
+  DiagnosticBundle,
+  DiagnosticEntry,
   ExactQueryRequest,
   F1TestCase,
   F2Claim,
@@ -19,8 +21,10 @@ import type {
   TaskMandate,
   TraceableCorrection,
 } from "@operon/schema";
+import { computeDiagnosticBundleHash } from "@operon/schema";
 import { Effect } from "effect";
 
+import { DiagnosticNotFoundError } from "./actions-errors.js";
 import type { GovernedActionService } from "./actions/governed-action-service.js";
 import type { ObjectStore } from "./object-store.js";
 import type { AuthorityService } from "./policy/authority.js";
@@ -68,6 +72,41 @@ export interface OperonService {
     operation: string,
     input: unknown
   ) => Effect.Effect<ResultEnvelope>;
+  readonly diagnose: (
+    runId: string
+  ) => Effect.Effect<DiagnosticBundle, DiagnosticNotFoundError, never>;
+}
+
+const SENSITIVE_KEY_PATTERNS = [
+  /password/iu,
+  /secret/iu,
+  /token/iu,
+  /key/iu,
+  /auth/iu,
+  /credential/iu,
+  /ssn/iu,
+  /creditcard/iu,
+];
+
+export function redactSensitiveData<T>(val: T): T {
+  if (val === null || typeof val !== "object") {
+    return val;
+  }
+  if (Array.isArray(val)) {
+    return val.map(redactSensitiveData) as T;
+  }
+  const obj = val as Record<string, unknown>;
+  const scrubbed: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(obj)) {
+    if (SENSITIVE_KEY_PATTERNS.some((pat) => pat.test(k))) {
+      scrubbed[k] = "[REDACTED]";
+    } else if (typeof v === "object" && v !== null) {
+      scrubbed[k] = redactSensitiveData(v);
+    } else {
+      scrubbed[k] = v;
+    }
+  }
+  return scrubbed as T;
 }
 
 function extractError(cause: unknown): { code: string; message: string } {
@@ -83,6 +122,8 @@ function extractError(cause: unknown): { code: string; message: string } {
  * Exposes wire protocol with ResultEnvelope, status codes, and exact error telemetry.
  */
 export class OperonServiceImpl implements OperonService {
+  private readonly diagnosticRegistry = new Map<string, DiagnosticBundle>();
+
   constructor(
     private readonly governedActionService: GovernedActionService,
     private readonly atomicCommitService: AtomicCommitService,
@@ -102,6 +143,7 @@ export class OperonServiceImpl implements OperonService {
     const {
       atomicCommitService,
       authorityService,
+      diagnosticRegistry,
       f1Evaluator,
       f2Mirror,
       governedActionService,
@@ -136,408 +178,578 @@ export class OperonServiceImpl implements OperonService {
       status,
     });
 
-    return Effect.gen(function* () {
-      switch (operation) {
-        case "action.prepare": {
-          const pInput = input as {
-            actionId: string;
-            rawParameters: unknown;
-            ttlMs?: number;
-          };
-          const prepExit = yield* Effect.exit(
-            governedActionService.prepareAction({
-              actionId: pInput.actionId,
-              environmentId: ctx.environmentId,
-              grantId: ctx.grantId,
-              proposer: ctx.actor,
-              rawParameters: pInput.rawParameters,
-              tenantId: ctx.tenantId,
-              ttlMs: pInput.ttlMs,
-            })
-          );
-
-          if (prepExit._tag === "Failure") {
-            const errInfo = extractError(prepExit.cause);
-            return wrapError(
-              errInfo.code,
-              errInfo.message,
-              errInfo.code === "TenantMismatchError"
-                ? "DENIED"
-                : errInfo.code === "FreshnessOrPolicyDeniedError"
-                  ? "EVIDENCE_INSUFFICIENT"
-                  : "ERROR"
-            );
-          }
-
-          const pAction = prepExit.value as PreparedAction;
-          const status: ResultStatus =
-            pAction.verdict === "allow"
-              ? "SUCCESS"
-              : pAction.verdict === "review"
-                ? "REVIEW_REQUIRED"
-                : pAction.verdict === "deny"
-                  ? "DENIED"
-                  : "EVIDENCE_INSUFFICIENT";
-
-          return wrapSuccess(
-            pAction,
-            status,
-            pAction.reviewReasons ?? undefined
-          );
-        }
-
-        case "action.approve": {
-          const aInput = input as {
-            preparedDigest: string;
-            viewedDigest: string;
-            decision?: "approved" | "rejected";
-            reason?: string;
-            assurance?: "human_verified" | "delegated_service";
-          };
-          const appExit = yield* Effect.exit(
-            governedActionService.approvePreparedAction({
-              decision: aInput.decision ?? "approved",
-              preparedDigest: aInput.preparedDigest,
-              reason: aInput.reason,
-              reviewerContext: {
-                assurance: aInput.assurance ?? "human_verified",
+    const executeOperation = Effect.fn("OperonService.executeOperation")(
+      function* () {
+        switch (operation) {
+          case "action.prepare": {
+            const pInput = input as {
+              actionId: string;
+              rawParameters: unknown;
+              ttlMs?: number;
+            };
+            const prepExit = yield* Effect.exit(
+              governedActionService.prepareAction({
+                actionId: pInput.actionId,
                 environmentId: ctx.environmentId,
-                reviewer: ctx.actor,
+                grantId: ctx.grantId,
+                proposer: ctx.actor,
+                rawParameters: pInput.rawParameters,
                 tenantId: ctx.tenantId,
-              },
-              viewedDigest: aInput.viewedDigest,
-            })
-          );
-
-          if (appExit._tag === "Failure") {
-            const errInfo = extractError(appExit.cause);
-            return wrapError(errInfo.code, errInfo.message, "DENIED");
-          }
-
-          return wrapSuccess(appExit.value);
-        }
-
-        case "action.commit": {
-          const cInput = input as {
-            preparedDigest: string;
-            approvalId?: string;
-            idempotencyKey: string;
-          };
-
-          const prepExit = yield* Effect.exit(
-            governedActionService.getPreparedAction(
-              cInput.preparedDigest,
-              ctx.tenantId
-            )
-          );
-          if (prepExit._tag === "Failure") {
-            const errInfo = extractError(prepExit.cause);
-            return wrapError(errInfo.code, errInfo.message, "DENIED");
-          }
-          const prepared = prepExit.value as PreparedAction;
-
-          let approval: ApprovalRecord | undefined;
-          if (cInput.approvalId) {
-            const appExit = yield* Effect.exit(
-              governedActionService.getApprovalRecord(
-                cInput.approvalId,
-                ctx.tenantId
-              )
+                ttlMs: pInput.ttlMs,
+              })
             );
+
+            if (prepExit._tag === "Failure") {
+              const errInfo = extractError(prepExit.cause);
+              return wrapError(
+                errInfo.code,
+                errInfo.message,
+                errInfo.code === "TenantMismatchError"
+                  ? "DENIED"
+                  : errInfo.code === "FreshnessOrPolicyDeniedError"
+                    ? "EVIDENCE_INSUFFICIENT"
+                    : "ERROR"
+              );
+            }
+
+            const pAction = prepExit.value as PreparedAction;
+            const status: ResultStatus =
+              pAction.verdict === "allow"
+                ? "SUCCESS"
+                : pAction.verdict === "review"
+                  ? "REVIEW_REQUIRED"
+                  : pAction.verdict === "deny"
+                    ? "DENIED"
+                    : "EVIDENCE_INSUFFICIENT";
+
+            return wrapSuccess(
+              pAction,
+              status,
+              pAction.reviewReasons ?? undefined
+            );
+          }
+
+          case "action.approve": {
+            const aInput = input as {
+              preparedDigest: string;
+              viewedDigest: string;
+              decision?: "approved" | "rejected";
+              reason?: string;
+              assurance?: "human_verified" | "delegated_service";
+            };
+            const appExit = yield* Effect.exit(
+              governedActionService.approvePreparedAction({
+                decision: aInput.decision ?? "approved",
+                preparedDigest: aInput.preparedDigest,
+                reason: aInput.reason,
+                reviewerContext: {
+                  assurance: aInput.assurance ?? "human_verified",
+                  environmentId: ctx.environmentId,
+                  reviewer: ctx.actor,
+                  tenantId: ctx.tenantId,
+                },
+                viewedDigest: aInput.viewedDigest,
+              })
+            );
+
             if (appExit._tag === "Failure") {
               const errInfo = extractError(appExit.cause);
               return wrapError(errInfo.code, errInfo.message, "DENIED");
             }
-            approval = appExit.value as ApprovalRecord;
+
+            return wrapSuccess(appExit.value);
           }
 
-          const commitExit = yield* Effect.exit(
-            atomicCommitService.commit({
-              approval,
-              environmentId: ctx.environmentId,
-              idempotencyKey: cInput.idempotencyKey,
-              prepared,
-              tenantId: ctx.tenantId,
-            })
-          );
+          case "action.commit": {
+            const cInput = input as {
+              preparedDigest: string;
+              approvalId?: string;
+              idempotencyKey: string;
+            };
 
-          if (commitExit._tag === "Failure") {
-            const errInfo = extractError(commitExit.cause);
-            return wrapError(errInfo.code, errInfo.message, "ERROR");
-          }
-
-          return wrapSuccess(commitExit.value);
-        }
-
-        case "action.get": {
-          const gInput = input as { preparedDigest: string };
-          const pExit = yield* Effect.exit(
-            governedActionService.getPreparedAction(
-              gInput.preparedDigest,
-              ctx.tenantId
-            )
-          );
-          if (pExit._tag === "Failure") {
-            const errInfo = extractError(pExit.cause);
-            return wrapError(errInfo.code, errInfo.message, "DENIED");
-          }
-          return wrapSuccess(pExit.value);
-        }
-
-        case "action.list": {
-          const list = yield* governedActionService.listPreparedActions(
-            ctx.tenantId
-          );
-          return wrapSuccess(list);
-        }
-
-        case "action.status": {
-          const sInput = input as { operationId: string };
-          const opExit = yield* Effect.exit(
-            atomicCommitService.getOperation(sInput.operationId, ctx.tenantId)
-          );
-          if (opExit._tag === "Failure") {
-            const errInfo = extractError(opExit.cause);
-            return wrapError(errInfo.code, errInfo.message, "DENIED");
-          }
-          const op = opExit.value;
-          if (!op) {
-            return wrapError(
-              "OperationNotFoundError",
-              `Operation '${sInput.operationId}' not found`,
-              "DENIED"
+            const prepExit = yield* Effect.exit(
+              governedActionService.getPreparedAction(
+                cInput.preparedDigest,
+                ctx.tenantId
+              )
             );
-          }
-          return wrapSuccess(op);
-        }
+            if (prepExit._tag === "Failure") {
+              const errInfo = extractError(prepExit.cause);
+              return wrapError(errInfo.code, errInfo.message, "DENIED");
+            }
+            const prepared = prepExit.value as PreparedAction;
 
-        case "query.exact": {
-          const qInput = input as ExactQueryRequest;
-          const qExit = yield* Effect.exit(
-            reconciliationService.query(qInput, objectStore)
-          );
-          if (qExit._tag === "Failure") {
-            const errInfo = extractError(qExit.cause);
-            return wrapError(errInfo.code, errInfo.message, "ERROR");
-          }
-          return wrapSuccess(qExit.value);
-        }
-
-        case "query.explain": {
-          const eInput = input as ExactQueryRequest;
-          const typeId = eInput.queryId;
-          const id = (eInput.params as any)?.id ?? "sample";
-          const plan = reconciliationService.explainQuery(
-            typeId,
-            id,
-            eInput.worldView.validTime,
-            eInput.worldView.pinnedAt,
-            "sqlite"
-          );
-          return wrapSuccess(plan);
-        }
-
-        case "reconcile.propose": {
-          const rInput = input as IdentityResolutionProposal;
-          const propExit = yield* Effect.exit(
-            reconciliationService.proposeIdentityResolution(rInput)
-          );
-          if (propExit._tag === "Failure") {
-            const errInfo = extractError(propExit.cause);
-            return wrapError(errInfo.code, errInfo.message, "ERROR");
-          }
-          return wrapSuccess(propExit.value);
-        }
-
-        case "reconcile.resolve": {
-          const resInput = input as {
-            proposalId: string;
-            decisionRef?: string;
-            forceOverride?: boolean;
-            idempotencyKey?: string;
-          };
-          const resExit = yield* Effect.exit(
-            reconciliationService.resolveIdentity(
-              resInput.proposalId,
-              resInput.decisionRef ?? `dec_${Date.now()}`,
-              {
-                environmentId: ctx.environmentId,
-                forceOverride: resInput.forceOverride,
-                idempotencyKey: resInput.idempotencyKey,
-                tenantId: ctx.tenantId,
+            let approval: ApprovalRecord | undefined;
+            if (cInput.approvalId) {
+              const appExit = yield* Effect.exit(
+                governedActionService.getApprovalRecord(
+                  cInput.approvalId,
+                  ctx.tenantId
+                )
+              );
+              if (appExit._tag === "Failure") {
+                const errInfo = extractError(appExit.cause);
+                return wrapError(errInfo.code, errInfo.message, "DENIED");
               }
-            )
-          );
-          if (resExit._tag === "Failure") {
-            const errInfo = extractError(resExit.cause);
-            return wrapError(errInfo.code, errInfo.message, "ERROR");
+              approval = appExit.value as ApprovalRecord;
+            }
+
+            const commitExit = yield* Effect.exit(
+              atomicCommitService.commit({
+                approval,
+                environmentId: ctx.environmentId,
+                idempotencyKey: cInput.idempotencyKey,
+                prepared,
+                tenantId: ctx.tenantId,
+              })
+            );
+
+            if (commitExit._tag === "Failure") {
+              const errInfo = extractError(commitExit.cause);
+              return wrapError(errInfo.code, errInfo.message, "ERROR");
+            }
+
+            return wrapSuccess(commitExit.value);
           }
-          return wrapSuccess(resExit.value);
-        }
 
-        case "reconcile.list": {
-          const proposals = yield* reconciliationService.listProposals(
-            ctx.tenantId
-          );
-          return wrapSuccess(proposals);
-        }
+          case "action.get": {
+            const gInput = input as { preparedDigest: string };
+            const pExit = yield* Effect.exit(
+              governedActionService.getPreparedAction(
+                gInput.preparedDigest,
+                ctx.tenantId
+              )
+            );
+            if (pExit._tag === "Failure") {
+              const errInfo = extractError(pExit.cause);
+              return wrapError(errInfo.code, errInfo.message, "DENIED");
+            }
+            return wrapSuccess(pExit.value);
+          }
 
-        case "grant.register": {
-          const g = yield* authorityService.registerGrant(input as IntentGrant);
-          return wrapSuccess(g);
-        }
+          case "action.list": {
+            const list = yield* governedActionService.listPreparedActions(
+              ctx.tenantId
+            );
+            return wrapSuccess(list);
+          }
 
-        case "mandate.register": {
-          const m = yield* authorityService.registerMandate(
-            input as TaskMandate
-          );
-          return wrapSuccess(m);
-        }
+          case "action.status": {
+            const sInput = input as { operationId: string };
+            const opExit = yield* Effect.exit(
+              atomicCommitService.getOperation(sInput.operationId, ctx.tenantId)
+            );
+            if (opExit._tag === "Failure") {
+              const errInfo = extractError(opExit.cause);
+              return wrapError(errInfo.code, errInfo.message, "DENIED");
+            }
+            const op = opExit.value;
+            if (!op) {
+              return wrapError(
+                "OperationNotFoundError",
+                `Operation '${sInput.operationId}' not found`,
+                "DENIED"
+              );
+            }
+            return wrapSuccess(op);
+          }
 
-        case "grant.list": {
-          const gInput = (input as { actorId?: string }) ?? {};
-          const grants = yield* authorityService.listGrants(
-            ctx.tenantId,
-            gInput.actorId
-          );
-          return wrapSuccess(grants);
-        }
+          case "query.exact": {
+            const qInput = input as ExactQueryRequest;
+            const qExit = yield* Effect.exit(
+              reconciliationService.query(qInput, objectStore)
+            );
+            if (qExit._tag === "Failure") {
+              const errInfo = extractError(qExit.cause);
+              return wrapError(errInfo.code, errInfo.message, "ERROR");
+            }
+            return wrapSuccess(qExit.value);
+          }
 
-        case "view.generate": {
-          const vInput = input as any;
-          const view = generateDisposableAppView({
-            audience: vInput.audience,
-            data: vInput.data ?? {},
-            format: vInput.format,
-            grant: vInput.grant,
-            state: vInput.state ?? "CONFIRMED",
-            title: vInput.title ?? "Operon View",
-          });
-          return wrapSuccess(view);
-        }
+          case "query.explain": {
+            const eInput = input as ExactQueryRequest;
+            const typeId = eInput.queryId;
+            const id = (eInput.params as any)?.id ?? "sample";
+            const plan = reconciliationService.explainQuery(
+              typeId,
+              id,
+              eInput.worldView.validTime,
+              eInput.worldView.pinnedAt,
+              "sqlite"
+            );
+            return wrapSuccess(plan);
+          }
 
-        case "assurance.evaluateF1": {
-          const fInput = input as {
-            candidateId: string;
-            candidateDigest: string;
-            profile: "local" | "production" | "external-agent";
-            catalogId: string;
-            catalogDigest: string;
-            testCases: readonly F1TestCase[];
-            candidateAttemptedOracleOverride?: boolean;
-            idempotencyKey?: string;
-          };
-          const evalExit = yield* Effect.exit(
-            f1Evaluator.evaluate({
-              ...fInput,
-              environmentId: ctx.environmentId,
-              tenantId: ctx.tenantId,
-            })
-          );
-          if (evalExit._tag === "Failure") {
-            const errInfo = extractError(evalExit.cause);
-            return wrapError(
-              errInfo.code,
-              errInfo.message,
-              errInfo.code === "NonDisclosureError" ? "DENIED" : "ERROR"
+          case "reconcile.propose": {
+            const rInput = input as IdentityResolutionProposal;
+            const propExit = yield* Effect.exit(
+              reconciliationService.proposeIdentityResolution(rInput)
+            );
+            if (propExit._tag === "Failure") {
+              const errInfo = extractError(propExit.cause);
+              return wrapError(errInfo.code, errInfo.message, "ERROR");
+            }
+            return wrapSuccess(propExit.value);
+          }
+
+          case "reconcile.resolve": {
+            const resInput = input as {
+              proposalId: string;
+              decisionRef?: string;
+              forceOverride?: boolean;
+              idempotencyKey?: string;
+            };
+            const resExit = yield* Effect.exit(
+              reconciliationService.resolveIdentity(
+                resInput.proposalId,
+                resInput.decisionRef ?? `dec_${Date.now()}`,
+                {
+                  environmentId: ctx.environmentId,
+                  forceOverride: resInput.forceOverride,
+                  idempotencyKey: resInput.idempotencyKey,
+                  tenantId: ctx.tenantId,
+                }
+              )
+            );
+            if (resExit._tag === "Failure") {
+              const errInfo = extractError(resExit.cause);
+              return wrapError(errInfo.code, errInfo.message, "ERROR");
+            }
+            return wrapSuccess(resExit.value);
+          }
+
+          case "reconcile.list": {
+            const proposals = yield* reconciliationService.listProposals(
+              ctx.tenantId
+            );
+            return wrapSuccess(proposals);
+          }
+
+          case "grant.register": {
+            const g = yield* authorityService.registerGrant(
+              input as IntentGrant
+            );
+            return wrapSuccess(g);
+          }
+
+          case "mandate.register": {
+            const m = yield* authorityService.registerMandate(
+              input as TaskMandate
+            );
+            return wrapSuccess(m);
+          }
+
+          case "grant.list": {
+            const gInput = (input as { actorId?: string }) ?? {};
+            const grants = yield* authorityService.listGrants(
+              ctx.tenantId,
+              gInput.actorId
+            );
+            return wrapSuccess(grants);
+          }
+
+          case "view.generate": {
+            const vInput = input as any;
+            const view = generateDisposableAppView({
+              audience: vInput.audience,
+              data: vInput.data ?? {},
+              format: vInput.format,
+              grant: vInput.grant,
+              state: vInput.state ?? "CONFIRMED",
+              title: vInput.title ?? "Operon View",
+            });
+            return wrapSuccess(view);
+          }
+
+          case "assurance.evaluateF1": {
+            const fInput = input as {
+              candidateId: string;
+              candidateDigest: string;
+              profile: "local" | "production" | "external-agent";
+              catalogId: string;
+              catalogDigest: string;
+              testCases: readonly F1TestCase[];
+              candidateAttemptedOracleOverride?: boolean;
+              idempotencyKey?: string;
+            };
+            const evalExit = yield* Effect.exit(
+              f1Evaluator.evaluate({
+                ...fInput,
+                environmentId: ctx.environmentId,
+                tenantId: ctx.tenantId,
+              })
+            );
+            if (evalExit._tag === "Failure") {
+              const errInfo = extractError(evalExit.cause);
+              return wrapError(
+                errInfo.code,
+                errInfo.message,
+                errInfo.code === "NonDisclosureError" ? "DENIED" : "ERROR"
+              );
+            }
+            const receipt = evalExit.value;
+            return wrapSuccess(
+              receipt,
+              receipt.outcome === "PASS"
+                ? "SUCCESS"
+                : receipt.outcome === "FAIL"
+                  ? "DENIED"
+                  : "EVIDENCE_INSUFFICIENT"
             );
           }
-          const receipt = evalExit.value;
-          return wrapSuccess(
-            receipt,
-            receipt.outcome === "PASS"
-              ? "SUCCESS"
-              : receipt.outcome === "FAIL"
-                ? "DENIED"
-                : "EVIDENCE_INSUFFICIENT"
-          );
-        }
 
-        case "assurance.verifyF1Receipt": {
-          const receipt = input as PublicF1Receipt;
-          const vExit = yield* Effect.exit(f1Evaluator.verifyReceipt(receipt));
-          if (vExit._tag === "Failure") {
-            const errInfo = extractError(vExit.cause);
-            return wrapError(errInfo.code, errInfo.message, "DENIED");
+          case "assurance.verifyF1Receipt": {
+            const receipt = input as PublicF1Receipt;
+            const vExit = yield* Effect.exit(
+              f1Evaluator.verifyReceipt(receipt)
+            );
+            if (vExit._tag === "Failure") {
+              const errInfo = extractError(vExit.cause);
+              return wrapError(errInfo.code, errInfo.message, "DENIED");
+            }
+            return wrapSuccess(vExit.value);
           }
-          return wrapSuccess(vExit.value);
-        }
 
-        case "assurance.mirrorF2": {
-          const mInput = input as {
-            candidateDigest: string;
-            profileDigest: string;
-            rubricDigest: string;
-            companyEvidenceRef: string;
-            participantId: string;
-            consentScope: ConsentScope;
-            corrections: readonly TraceableCorrection[];
-            claim: F2Claim;
-            attemptedKernelBypass?: boolean;
-            attemptedBypassPath?: string;
-            idempotencyKey?: string;
-          };
-          const mExit = yield* Effect.exit(
-            f2Mirror.evaluateMirror({
-              ...mInput,
-              actorId: ctx.actor.id,
-              environmentId: ctx.environmentId,
-              tenantId: ctx.tenantId,
-            })
-          );
-          if (mExit._tag === "Failure") {
-            const errInfo = extractError(mExit.cause);
+          case "assurance.mirrorF2": {
+            const mInput = input as {
+              candidateDigest: string;
+              profileDigest: string;
+              rubricDigest: string;
+              companyEvidenceRef: string;
+              participantId: string;
+              consentScope: ConsentScope;
+              corrections: readonly TraceableCorrection[];
+              claim: F2Claim;
+              attemptedKernelBypass?: boolean;
+              attemptedBypassPath?: string;
+              idempotencyKey?: string;
+            };
+            const mExit = yield* Effect.exit(
+              f2Mirror.evaluateMirror({
+                ...mInput,
+                actorId: ctx.actor.id,
+                environmentId: ctx.environmentId,
+                tenantId: ctx.tenantId,
+              })
+            );
+            if (mExit._tag === "Failure") {
+              const errInfo = extractError(mExit.cause);
+              return wrapError(
+                errInfo.code,
+                errInfo.message,
+                errInfo.code === "F2InternalBypassError" ||
+                  errInfo.code === "NonDisclosureError"
+                  ? "DENIED"
+                  : "ERROR"
+              );
+            }
+            return wrapSuccess(mExit.value);
+          }
+
+          case "assurance.verifyF2Receipt": {
+            const receipt = input as F2Receipt;
+            const vExit = yield* Effect.exit(f2Mirror.verifyReceipt(receipt));
+            if (vExit._tag === "Failure") {
+              const errInfo = extractError(vExit.cause);
+              return wrapError(errInfo.code, errInfo.message, "DENIED");
+            }
+            return wrapSuccess(vExit.value);
+          }
+
+          case "assurance.scanPublication": {
+            const sInput =
+              (input as {
+                targetDirectory?: string;
+                allowedPublicOnly?: boolean;
+              }) ?? {};
+            const targetDir = sInput.targetDirectory ?? process.cwd();
+            const scanExit = yield* Effect.exit(
+              publicationBoundary.scanDirectory(targetDir, {
+                allowedPublicOnly: sInput.allowedPublicOnly ?? true,
+              })
+            );
+            if (scanExit._tag === "Failure") {
+              const errInfo = extractError(scanExit.cause);
+              return wrapError(errInfo.code, errInfo.message, "DENIED");
+            }
+            const res = scanExit.value;
+            return wrapSuccess(res, res.isClean ? "SUCCESS" : "DENIED");
+          }
+
+          case "diagnostics.diagnose": {
+            const dInput = input as { runId: string };
+            const bundle = diagnosticRegistry.get(dInput.runId);
+            if (!bundle) {
+              return wrapError(
+                "DiagnosticNotFoundError",
+                `Diagnostic bundle for run '${dInput.runId}' not found`,
+                "ERROR"
+              );
+            }
+            return wrapSuccess(bundle);
+          }
+
+          default: {
             return wrapError(
-              errInfo.code,
-              errInfo.message,
-              errInfo.code === "F2InternalBypassError" ||
-                errInfo.code === "NonDisclosureError"
-                ? "DENIED"
-                : "ERROR"
+              "UnsupportedOperationError",
+              `Operation '${operation}' is not supported by OperonService`,
+              "ERROR"
             );
           }
-          return wrapSuccess(mExit.value);
-        }
-
-        case "assurance.verifyF2Receipt": {
-          const receipt = input as F2Receipt;
-          const vExit = yield* Effect.exit(f2Mirror.verifyReceipt(receipt));
-          if (vExit._tag === "Failure") {
-            const errInfo = extractError(vExit.cause);
-            return wrapError(errInfo.code, errInfo.message, "DENIED");
-          }
-          return wrapSuccess(vExit.value);
-        }
-
-        case "assurance.scanPublication": {
-          const sInput =
-            (input as {
-              targetDirectory?: string;
-              allowedPublicOnly?: boolean;
-            }) ?? {};
-          const targetDir = sInput.targetDirectory ?? process.cwd();
-          const scanExit = yield* Effect.exit(
-            publicationBoundary.scanDirectory(targetDir, {
-              allowedPublicOnly: sInput.allowedPublicOnly ?? true,
-            })
-          );
-          if (scanExit._tag === "Failure") {
-            const errInfo = extractError(scanExit.cause);
-            return wrapError(errInfo.code, errInfo.message, "DENIED");
-          }
-          const res = scanExit.value;
-          return wrapSuccess(res, res.isClean ? "SUCCESS" : "DENIED");
-        }
-
-        default: {
-          return wrapError(
-            "UnsupportedOperationError",
-            `Operation '${operation}' is not supported by OperonService`,
-            "ERROR"
-          );
         }
       }
+    );
+
+    return Effect.gen({ self: this }, function* () {
+      const envelope = yield* executeOperation();
+      const runId =
+        ctx.correlationId ??
+        `run_${envelope.executedAt}_${Math.random().toString(36).slice(2, 7)}`;
+
+      if (operation !== "diagnostics.diagnose") {
+        const entries: DiagnosticEntry[] = [];
+        let businessOutcome:
+          | {
+              readonly reason?: string;
+              readonly status: "success" | "violation" | "inconclusive";
+            }
+          | undefined;
+        let policyOutcome:
+          | {
+              readonly reason?: string;
+              readonly verdict:
+                | "ALLOW"
+                | "DENY"
+                | "REVIEW_REQUIRED"
+                | "EVIDENCE_INSUFFICIENT";
+            }
+          | undefined;
+        let infrastructureOutcome:
+          | {
+              readonly error?: string;
+              readonly status: "healthy" | "degraded" | "failed";
+            }
+          | undefined;
+
+        if (envelope.status === "SUCCESS") {
+          businessOutcome = { status: "success" };
+          policyOutcome = { verdict: "ALLOW" };
+          infrastructureOutcome = { status: "healthy" };
+          entries.push({
+            channel: "business",
+            code: "EXEC_SUCCESS",
+            message: `Operation '${operation}' completed successfully`,
+            severity: "info",
+            timestamp: envelope.executedAt,
+          });
+        } else if (envelope.status === "DENIED") {
+          const msg = envelope.error?.message ?? "Access denied by policy";
+          businessOutcome = { reason: msg, status: "violation" };
+          policyOutcome = { reason: msg, verdict: "DENY" };
+          infrastructureOutcome = { status: "healthy" };
+          entries.push({
+            channel: "policy",
+            code: envelope.error?.code ?? "POLICY_DENIED",
+            details: envelope.error?.details
+              ? (redactSensitiveData(envelope.error.details) as Record<
+                  string,
+                  unknown
+                >)
+              : undefined,
+            message: msg,
+            severity: "error",
+            timestamp: envelope.executedAt,
+          });
+        } else if (envelope.status === "REVIEW_REQUIRED") {
+          const msg =
+            envelope.error?.message ??
+            "Independent review required before execution";
+          businessOutcome = { reason: msg, status: "inconclusive" };
+          policyOutcome = { reason: msg, verdict: "REVIEW_REQUIRED" };
+          infrastructureOutcome = { status: "healthy" };
+          entries.push({
+            channel: "policy",
+            code: envelope.error?.code ?? "REVIEW_REQUIRED",
+            message: msg,
+            severity: "warning",
+            timestamp: envelope.executedAt,
+          });
+        } else if (envelope.status === "EVIDENCE_INSUFFICIENT") {
+          const msg =
+            envelope.error?.message ??
+            "Evidence insufficient to satisfy policy invariants";
+          businessOutcome = { reason: msg, status: "inconclusive" };
+          policyOutcome = { reason: msg, verdict: "EVIDENCE_INSUFFICIENT" };
+          infrastructureOutcome = { status: "healthy" };
+          entries.push({
+            channel: "policy",
+            code: envelope.error?.code ?? "EVIDENCE_INSUFFICIENT",
+            message: msg,
+            severity: "warning",
+            timestamp: envelope.executedAt,
+          });
+        } else {
+          const msg = envelope.error?.message ?? "Infrastructure error";
+          businessOutcome = { status: "inconclusive" };
+          infrastructureOutcome = { error: msg, status: "failed" };
+          entries.push({
+            channel: "infrastructure",
+            code: envelope.error?.code ?? "INFRA_ERROR",
+            details: envelope.error?.details
+              ? (redactSensitiveData(envelope.error.details) as Record<
+                  string,
+                  unknown
+                >)
+              : undefined,
+            message: msg,
+            severity: "error",
+            timestamp: envelope.executedAt,
+          });
+        }
+
+        const bundleWithoutHash = {
+          businessOutcome,
+          channelSummary: {
+            businessCount: entries.filter((e) => e.channel === "business")
+              .length,
+            infrastructureCount: entries.filter(
+              (e) => e.channel === "infrastructure"
+            ).length,
+            policyCount: entries.filter((e) => e.channel === "policy").length,
+          },
+          entries,
+          generatedAt: envelope.executedAt,
+          infrastructureOutcome,
+          operation,
+          policyOutcome,
+          runId,
+        };
+
+        const bundle: DiagnosticBundle = {
+          ...bundleWithoutHash,
+          bundleHash: computeDiagnosticBundleHash(bundleWithoutHash),
+        };
+
+        diagnosticRegistry.set(runId, bundle);
+      }
+
+      return envelope;
     });
+  }
+
+  diagnose(
+    runId: string
+  ): Effect.Effect<DiagnosticBundle, DiagnosticNotFoundError> {
+    const bundle = this.diagnosticRegistry.get(runId);
+    if (!bundle) {
+      return Effect.fail(
+        new DiagnosticNotFoundError({
+          message: `Diagnostic bundle for run '${runId}' not found`,
+          runId,
+        })
+      );
+    }
+    return Effect.succeed(bundle);
   }
 
   invoke(

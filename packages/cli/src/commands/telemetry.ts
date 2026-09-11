@@ -4,6 +4,8 @@ import {
 } from "@operon/telemetry";
 import { Config, Effect, Option } from "effect";
 
+import { createRuntimeContext } from "../state.js";
+
 export function runTelemetry(
   args: string[]
 ): Effect.Effect<number, unknown, never> {
@@ -13,6 +15,42 @@ export function runTelemetry(
     const isPing = args.includes("--ping") || sub === "ping";
     const isError = args.includes("--error") || sub === "error";
 
+    if (sub === "diagnose") {
+      const runId = args[1];
+      if (!runId || runId.startsWith("--")) {
+        console.error("Error: Missing required argument <runId>");
+        console.error("  Usage: operon telemetry diagnose <runId> [--json]");
+        return 1;
+      }
+      const ctx = yield* Effect.tryPromise({
+        catch: (err) => `Failed to initialize runtime context: ${String(err)}`,
+        try: () => createRuntimeContext(),
+      });
+      const diagExit = yield* Effect.exit(ctx.operonService.diagnose(runId));
+      if (diagExit._tag === "Failure") {
+        console.error(`Error: Diagnostic bundle for run '${runId}' not found`);
+        return 1;
+      }
+      const bundle = diagExit.value;
+      if (isJson) {
+        console.log(JSON.stringify(bundle, null, 2));
+      } else {
+        console.log(`=== OPERON RUN DIAGNOSTIC: ${bundle.runId} ===`);
+        console.log(`Operation:              ${bundle.operation}`);
+        console.log(
+          `Business Status:        ${bundle.businessOutcome?.status ?? "none"}`
+        );
+        console.log(
+          `Policy Verdict:         ${bundle.policyOutcome?.verdict ?? "none"}`
+        );
+        console.log(
+          `Infrastructure Status:  ${bundle.infrastructureOutcome?.status ?? "none"}`
+        );
+        console.log(`Entries Logged:         ${bundle.entries.length}`);
+      }
+      return 0;
+    }
+
     if (
       sub !== "status" &&
       sub !== "ping" &&
@@ -21,11 +59,12 @@ export function runTelemetry(
     ) {
       console.error(`Error: Unknown telemetry subcommand '${sub ?? ""}'`);
       console.error(
-        "  Usage: operon telemetry [status|ping|error] [--ping] [--error] [--json]"
+        "  Usage: operon telemetry [status|ping|error|diagnose] [--ping] [--error] [--json]"
       );
       console.error("  Example: operon telemetry status --json");
       console.error("  Example: operon telemetry ping");
       console.error("  Example: operon telemetry error");
+      console.error("  Example: operon telemetry diagnose <runId> --json");
       return 1;
     }
 
