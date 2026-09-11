@@ -37,4 +37,6 @@ export * from "./promotion.js";
 export * from "./missions/authority-tiers.js";
 export * from "./missions/model-boundary.js";
 export * from "./missions/mission-runner.js";
+export * from "./missions/evidence-acquisition.js";
+export * from "./missions/agent-memory.js";
 export * from "@operon/assurance";

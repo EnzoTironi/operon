@@ -117,6 +117,15 @@ export interface MissionEvaluatedPayload {
   readonly status: string;
 }
 
+export interface EvidenceAcquiredPayload {
+  readonly actionId: string;
+  readonly cost: number;
+  readonly mandateId: string;
+  readonly sourceConnectorId: string;
+  readonly status: string;
+  readonly targetObjectId: string;
+}
+
 export type OperonTelemetryEvent =
   | {
       readonly event: "operon_action_submitted";
@@ -176,5 +185,10 @@ export type OperonTelemetryEvent =
   | {
       readonly event: "operon_mission_evaluated";
       readonly properties: MissionEvaluatedPayload;
+      readonly subject?: Subject;
+    }
+  | {
+      readonly event: "operon_evidence_acquired";
+      readonly properties: EvidenceAcquiredPayload;
       readonly subject?: Subject;
     };

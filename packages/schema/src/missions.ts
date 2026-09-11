@@ -379,3 +379,118 @@ export const PlanValidationResult = Schema.Struct({
 export type PlanValidationResult = Schema.Schema.Type<
   typeof PlanValidationResult
 >;
+
+/**
+ * Governed evidence acquisition action per S12 & OPR-FULL-022
+ */
+export const EvidenceAcquisitionAction = Schema.Struct({
+  actionClass: Schema.String,
+  actionId: Schema.String,
+  budgetCost: Schema.Number,
+  mandateId: Schema.String,
+  queryParameters: Schema.Record(Schema.String, Schema.Unknown),
+  sourceConnectorId: Schema.String,
+  targetObjectId: Schema.String,
+});
+export type EvidenceAcquisitionAction = Schema.Schema.Type<
+  typeof EvidenceAcquisitionAction
+>;
+
+/**
+ * Status of evidence acquisition operation
+ */
+export const EvidenceAcquisitionStatus = Schema.Literals([
+  "ACQUIRED",
+  "BUDGET_EXCEEDED",
+  "SOURCE_UNAVAILABLE",
+  "UNAUTHORIZED",
+]);
+export type EvidenceAcquisitionStatus = Schema.Schema.Type<
+  typeof EvidenceAcquisitionStatus
+>;
+
+/**
+ * Receipt of active evidence acquisition per OPR-FULL-022
+ */
+export const EvidenceAcquisitionReceipt = Schema.Struct({
+  actionId: Schema.String,
+  acquiredAt: Schema.Number,
+  candidateHash: Schema.String,
+  cost: Schema.Number,
+  evidencePayload: Schema.Record(Schema.String, Schema.Unknown),
+  mandateId: Schema.String,
+  sourceConnectorId: Schema.String,
+  status: EvidenceAcquisitionStatus,
+  targetObjectId: Schema.String,
+});
+export type EvidenceAcquisitionReceipt = Schema.Schema.Type<
+  typeof EvidenceAcquisitionReceipt
+>;
+
+/**
+ * Memory sensitivity classification per OPR-AGT-005
+ */
+export const MemorySensitivity = Schema.Literals([
+  "CONFIDENTIAL",
+  "INTERNAL",
+  "PUBLIC",
+  "RESTRICTED",
+]);
+export type MemorySensitivity = Schema.Schema.Type<typeof MemorySensitivity>;
+
+/**
+ * Tenant-isolated, time-bounded governed memory record per S12 & OPR-AGT-005
+ */
+export const GovernedAgentMemoryRecord = Schema.Struct({
+  agentId: Schema.String,
+  content: Schema.Record(Schema.String, Schema.Unknown),
+  environmentId: Schema.String,
+  expiresAt: Schema.optionalKey(Schema.Number),
+  mandateId: Schema.String,
+  memoryId: Schema.String,
+  recordedAt: Schema.Number,
+  sensitivity: MemorySensitivity,
+  tenantId: Schema.String,
+});
+export type GovernedAgentMemoryRecord = Schema.Schema.Type<
+  typeof GovernedAgentMemoryRecord
+>;
+
+/**
+ * Step disposition record for reconstructable execution trace
+ */
+export const TraceStepDisposition = Schema.Struct({
+  disposition: Schema.String,
+  stepId: Schema.String,
+});
+export type TraceStepDisposition = Schema.Schema.Type<
+  typeof TraceStepDisposition
+>;
+
+/**
+ * Tool call record for reconstructable execution trace
+ */
+export const TraceToolCall = Schema.Struct({
+  parameters: Schema.Record(Schema.String, Schema.Unknown),
+  resultDigest: Schema.String,
+  toolName: Schema.String,
+});
+export type TraceToolCall = Schema.Schema.Type<typeof TraceToolCall>;
+
+/**
+ * Full reconstructable observable execution trace per S12 & OPR-AGT-005
+ */
+export const ReconstructableExecutionTrace = Schema.Struct({
+  actionReceipts: Schema.Array(Schema.String),
+  candidateDigest: Schema.String,
+  executedAt: Schema.Number,
+  mandateId: Schema.String,
+  modelVersion: Schema.String,
+  rationale: Schema.String,
+  stepDispositions: Schema.Array(TraceStepDisposition),
+  toolCalls: Schema.Array(TraceToolCall),
+  traceId: Schema.String,
+});
+export type ReconstructableExecutionTrace = Schema.Schema.Type<
+  typeof ReconstructableExecutionTrace
+>;

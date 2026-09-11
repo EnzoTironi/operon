@@ -379,3 +379,36 @@ export class FictionalSuccessRejectedError extends Data.TaggedError(
   readonly message: string;
   readonly unsatisfiedPredicates: readonly string[];
 }> {}
+
+/**
+ * EvidenceAcquisitionDeniedError (S12 / OPR-FULL-022):
+ * Evidence acquisition rejected due to out-of-envelope action, object, or budget.
+ */
+export class EvidenceAcquisitionDeniedError extends Data.TaggedError(
+  "EvidenceAcquisitionDeniedError"
+)<{
+  readonly actionId: string;
+  readonly mandateId: string;
+  readonly message: string;
+  readonly reason:
+    | "ACTION_NOT_ALLOWED"
+    | "BUDGET_EXCEEDED"
+    | "OBJECT_NOT_ALLOWED"
+    | "SOURCE_UNAVAILABLE";
+}> {}
+
+/**
+ * MemoryAccessDeniedError (S12 / OPR-AGT-005):
+ * Memory access rejected due to cross-tenant boundary, expired TTL, or unauthorized sensitivity level.
+ */
+export class MemoryAccessDeniedError extends Data.TaggedError(
+  "MemoryAccessDeniedError"
+)<{
+  readonly memoryId: string;
+  readonly message: string;
+  readonly reason:
+    | "EXPIRED"
+    | "FORBIDDEN_AUTHORITY_INJECTION"
+    | "TENANT_MISMATCH";
+  readonly tenantId: string;
+}> {}
