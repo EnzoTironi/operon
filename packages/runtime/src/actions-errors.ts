@@ -160,3 +160,38 @@ export class OutboxDeliveryError extends Data.TaggedError(
   readonly status: string;
   readonly cause?: unknown;
 }> {}
+
+/**
+ * IndependentReviewRequiredError (S09):
+ * Required semantic reviewer cannot be the acting principal.
+ */
+export class IndependentReviewRequiredError extends Data.TaggedError(
+  "IndependentReviewRequiredError"
+)<{
+  readonly message: string;
+  readonly proposerId: string;
+  readonly reviewerId: string;
+}> {}
+
+/**
+ * ReviewUnavailableError (S09):
+ * Mandatory semantic review is unavailable, stale, or malformed.
+ */
+export class ReviewUnavailableError extends Data.TaggedError(
+  "ReviewUnavailableError"
+)<{
+  readonly message: string;
+  readonly reason: string;
+}> {}
+
+/**
+ * SandboxContainmentError (S10):
+ * Simulation or sandbox escape attempt detected and failed closed.
+ */
+export class SandboxContainmentError extends Data.TaggedError(
+  "SandboxContainmentError"
+)<{
+  readonly message: string;
+  readonly escapeType: "network" | "filesystem" | "credential" | "effect";
+  readonly target: string;
+}> {}

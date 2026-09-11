@@ -31,4 +31,6 @@ export * from "./actions/governed-action-service.js";
 export * from "./transactions/atomic-commit-service.js";
 export * from "./canonical-evidence.js";
 export * from "./operon-service.js";
+export * from "./reviewer.js";
+export * from "./scenarios.js";
 export * from "@operon/assurance";

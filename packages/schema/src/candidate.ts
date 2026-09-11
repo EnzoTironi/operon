@@ -37,6 +37,7 @@ export const Candidate = Schema.Struct({
   tree: Schema.String,
 });
 export type Candidate = Schema.Schema.Type<typeof Candidate>;
+export type ContractCandidate = Candidate;
 
 /**
  * Source precedence layers in canonical order per S01
