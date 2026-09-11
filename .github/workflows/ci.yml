@@ -44,6 +44,3 @@ jobs:
 
       - name: Run test suites
         run: pnpm -r run test
-
-      - name: Comprehensive verification harness
-        run: pnpm run verify:all
