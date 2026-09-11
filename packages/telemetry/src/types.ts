@@ -85,6 +85,22 @@ export interface CliCommandPayload {
   readonly durationMs: number;
 }
 
+export interface AgentPromotedPayload {
+  readonly mandateId: string;
+  readonly principalId: string;
+  readonly previousTier: string;
+  readonly newTier: string;
+}
+
+export interface AgentDemotedPayload {
+  readonly mandateId: string;
+  readonly principalId: string;
+  readonly previousTier: string;
+  readonly newTier: string;
+  readonly reason: string;
+  readonly violationsCount: number;
+}
+
 export type OperonTelemetryEvent =
   | {
       readonly event: "operon_action_submitted";
@@ -124,5 +140,15 @@ export type OperonTelemetryEvent =
   | {
       readonly event: "operon_cli_command";
       readonly properties: CliCommandPayload;
+      readonly subject?: Subject;
+    }
+  | {
+      readonly event: "operon_agent_promoted";
+      readonly properties: AgentPromotedPayload;
+      readonly subject?: Subject;
+    }
+  | {
+      readonly event: "operon_agent_demoted";
+      readonly properties: AgentDemotedPayload;
       readonly subject?: Subject;
     };

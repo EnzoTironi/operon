@@ -34,4 +34,5 @@ export * from "./operon-service.js";
 export * from "./reviewer.js";
 export * from "./scenarios.js";
 export * from "./promotion.js";
+export * from "./missions/authority-tiers.js";
 export * from "@operon/assurance";

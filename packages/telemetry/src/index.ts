@@ -7,6 +7,8 @@ export {
 export type {
   ActionExecutedPayload,
   ActionSubmittedPayload,
+  AgentDemotedPayload,
+  AgentPromotedPayload,
   CliCommandPayload,
   McpToolInvokedPayload,
   ModelExecutedPayload,

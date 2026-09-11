@@ -1,3 +1,4 @@
+import type { AuthorityTier } from "@operon/schema";
 import { Data } from "effect";
 
 /**
@@ -241,4 +242,68 @@ export class DiagnosticNotFoundError extends Data.TaggedError(
 )<{
   readonly message: string;
   readonly runId: string;
+}> {}
+
+/**
+ * TierAuthorityExceededError (S12 / OPR-AGT-001):
+ * Attempted operation exceeds the permitted authority tier.
+ */
+export class TierAuthorityExceededError extends Data.TaggedError(
+  "TierAuthorityExceededError"
+)<{
+  readonly message: string;
+  readonly tier: AuthorityTier;
+  readonly attemptedOperation: string;
+}> {}
+
+/**
+ * EnvelopeViolationError (S12 / OPR-AGT-002):
+ * Action invocation exceeds the bounded mandate envelope (action class, object set, or risk band).
+ */
+export class EnvelopeViolationError extends Data.TaggedError(
+  "EnvelopeViolationError"
+)<{
+  readonly message: string;
+  readonly mandateId: string;
+  readonly violationType: "actionClass" | "objectSet" | "riskBand";
+  readonly details: string;
+}> {}
+
+/**
+ * BudgetExhaustedError (S12 / OPR-AGT-002):
+ * TaskMandate budget limit has been reached or exceeded.
+ */
+export class BudgetExhaustedError extends Data.TaggedError(
+  "BudgetExhaustedError"
+)<{
+  readonly message: string;
+  readonly mandateId: string;
+  readonly spentBudget: number;
+  readonly requestedBudget: number;
+  readonly budgetLimit: number;
+}> {}
+
+/**
+ * UnjustifiedPromotionError (S12 / OPR-AGT-002):
+ * Promotion to higher tier attempted without required calibration evidence or passing thresholds.
+ */
+export class UnjustifiedPromotionError extends Data.TaggedError(
+  "UnjustifiedPromotionError"
+)<{
+  readonly message: string;
+  readonly mandateId: string;
+  readonly reason: string;
+}> {}
+
+/**
+ * MandateExpiredError (S12 / OPR-AGT-002):
+ * TaskMandate has passed its expiration timestamp.
+ */
+export class MandateExpiredError extends Data.TaggedError(
+  "MandateExpiredError"
+)<{
+  readonly message: string;
+  readonly mandateId: string;
+  readonly expiresAt: number;
+  readonly attemptedAt: number;
 }> {}
