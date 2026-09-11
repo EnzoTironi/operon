@@ -183,3 +183,53 @@ export function isObjectInSet(
   }
   return false;
 }
+
+/**
+ * Key scope separating runtime consumers from authoring builders per S12 & OPR-AGT-003
+ */
+export const KeyScope = Schema.Literals(["CONSUMER", "BUILDER"]);
+export type KeyScope = Schema.Schema.Type<typeof KeyScope>;
+
+/**
+ * Access key record bound to tenant and scope per OPR-AGT-003
+ */
+export const AccessKey = Schema.Struct({
+  createdAt: Schema.Number,
+  environmentId: Schema.String,
+  expiresAt: Schema.Number,
+  keyId: Schema.String,
+  principalId: Schema.String,
+  scope: KeyScope,
+  tenantId: Schema.String,
+});
+export type AccessKey = Schema.Schema.Type<typeof AccessKey>;
+
+/**
+ * Admission verdict for untrusted model candidates per OPR-AGT-004
+ */
+export const CandidateAdmissionVerdict = Schema.Literals([
+  "ADMITTED",
+  "QUARANTINED",
+  "REJECTED",
+]);
+export type CandidateAdmissionVerdict = Schema.Schema.Type<
+  typeof CandidateAdmissionVerdict
+>;
+
+/**
+ * Result of deterministic model candidate validation per OPR-AGT-004
+ */
+export const ModelCandidateEvaluation = Schema.Struct({
+  candidateId: Schema.String,
+  evaluatedAt: Schema.Number,
+  modelId: Schema.String,
+  quarantineReason: Schema.optionalKey(Schema.String),
+  sanitizedPayload: Schema.optionalKey(
+    Schema.Record(Schema.String, Schema.Unknown)
+  ),
+  verdict: CandidateAdmissionVerdict,
+  violations: Schema.Array(Schema.String),
+});
+export type ModelCandidateEvaluation = Schema.Schema.Type<
+  typeof ModelCandidateEvaluation
+>;

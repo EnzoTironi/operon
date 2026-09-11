@@ -1,4 +1,4 @@
-import type { AuthorityTier } from "@operon/schema";
+import type { AuthorityTier, KeyScope } from "@operon/schema";
 import { Data } from "effect";
 
 /**
@@ -306,4 +306,32 @@ export class MandateExpiredError extends Data.TaggedError(
   readonly mandateId: string;
   readonly expiresAt: number;
   readonly attemptedAt: number;
+}> {}
+
+/**
+ * KeyScopeViolationError (S12 / OPR-AGT-003):
+ * Attempted operation violates access key scope (consumer modifying definition, or builder accessing prod data / self-approving).
+ */
+export class KeyScopeViolationError extends Data.TaggedError(
+  "KeyScopeViolationError"
+)<{
+  readonly message: string;
+  readonly keyId: string;
+  readonly keyScope: KeyScope;
+  readonly attemptedAction: string;
+  readonly targetDomain: "definition" | "production_data" | "self_approval";
+}> {}
+
+/**
+ * UntrustedCandidateQuarantinedError (S12 / OPR-AGT-004):
+ * Model output failed deterministic validation (unknown action, invalid object type, hidden field, prompt injection) and is quarantined.
+ */
+export class UntrustedCandidateQuarantinedError extends Data.TaggedError(
+  "UntrustedCandidateQuarantinedError"
+)<{
+  readonly message: string;
+  readonly candidateId: string;
+  readonly modelId: string;
+  readonly reason: string;
+  readonly violations: readonly string[];
 }> {}
