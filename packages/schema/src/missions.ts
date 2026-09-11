@@ -174,7 +174,7 @@ export function isObjectInSet(
     if (entry === targetObjectId) {
       return true;
     }
-    if (entry.endsWith(":*")) {
+    if (entry.endsWith("*")) {
       const prefix = entry.slice(0, -1);
       if (targetObjectId.startsWith(prefix)) {
         return true;
@@ -232,4 +232,150 @@ export const ModelCandidateEvaluation = Schema.Struct({
 });
 export type ModelCandidateEvaluation = Schema.Schema.Type<
   typeof ModelCandidateEvaluation
+>;
+
+/**
+ * Observable predicate types for verifiable mission objectives per S12 & OPR-FULL-021
+ */
+export const ObservablePredicate = Schema.Union([
+  Schema.TaggedStruct("PROPERTY_EQUALS", {
+    expectedValue: Schema.Unknown,
+    objectId: Schema.String,
+    property: Schema.String,
+  }),
+  Schema.TaggedStruct("STATE_MATCHES", {
+    expectedState: Schema.String,
+    objectId: Schema.String,
+  }),
+  Schema.TaggedStruct("RECEIPT_EXISTS", {
+    actionId: Schema.String,
+    requiredStatus: Schema.Literals(["COMPLETED", "EXECUTED"]),
+  }),
+  Schema.TaggedStruct("CUSTOM_ASSERTION", {
+    assertionId: Schema.String,
+    parameters: Schema.optionalKey(
+      Schema.Record(Schema.String, Schema.Unknown)
+    ),
+  }),
+]);
+export type ObservablePredicate = Schema.Schema.Type<
+  typeof ObservablePredicate
+>;
+
+/**
+ * Mandatory stop conditions and safety tripwires per S12 & OPR-FULL-021, OPR-FULL-023
+ */
+export const StopCondition = Schema.Union([
+  Schema.TaggedStruct("MAX_BUDGET_EXCEEDED", {
+    maxBudget: Schema.Number,
+  }),
+  Schema.TaggedStruct("EXPIRED_DEADLINE", {
+    deadline: Schema.Number,
+  }),
+  Schema.TaggedStruct("MANDATORY_CONSTRAINT", {
+    constraintId: Schema.String,
+    description: Schema.String,
+  }),
+  Schema.TaggedStruct("SAFETY_TRIPWIRE", {
+    reason: Schema.String,
+    tripwireId: Schema.String,
+  }),
+]);
+export type StopCondition = Schema.Schema.Type<typeof StopCondition>;
+
+/**
+ * A single plan step inside a Planning DAG per S12 & OPR-FULL-023
+ */
+export const PlanStep = Schema.Struct({
+  actionClass: Schema.String,
+  actionId: Schema.String,
+  dependencies: Schema.Array(Schema.String),
+  estimatedCost: Schema.Number,
+  mandatoryConstraints: Schema.optionalKey(Schema.Array(Schema.String)),
+  parameters: Schema.Record(Schema.String, Schema.Unknown),
+  riskBand: RiskBand,
+  stepId: Schema.String,
+  targetObjectId: Schema.String,
+});
+export type PlanStep = Schema.Schema.Type<typeof PlanStep>;
+
+/**
+ * Versioned Plan DAG with dependencies per S12 & OPR-FULL-023
+ */
+export const PlanDAG = Schema.Struct({
+  mandateId: Schema.String,
+  objectiveScore: Schema.Number,
+  planId: Schema.String,
+  proposerAgentId: Schema.String,
+  steps: Schema.Array(PlanStep),
+});
+export type PlanDAG = Schema.Schema.Type<typeof PlanDAG>;
+
+/**
+ * Mission lifecycle status per S12 & OPR-FULL-021
+ */
+export const MissionStatus = Schema.Literals([
+  "PENDING",
+  "PLANNING",
+  "EXECUTING",
+  "PARTIAL",
+  "SUCCEEDED",
+  "FAILED",
+  "STOPPED",
+]);
+export type MissionStatus = Schema.Schema.Type<typeof MissionStatus>;
+
+/**
+ * Full Mission TaskMandate contract per S12, OPR-FULL-021, and OPR-FULL-023
+ */
+export const MissionTaskMandate = Schema.Struct({
+  deadline: Schema.Number,
+  envelope: TaskMandateEnvelope,
+  issuerId: Schema.String,
+  mandateId: Schema.String,
+  objective: Schema.String,
+  ownerId: Schema.String,
+  stopConditions: Schema.Array(StopCondition),
+  successPredicates: Schema.Array(ObservablePredicate),
+});
+export type MissionTaskMandate = Schema.Schema.Type<typeof MissionTaskMandate>;
+
+/**
+ * Evaluation result for an individual observable predicate
+ */
+export const PredicateEvaluationResult = Schema.Struct({
+  detail: Schema.optionalKey(Schema.String),
+  predicate: ObservablePredicate,
+  satisfied: Schema.Boolean,
+});
+export type PredicateEvaluationResult = Schema.Schema.Type<
+  typeof PredicateEvaluationResult
+>;
+
+/**
+ * Independent mission outcome evaluation report per S12 & OPR-FULL-021
+ */
+export const MissionOutcomeEvaluation = Schema.Struct({
+  allPredicatesSatisfied: Schema.Boolean,
+  fictionalSuccessPrevented: Schema.Boolean,
+  mandateId: Schema.String,
+  plannerReportedDone: Schema.Boolean,
+  predicatesEvaluated: Schema.Array(PredicateEvaluationResult),
+  status: MissionStatus,
+  stopConditionsTriggered: Schema.Array(Schema.String),
+});
+export type MissionOutcomeEvaluation = Schema.Schema.Type<
+  typeof MissionOutcomeEvaluation
+>;
+
+/**
+ * Result of plan DAG verification per OPR-FULL-023
+ */
+export const PlanValidationResult = Schema.Struct({
+  isValid: Schema.Boolean,
+  planId: Schema.String,
+  violations: Schema.Array(Schema.String),
+});
+export type PlanValidationResult = Schema.Schema.Type<
+  typeof PlanValidationResult
 >;

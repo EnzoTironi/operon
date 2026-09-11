@@ -335,3 +335,47 @@ export class UntrustedCandidateQuarantinedError extends Data.TaggedError(
   readonly reason: string;
   readonly violations: readonly string[];
 }> {}
+
+/**
+ * PlanValidationError (S12 / OPR-FULL-023):
+ * Plan DAG failed validation (cycle detected, unauthorized action/object, risk band exceeded, budget exceeded, or mandatory constraint violated).
+ */
+export class PlanValidationError extends Data.TaggedError(
+  "PlanValidationError"
+)<{
+  readonly message: string;
+  readonly planId: string;
+  readonly reason:
+    | "BUDGET_EXCEEDED"
+    | "CYCLE_DETECTED"
+    | "MANDATORY_CONSTRAINT_VIOLATED"
+    | "RISK_BAND_EXCEEDED"
+    | "UNAUTHORIZED_ACTION_CLASS"
+    | "UNAUTHORIZED_TARGET_OBJECT";
+  readonly violations: readonly string[];
+}> {}
+
+/**
+ * StopConditionTriggeredError (S12 / OPR-FULL-021, OPR-FULL-023):
+ * Execution stopped due to budget limit, deadline expiry, invariant violation, or safety tripwire.
+ */
+export class StopConditionTriggeredError extends Data.TaggedError(
+  "StopConditionTriggeredError"
+)<{
+  readonly conditionType: string;
+  readonly detail: string;
+  readonly mandateId: string;
+  readonly message: string;
+}> {}
+
+/**
+ * FictionalSuccessRejectedError (S12 / OPR-FULL-021 / FULL-ACC-021):
+ * Model reported completion, but independent state verification found unsatisfied success predicates.
+ */
+export class FictionalSuccessRejectedError extends Data.TaggedError(
+  "FictionalSuccessRejectedError"
+)<{
+  readonly mandateId: string;
+  readonly message: string;
+  readonly unsatisfiedPredicates: readonly string[];
+}> {}

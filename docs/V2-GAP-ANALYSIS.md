@@ -29,7 +29,7 @@ This document establishes the authoritative mapping between the **Operon V2 Rele
 | :-- | :-- | :-- | :-- | :-- | :-- |
 | **`V2-01`** | **G2 / WS06** | Authority Tiers and Bounded Autonomy | `packages/schema/src/missions.ts`<br>`packages/runtime/src/missions/authority-tiers.ts`<br>`packages/runtime/src/missions/authority-tiers.test.ts` | 🟢 **100% Done**<br>Derived from `OPR-AGT-001` & `OPR-AGT-002`. | None. 4 interaction modes, authority tiers, envelope validation, earned promotion and demotion triggers verified with 15/15 tests passing. |
 | **`V2-02`** | **G2 / WS06** | Key Separation & Untrusted Model Candidates | `packages/schema/src/missions.ts`<br>`packages/runtime/src/missions/model-boundary.ts`<br>`packages/runtime/src/missions/model-boundary.test.ts` | 🟢 **100% Done**<br>Derived from `OPR-AGT-003` & `OPR-AGT-004`. | None. Key scope separation (consumer runtime vs builder dev), prompt injection immunity, reserved authority field rejection, and typed admission/quarantine verified with 14/14 tests passing. |
-| **`V2-03`** | **G2 / WS06** | Verifiable Mission Objectives & Planning DAGs | `packages/schema/src/missions.ts`<br>`packages/runtime/src/missions/mission-runner.ts`<br>`packages/runtime/src/missions/mission-runner.test.ts` | ⚪ **Not Started**<br>Derived from `OPR-FULL-021` & `OPR-FULL-023`. | Implement TaskMandate and Mission lifecycle with observable success predicates, time horizons, budgets, and stop conditions. Enforce that planners cannot self-certify success and all plan steps conform to published grants. |
+| **`V2-03`** | **G2 / WS06** | Verifiable Mission Objectives & Planning DAGs | `packages/schema/src/missions.ts`<br>`packages/runtime/src/missions/mission-runner.ts`<br>`packages/runtime/src/missions/mission-runner.test.ts` | 🟢 **100% Done**<br>Derived from `OPR-FULL-021` & `OPR-FULL-023`. | None. Mission lifecycle with observable success predicates, cycle-free planning DAGs, envelope/budget/risk validation, mandatory constraint enforcement regardless of score, and prevention of fictional success verified with 14/14 tests passing. |
 | **`V2-04`** | **G2 / WS06** | Active Evidence Acquisition & Governed Memory | `packages/runtime/src/missions/evidence-acquisition.ts`<br>`packages/runtime/src/missions/agent-memory.ts`<br>`packages/runtime/src/missions/agent-memory.test.ts` | ⚪ **Not Started**<br>Derived from `OPR-FULL-022` & `OPR-AGT-005`. | Register evidence acquisition as governed actions within grants. Provide reconstructable tool/evidence telemetry traces without private unverified state. Enforce cross-tenant isolation in agent memory. |
 | **`V2-05`** | **G2 / WS06** | Replaceable Model Gateway & 4C Readiness | `packages/runtime/src/missions/model-gateway.ts`<br>`packages/runtime/src/missions/model-gateway.test.ts` | ⚪ **Not Started**<br>Derived from `OPR-FULL-024`, `OPR-FULL-025`, `OPR-CTX-001`. | Provider-neutral model gateway with evaluation suites, input classification, token budgeting. Enforce that context fidelity does not bypass canonical 4C-L1 state correctness. |
 | **`V2-06`** | **G2 / WS06** | Typed Read Functions & L2 Context Verification | `packages/schema/src/functions.ts`<br>`packages/runtime/src/functions/`<br>`packages/runtime/src/functions/functions.test.ts` | ⚪ **Not Started**<br>Derived from `OPR-FUN-001..006` & `OPR-L2-001..006`. | Pure typed query functions with versioned logic and cache invalidation. L2 factual contradiction detection against bitemporal evidence. |
@@ -38,14 +38,15 @@ This document establishes the authoritative mapping between the **Operon V2 Rele
 
 ---
 
-## 3. Immediate Next Execution: `V2-03` (Verifiable Mission Objectives & Planning DAGs)
+## 3. Immediate Next Execution: `V2-04` (Active Evidence Acquisition & Governed Memory)
 
-With `V2-01` and `V2-02` resolved, the next ticket is `V2-03` (Workstream `WS06 - Missions and agent runtime`), addressing:
+With `V2-01`, `V2-02`, and `V2-03` resolved, the next ticket is `V2-04` (Workstream `WS06 - Missions and agent runtime`), addressing:
 
-1. **Mission Lifecycle & TaskMandate Execution (`OPR-FULL-021`)**:
-   - `TaskMandate`: Bounded envelope containing observable success predicates, time horizons (deadlines), max budget / step counts, and non-negotiable stop conditions.
-   - Independent verification of success predicates: The model / planner *cannot* self-certify its own mission success. Success is evaluated strictly against canonical bitemporal state by the kernel evaluator.
-2. **Planning DAGs & Plan Step Validation (`OPR-FULL-023`)**:
-   - Multi-step plans structured as dependency DAGs.
-   - Dynamic plan step validation: Every step in the DAG must conform to published `IntentGrant` and authority envelope.
-   - Stop condition enforcement: Invariant violations, budget exhaustion, or safety tripwires immediately halt DAG progression.
+1. **Active Evidence Acquisition as Governed Action (`OPR-FULL-022`)**:
+   - Acquiring evidence (e.g. tool execution, querying external data, document retrieval) is an operational action that consumes budget and must fit within published grants.
+   - Reconstructable evidence audit trail: Every observation, tool result, and intermediate acquisition must leave a tamper-evident trace bound to the mission and candidate.
+   - Negative information discipline: Absence of data is strictly not permission for the model to hallucinate or invent operational facts.
+2. **Governed Agent Memory (`OPR-AGT-005`)**:
+   - Memory records must maintain provenance (source mandate, time validity, tenant isolation).
+   - Cross-tenant memory isolation: Agent working in tenant A cannot access or leak memory from tenant B.
+   - Decay and invalidation: Stale or contradictory memory is pruned or updated bitemporally.

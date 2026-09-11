@@ -101,6 +101,22 @@ export interface AgentDemotedPayload {
   readonly violationsCount: number;
 }
 
+export interface PlanValidatedPayload {
+  readonly isValid: boolean;
+  readonly mandateId: string;
+  readonly planId: string;
+  readonly stepsCount: number;
+  readonly violationsCount: number;
+}
+
+export interface MissionEvaluatedPayload {
+  readonly allPredicatesSatisfied: boolean;
+  readonly fictionalSuccessPrevented: boolean;
+  readonly mandateId: string;
+  readonly plannerReportedDone: boolean;
+  readonly status: string;
+}
+
 export type OperonTelemetryEvent =
   | {
       readonly event: "operon_action_submitted";
@@ -150,5 +166,15 @@ export type OperonTelemetryEvent =
   | {
       readonly event: "operon_agent_demoted";
       readonly properties: AgentDemotedPayload;
+      readonly subject?: Subject;
+    }
+  | {
+      readonly event: "operon_plan_validated";
+      readonly properties: PlanValidatedPayload;
+      readonly subject?: Subject;
+    }
+  | {
+      readonly event: "operon_mission_evaluated";
+      readonly properties: MissionEvaluatedPayload;
       readonly subject?: Subject;
     };
