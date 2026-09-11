@@ -887,3 +887,35 @@ export class UnconfinedProcessActionError extends Data.TaggedError(
   readonly message: string;
   readonly targetPattern: string;
 }> {}
+
+/**
+ * TenantQuotaExceededError (S16 / OPR-FULL-048 / FULL-ACC-048):
+ * Tenant exceeded allocated resource quota (concurrency, rate limit, or spend budget).
+ */
+export class TenantQuotaExceededError extends Data.TaggedError(
+  "TenantQuotaExceededError"
+)<{
+  readonly currentValue: number;
+  readonly limitValue: number;
+  readonly message: string;
+  readonly quotaType: "CONCURRENCY" | "RATE_LIMIT" | "BUDGET_EXHAUSTED";
+  readonly tenantId: string;
+}> {}
+
+/**
+ * RegionalLocalityViolationError (S16 / OPR-FULL-050 / FULL-ACC-050):
+ * Attempted data routing or egress outside authorized sovereign regional boundaries.
+ */
+export class RegionalLocalityViolationError extends Data.TaggedError(
+  "RegionalLocalityViolationError"
+)<{
+  readonly allowedRegions: readonly string[];
+  readonly attemptedRegion: string;
+  readonly channel:
+    | "MODEL_INVOCATION"
+    | "LOG_EXPORT"
+    | "BACKUP_TRANSFER"
+    | "ARTIFACT_EGRESS";
+  readonly message: string;
+  readonly tenantId: string;
+}> {}
