@@ -672,3 +672,92 @@ export class OutboundExecutionFailedError extends Data.TaggedError(
   readonly operationId: string;
   readonly targetSystem: string;
 }> {}
+
+/**
+ * UncontractedLinkTraversalError (S15 / OPR-FULL-044 / FULL-ACC-044):
+ * Navigation attempted across private or uncontracted links outside the negotiated view contract.
+ */
+export class UncontractedLinkTraversalError extends Data.TaggedError(
+  "UncontractedLinkTraversalError"
+)<{
+  readonly contractId: string;
+  readonly linkRelation: string;
+  readonly message: string;
+  readonly requestedPath: string;
+  readonly sourceCellId: string;
+  readonly targetCellId: string;
+}> {}
+
+/**
+ * FederationContractRevokedError (S15 / OPR-FULL-044):
+ * View access or traversal attempted under a revoked federation contract.
+ */
+export class FederationContractRevokedError extends Data.TaggedError(
+  "FederationContractRevokedError"
+)<{
+  readonly contractId: string;
+  readonly message: string;
+  readonly sourceCellId: string;
+  readonly targetCellId: string;
+}> {}
+
+/**
+ * FederationContractExpiredError (S15 / OPR-FULL-044):
+ * View access or traversal attempted outside the contract's validity window.
+ */
+export class FederationContractExpiredError extends Data.TaggedError(
+  "FederationContractExpiredError"
+)<{
+  readonly attemptedAt: string;
+  readonly contractId: string;
+  readonly message: string;
+  readonly validUntil: string;
+}> {}
+
+/**
+ * FederationAttributionMissingError (S15 / OPR-FULL-046):
+ * Remote federated claim rejected due to missing mandatory attribution fields.
+ */
+export class FederationAttributionMissingError extends Data.TaggedError(
+  "FederationAttributionMissingError"
+)<{
+  readonly claimId?: string;
+  readonly message: string;
+  readonly missingFields: readonly string[];
+}> {}
+
+/**
+ * MultiCellCompensationFailedError (S15 / OPR-FULL-046):
+ * Downstream step failed and compensating action on previously committed cell also failed.
+ */
+export class MultiCellCompensationFailedError extends Data.TaggedError(
+  "MultiCellCompensationFailedError"
+)<{
+  readonly cellId: string;
+  readonly message: string;
+  readonly operationId: string;
+  readonly stepId: string;
+  readonly underlyingError: string;
+}> {}
+
+/**
+ * RemoteCellExecutionError (S15 / OPR-FULL-046):
+ * Step execution failed on a remote cell in a multi-cell saga.
+ */
+export class RemoteCellExecutionError extends Data.TaggedError(
+  "RemoteCellExecutionError"
+)<{
+  readonly cellId?: string;
+  readonly message: string;
+}> {}
+
+/**
+ * RemoteCellCompensationError (S15 / OPR-FULL-046):
+ * Compensating action failed on a remote cell in a multi-cell saga.
+ */
+export class RemoteCellCompensationError extends Data.TaggedError(
+  "RemoteCellCompensationError"
+)<{
+  readonly cellId?: string;
+  readonly message: string;
+}> {}

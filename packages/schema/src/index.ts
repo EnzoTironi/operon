@@ -28,3 +28,4 @@ export * from "./functions.js";
 export * from "./context-verification.js";
 export * from "./surfaces.js";
 export * from "./connectors.js";
+export * from "./federation.js";

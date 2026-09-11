@@ -30,8 +30,8 @@ This document establishes the authoritative mapping between the **Operon V3 Rele
 | Ticket | Gate / WS | Title | Target Paths | Monorepo Status | Gap to Close |
 | :-- | :-- | :-- | :-- | :-- | :-- |
 | **`V3-01`** | **G3 / WS09** | Contracted Inbound & Outbound Connectors | `packages/runtime/src/connectors/`<br>`packages/schema/src/connectors.ts` | 🟢 **RESOLVED_PASSED**<br>Derived from `OPR-FULL-043`, `OPR-FULL-044`, `S15`. | Contracted connector declarations: conditional write support, source freshness, CDC order/outage handling, broker credential boundary, compensation support. Explicit rejection when source lacks required guarantees (`FULL-ACC-043`). Verified with 9/9 unit tests. |
-| **`V3-02`** | **G3 / WS09** | Federated Authority & Multi-Cell Compensation | `packages/runtime/src/federation/`<br>`packages/schema/src/federation.ts` | 🟡 **In Progress**<br>Derived from `OPR-FULL-044`, `OPR-FULL-046`, `S15`. | Contracted views and actions between independent cells; link traversal outside contract is denied (`FULL-ACC-044`); remote claims remain attributed; partial multi-cell failure handled via compensation without fictional global transactions (`FULL-ACC-046`). |
-| **`V3-03`** | **G3 / WS09** | Sovereign Export, Import & Clean Replay-Free Restore | `packages/runtime/src/federation/`<br>`packages/runtime/src/export/` | ⚪ **Not Started**<br>Derived from `OPR-FULL-045`, `S15`. | Clean export/import preserving identities and authorized history without secrets; clean restore into new cell yields matching queries/dossiers with zero historical side-effects or re-sent notifications (`FULL-ACC-045`). |
+| **`V3-02`** | **G3 / WS09** | Federated Authority & Multi-Cell Compensation | `packages/runtime/src/federation/`<br>`packages/schema/src/federation.ts` | 🟢 **RESOLVED_PASSED**<br>Derived from `OPR-FULL-044`, `OPR-FULL-046`, `S15`. | Contracted views and actions between independent cells; link traversal outside contract is denied (`FULL-ACC-044`); remote claims remain attributed with uncertainty; partial multi-cell failure handled via compensation without fictional global transactions (`FULL-ACC-046`). Verified with 8/8 unit tests. |
+| **`V3-03`** | **G3 / WS09** | Sovereign Export, Import & Clean Replay-Free Restore | `packages/runtime/src/federation/`<br>`packages/runtime/src/export/` | 🟡 **In Progress**<br>Derived from `OPR-FULL-045`, `S15`. | Clean export/import preserving identities and authorized history without secrets; clean restore into new cell yields matching queries/dossiers with zero historical side-effects or re-sent notifications (`FULL-ACC-045`). |
 | **`V3-04`** | **G3 / WS10** | Sovereign Deployment Profiles & Fenced Dual-Writer Resolution | `packages/runtime/src/cluster/`<br>`packages/runtime/src/deployment/` | ⚪ **Not Started**<br>Derived from `OPR-FULL-047`, `S16`. | Multi-process failover; split-brain fencing: when two processes claim same tenant, only current fence holder dispatches new effects (`FULL-ACC-047`). Prohibits in-memory authority in production. |
 | **`V3-05`** | **G3 / WS10** | Audited Backup, Qualified Restore & Key Rotation | `packages/runtime/src/backup/`<br>`packages/runtime/src/security/` | ⚪ **Not Started**<br>Derived from `OPR-FULL-048`, `OPR-FULL-049`, `S16`. | Backup audit and restore qualification verifying hash chain integrity, decisions, approvals, and receipts (`FULL-ACC-048`); zero-downtime key rotation and process confinement (`OPR-FULL-049`). |
 | **`V3-06`** | **G3 / WS10** | Tenant Resource Quotas & Operational Economics | `packages/runtime/src/economics/`<br>`packages/schema/src/economics.ts` | ⚪ **Not Started**<br>Derived from `OPR-FULL-050`, `OPR-OPS-*`, `S16`. | Multi-tenant resource quotas, model/tool spend metering, queue backlog contention measurement, finite mission aggregate bounds. |
@@ -40,13 +40,14 @@ This document establishes the authoritative mapping between the **Operon V3 Rele
 
 ---
 
-## 3. Active Execution: `V3-02` (Federated Authority & Multi-Cell Compensation)
+## 3. Active Execution: `V3-03` (Sovereign Export, Import & Clean Replay-Free Restore)
 
-With `V3-01` complete and verified, execution proceeds on Workstream `WS09 - Connectors and portable authority` with ticket `V3-02`:
+With `V3-01` and `V3-02` complete and verified, execution proceeds on Workstream `WS09 - Connectors and portable authority` with ticket `V3-03`:
 
-1. **Inter-Cell Contracted Views (`S15`, `OPR-FULL-044`, `FULL-ACC-044`)**:
-   - Explicit contracted view definitions between independent cells. Link traversal outside the declared contract is explicitly rejected (`FULL-ACC-044`).
-2. **Attributed Remote Claims & Uncertainty (`S15`, `FULL-ACC-046`)**:
-   - Remote claims remain attributed to their source cell and maintain explicit uncertainty metadata (e.g. freshness, unreachable status).
-3. **Multi-Cell Partial Failure and Compensation (`S15`, `OPR-FULL-046`, `FULL-ACC-046`)**:
-   - Multi-cell operations coordinate through sagas / compensating actions rather than pretending a fictional global two-phase commit is possible. If cell A commits and cell B fails or times out, cell A's compensating action is triggered and attributed.
+1. **Sovereign Export Without Secret Leakage (`S15`, `OPR-FULL-045`, `FULL-ACC-045`)**:
+   - Export canonical definitions, authorized evidence, bitemporal history, execution receipts, and policy configurations using documented portable representation.
+   - Strict secret sanitization: tokens, cryptographic private keys, internal credentials, and unconsented data are never included in sovereign export bundles.
+2. **Clean Replay-Free Restore (`S15`, `FULL-ACC-045`)**:
+   - Restore bundle into an independent cell or environment.
+   - Verified identities, historical queries, and dossier states match the source cell perfectly.
+   - Zero historical side-effects: restore never re-fires outbound webhooks, re-executes external connectors, re-sends notifications, or produces spurious outbox mutations.

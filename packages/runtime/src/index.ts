@@ -47,4 +47,5 @@ export * from "./context/extraction-admission.js";
 export * from "./context/quality-gate.js";
 export * from "./views/surface-runtime.js";
 export * from "./connectors/contracted-connector.js";
+export * from "./federation/federation-service.js";
 export * from "@operon/assurance";
