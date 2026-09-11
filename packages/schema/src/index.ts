@@ -33,3 +33,4 @@ export * from "./export.js";
 export * from "./deployment.js";
 export * from "./backup.js";
 export * from "./economics.js";
+export * from "./factory.js";

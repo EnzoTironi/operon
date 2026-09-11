@@ -96,3 +96,70 @@ export class NonDisclosureError extends Data.TaggedError("NonDisclosureError")<{
   readonly code: "NOT_FOUND" | "DENIED";
   readonly message: string;
 }> {}
+
+/**
+ * UnapprovedTaskContractError (S17 / OPR-FULL-051 / FULL-ACC-051):
+ * Agent attempted protected write without an approved task contract.
+ */
+export class UnapprovedTaskContractError extends Data.TaggedError(
+  "UnapprovedTaskContractError"
+)<{
+  readonly message: string;
+  readonly missingRequirements: readonly string[];
+  readonly taskId: string;
+}> {}
+
+/**
+ * AdversarialScenarioTamperError (S17 / OPR-FULL-052 / FULL-ACC-052):
+ * Implementer diff deleted or tampered with protected adversarial scenarios.
+ */
+export class AdversarialScenarioTamperError extends Data.TaggedError(
+  "AdversarialScenarioTamperError"
+)<{
+  readonly message: string;
+  readonly removedScenarios: readonly string[];
+}> {}
+
+/**
+ * ContractRevisionConflictError (S17 / OPR-FULL-053 / FULL-ACC-053):
+ * Release assembly detected incompatible interface revisions across parallel modules.
+ */
+export class ContractRevisionConflictError extends Data.TaggedError(
+  "ContractRevisionConflictError"
+)<{
+  readonly conflictingModules: readonly {
+    readonly moduleId: string;
+    readonly version: string;
+  }[];
+  readonly contractId: string;
+  readonly message: string;
+}> {}
+
+/**
+ * ExternalGateRequiredError (S17 / OPR-FULL-054 / FULL-ACC-054):
+ * Platform attempted self-modification of executor without satisfying external publication gate.
+ */
+export class ExternalGateRequiredError extends Data.TaggedError(
+  "ExternalGateRequiredError"
+)<{
+  readonly message: string;
+  readonly policyDigest: string;
+  readonly targetComponent: string;
+}> {}
+
+/**
+ * EvidenceMutationRejectedError (S17):
+ * Candidate observation ledger contains dropped, duplicated, or zero-assertion test cases, or an untrusted runner.
+ */
+export class EvidenceMutationRejectedError extends Data.TaggedError(
+  "EvidenceMutationRejectedError"
+)<{
+  readonly details: string;
+  readonly message: string;
+  readonly mutationType:
+    | "DROPPED_CASE"
+    | "DUPLICATE_CASE"
+    | "ZERO_ASSERTIONS"
+    | "UNTRUSTED_RUNNER"
+    | "RECEIPT_TAMPERED";
+}> {}
