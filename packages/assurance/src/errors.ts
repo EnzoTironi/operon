@@ -163,3 +163,90 @@ export class EvidenceMutationRejectedError extends Data.TaggedError(
     | "UNTRUSTED_RUNNER"
     | "RECEIPT_TAMPERED";
 }> {}
+
+/**
+ * BoundedProofMisrepresentationError (S19 / OPR-FULL-026 / FULL-ACC-026):
+ * Solver searched to depth K and found no counterexample, but attempted to claim unbounded proof.
+ */
+export class BoundedProofMisrepresentationError extends Data.TaggedError(
+  "BoundedProofMisrepresentationError"
+)<{
+  readonly attemptedOutcome: string;
+  readonly message: string;
+  readonly searchDepthBound: number;
+}> {}
+
+/**
+ * DifferentialDivergenceError (S19 / OPR-FULL-027 / FULL-ACC-027):
+ * Translation divergence detected between reference interpreter and backend runtime.
+ */
+export class DifferentialDivergenceError extends Data.TaggedError(
+  "DifferentialDivergenceError"
+)<{
+  readonly backendResult: unknown;
+  readonly counterexampleFixture: string;
+  readonly message: string;
+  readonly referenceInterpreterResult: unknown;
+  readonly ruleId: string;
+}> {}
+
+/**
+ * ScenarioSandboxEscapeError (S19 / OPR-FULL-028 / FULL-ACC-028):
+ * Simulation scenario breached sandbox containment, dispatched real side effects, or accessed real credentials.
+ */
+export class ScenarioSandboxEscapeError extends Data.TaggedError(
+  "ScenarioSandboxEscapeError"
+)<{
+  readonly message: string;
+  readonly reason: string;
+  readonly scenarioId: string;
+}> {}
+
+/**
+ * InconclusiveAssuranceRejectedError (S19 / OPR-FULL-029 / FULL-ACC-029):
+ * Formal assurance evaluation returned inconclusive or timeout where rigorous proof is mandatory.
+ */
+export class InconclusiveAssuranceRejectedError extends Data.TaggedError(
+  "InconclusiveAssuranceRejectedError"
+)<{
+  readonly caseId: string;
+  readonly message: string;
+  readonly outcome: string;
+}> {}
+
+/**
+ * IncrementalVerificationDivergenceError (S19 / OPR-FULL-030 / FULL-ACC-030):
+ * Incremental verification verdict diverged from full baseline evaluation.
+ */
+export class IncrementalVerificationDivergenceError extends Data.TaggedError(
+  "IncrementalVerificationDivergenceError"
+)<{
+  readonly counterexampleFixture: string;
+  readonly fullVerdict: unknown;
+  readonly incrementalVerdict: unknown;
+  readonly message: string;
+}> {}
+
+/**
+ * GateIVerificationError (S19):
+ * Executable fragment violates declared rules or is overly restrictive.
+ */
+export class GateIVerificationError extends Data.TaggedError(
+  "GateIVerificationError"
+)<{
+  readonly message: string;
+  readonly overRestricted: boolean;
+  readonly unmetRules: readonly string[];
+}> {}
+
+/**
+ * GateIIVerificationError (S19):
+ * Fact or knowledge admitted without requisite evidence and policy conformance.
+ */
+export class GateIIVerificationError extends Data.TaggedError(
+  "GateIIVerificationError"
+)<{
+  readonly claimId: string;
+  readonly message: string;
+  readonly reason: string;
+}> {}
