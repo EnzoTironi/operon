@@ -46,4 +46,5 @@ export * from "./context/l2-context-verifier.js";
 export * from "./context/extraction-admission.js";
 export * from "./context/quality-gate.js";
 export * from "./views/surface-runtime.js";
+export * from "./connectors/contracted-connector.js";
 export * from "@operon/assurance";

@@ -621,3 +621,54 @@ export class ClosedObjectModificationDeniedError extends Data.TaggedError(
   readonly objectId: string;
   readonly objectStatus: string;
 }> {}
+
+/**
+ * ConnectorCapabilityMismatchError (S15 / OPR-FULL-043):
+ * Connector lacks a required guarantee demanded by a workflow/package. Incompatibility is explicit, never wrapped.
+ */
+export class ConnectorCapabilityMismatchError extends Data.TaggedError(
+  "ConnectorCapabilityMismatchError"
+)<{
+  readonly connectorId: string;
+  readonly message: string;
+  readonly packageId: string;
+  readonly providedValue: unknown;
+  readonly requiredCapability: string;
+}> {}
+
+/**
+ * BrokerCredentialViolationError (S15 / OPR-FULL-044):
+ * Agent attempted direct access/extraction of connector credentials outside the broker/worker boundary.
+ */
+export class BrokerCredentialViolationError extends Data.TaggedError(
+  "BrokerCredentialViolationError"
+)<{
+  readonly actorId: string;
+  readonly connectorId: string;
+  readonly message: string;
+}> {}
+
+/**
+ * BusinessAuthorityMissingError (S15 / OPR-FULL-044):
+ * Outbound connector operation attempted without an active kernel TaskMandate/IntentGrant. Token availability alone does not grant business authority.
+ */
+export class BusinessAuthorityMissingError extends Data.TaggedError(
+  "BusinessAuthorityMissingError"
+)<{
+  readonly actorId: string;
+  readonly message: string;
+  readonly operationId: string;
+  readonly tokenPresent: boolean;
+}> {}
+
+/**
+ * OutboundExecutionFailedError (S15 / OPR-FULL-044):
+ * Downstream outbound connector invocation failed during remote execution.
+ */
+export class OutboundExecutionFailedError extends Data.TaggedError(
+  "OutboundExecutionFailedError"
+)<{
+  readonly message: string;
+  readonly operationId: string;
+  readonly targetSystem: string;
+}> {}
