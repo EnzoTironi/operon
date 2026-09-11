@@ -6,6 +6,10 @@ import {
   AviationSkywisePack,
   AviationSkywiseRecipe,
   BUILTIN_RECIPES,
+  HealthcareClinicalPack,
+  HealthcareClinicalRecipe,
+  WaterWastewaterPack,
+  WaterWastewaterRecipe,
 } from "./builtin.js";
 import { CorruptRecipePackError, RecipeNotFoundError } from "./errors.js";
 import { computeRecipeDigest, defineRecipe } from "./manifest.js";
@@ -43,14 +47,17 @@ describe("@operon/recipes", () => {
     );
 
     const list = await Effect.runPromise(service.listRecipes());
-    expect(list).toHaveLength(1);
-    expect(list[0].id).toBe(AviationSkywiseRecipe.id);
+    expect(list).toHaveLength(3);
+    const ids = list.map((r) => r.id);
+    expect(ids).toContain(AviationSkywiseRecipe.id);
+    expect(ids).toContain(HealthcareClinicalRecipe.id);
+    expect(ids).toContain(WaterWastewaterRecipe.id);
 
     const retrieved = await Effect.runPromise(
-      service.getRecipe(AviationSkywiseRecipe.id)
+      service.getRecipe(HealthcareClinicalRecipe.id)
     );
-    expect(retrieved.id).toBe(AviationSkywiseRecipe.id);
-    expect(retrieved.digest).toBe(AviationSkywiseRecipe.digest);
+    expect(retrieved.id).toBe(HealthcareClinicalRecipe.id);
+    expect(retrieved.digest).toBe(HealthcareClinicalRecipe.digest);
   });
 
   it("imports recipe pack and enforces S14: recipe import grants no authority", async () => {
@@ -120,5 +127,28 @@ describe("@operon/recipes", () => {
 
     expect(error).toBeInstanceOf(RecipeNotFoundError);
     expect((error as RecipeNotFoundError).recipeId).toBe("nonexistent.recipe");
+  });
+
+  it("imports healthcare clinical pack and water wastewater pack with zero granted authority", async () => {
+    const recipeService = RecipeService.make();
+    const skillService = SkillService.make();
+
+    const hcReceipt = await Effect.runPromise(
+      recipeService.importRecipe(HealthcareClinicalPack, skillService)
+    );
+    expect(hcReceipt.imported).toBe(true);
+    expect(hcReceipt.recipeId).toBe(HealthcareClinicalRecipe.id);
+    expect(hcReceipt.skillsCount).toBe(2);
+    expect(hcReceipt.ontologiesCount).toBe(4);
+    expect(hcReceipt.grantedAuthorityCount).toBe(0);
+
+    const wwReceipt = await Effect.runPromise(
+      recipeService.importRecipe(WaterWastewaterPack, skillService)
+    );
+    expect(wwReceipt.imported).toBe(true);
+    expect(wwReceipt.recipeId).toBe(WaterWastewaterRecipe.id);
+    expect(wwReceipt.skillsCount).toBe(2);
+    expect(wwReceipt.ontologiesCount).toBe(5);
+    expect(wwReceipt.grantedAuthorityCount).toBe(0);
   });
 });

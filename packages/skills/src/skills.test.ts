@@ -1,12 +1,7 @@
 import { Effect } from "effect";
 import { describe, expect, it } from "vitest";
 
-import {
-  ActionReviewProposalSkill,
-  AuditInvestigationSkill,
-  BUILTIN_SKILLS,
-  OntologySchemaProposalSkill,
-} from "./builtin.js";
+import { AuditInvestigationSkill, BUILTIN_SKILLS } from "./builtin.js";
 import {
   IncompatibleContractError,
   InsufficientAuthorityError,
@@ -49,12 +44,8 @@ describe("@operon/skills", () => {
     );
 
     const listed = await Effect.runPromise(service.listSkills());
-    expect(listed).toHaveLength(3);
-    expect(listed.map((s) => s.id)).toEqual([
-      AuditInvestigationSkill.id,
-      ActionReviewProposalSkill.id,
-      OntologySchemaProposalSkill.id,
-    ]);
+    expect(listed).toHaveLength(7);
+    expect(listed.map((s) => s.id)).toEqual(BUILTIN_SKILLS.map((s) => s.id));
 
     const retrieved = await Effect.runPromise(
       service.getSkill(AuditInvestigationSkill.id)

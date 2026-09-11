@@ -63,8 +63,109 @@ export const OntologySchemaProposalSkill: SkillManifest = defineSkill({
   version: "1.0.0",
 });
 
+export const DosageVerificationSkill: SkillManifest = defineSkill({
+  authorityPrerequisites: ["clinician", "pharmacist"],
+  description:
+    "Verify patient medication dosage against organ function (eGFR) and clinical safety protocols",
+  id: "operon.skill.dosage-verification",
+  inputSchema: {
+    calculatedEgfr: "number",
+    candidateDoseMg: "number",
+    drugName: "string",
+    patientId: "string",
+  },
+  minContract: "operon.kernel/v0",
+  name: "Dosage Verification",
+  outputSchema: {
+    adjustedDoseMg: "number",
+    approved: "boolean",
+    rationale: "string",
+  },
+  requiredTools: [
+    "operon_query_vitals",
+    "operon_calculate_egfr",
+    "operon_submit_dosage_order",
+  ],
+  version: "1.0.0",
+});
+
+export const ClinicalHandoffExtractionSkill: SkillManifest = defineSkill({
+  authorityPrerequisites: ["nurse", "physician"],
+  description:
+    "Extract patient shift handoff notes with span linking, nurse confirmation requirement, and prompt injection defense",
+  id: "operon.skill.clinical-handoff-extraction",
+  inputSchema: {
+    noteText: "string",
+    patientId: "string",
+    shiftId: "string",
+  },
+  minContract: "operon.kernel/v0",
+  name: "Clinical Handoff Extraction",
+  outputSchema: {
+    admittedFacts: "array",
+    candidateCount: "number",
+    requiresConfirmation: "boolean",
+  },
+  requiredTools: ["operon_extract_candidate_facts", "operon_admit_observation"],
+  version: "1.0.0",
+});
+
+export const ChemicalDosingDossierSkill: SkillManifest = defineSkill({
+  authorityPrerequisites: ["water_operator", "environmental_engineer"],
+  description:
+    "Prepare coagulant / disinfectant dosing recommendations with bounded loop simulation and regulatory permit limits",
+  id: "operon.skill.chemical-dosing-dossier",
+  inputSchema: {
+    effluentTurbidityNtu: "number",
+    influentFlowM3h: "number",
+    permitLimitNtu: "number",
+    plantId: "string",
+  },
+  minContract: "operon.kernel/v0",
+  name: "Chemical Dosing Dossier",
+  outputSchema: {
+    dosingRatePpm: "number",
+    predictedTurbidityNtu: "number",
+    withinPermitLimits: "boolean",
+  },
+  requiredTools: [
+    "operon_query_telemetry",
+    "operon_simulate_dosing",
+    "operon_submit_dosing_dossier",
+  ],
+  version: "1.0.0",
+});
+
+export const TelemetryLoopInspectionSkill: SkillManifest = defineSkill({
+  authorityPrerequisites: ["scada_engineer", "plant_supervisor"],
+  description:
+    "Inspect industrial water treatment plants with recirculation loops without infinite traversal loops",
+  id: "operon.skill.telemetry-loop-inspection",
+  inputSchema: {
+    maxDepth: "number?",
+    plantId: "string",
+    startNodeId: "string",
+  },
+  minContract: "operon.kernel/v0",
+  name: "Telemetry Loop Inspection",
+  outputSchema: {
+    cycleDetected: "boolean",
+    nodesVisited: "array",
+    telemetryHealth: "string",
+  },
+  requiredTools: [
+    "operon_traverse_plant_topology",
+    "operon_read_sensor_telemetry",
+  ],
+  version: "1.0.0",
+});
+
 export const BUILTIN_SKILLS: readonly SkillManifest[] = [
   AuditInvestigationSkill,
   ActionReviewProposalSkill,
   OntologySchemaProposalSkill,
+  DosageVerificationSkill,
+  ClinicalHandoffExtractionSkill,
+  ChemicalDosingDossierSkill,
+  TelemetryLoopInspectionSkill,
 ];
