@@ -33,19 +33,20 @@ This document establishes the authoritative mapping between the **Operon V2 Rele
 | **`V2-04`** | **G2 / WS06** | Active Evidence Acquisition & Governed Memory | `packages/runtime/src/missions/evidence-acquisition.ts`<br>`packages/runtime/src/missions/agent-memory.ts`<br>`packages/runtime/src/missions/agent-memory.test.ts` | 🟢 **100% Done**<br>Derived from `OPR-FULL-022` & `OPR-AGT-005`. | None. Governed evidence acquisition within envelope/budget without fact fabrication on missing sources, strict cross-tenant memory isolation, TTL expiration, authority injection defense, and reconstructable task execution traces verified with 9/9 tests passing. |
 | **`V2-05`** | **G2 / WS06** | Replaceable Model Gateway & 4C Readiness | `packages/runtime/src/missions/model-gateway.ts`<br>`packages/runtime/src/missions/model-gateway.test.ts` | 🟢 **100% Done**<br>Derived from `OPR-FULL-024`, `OPR-FULL-025`, `OPR-CTX-001`. | None. Provider-neutral model gateway with evaluation suites, benchmark-gated promotion to production routing, 4C state readiness verification over linguistic context fidelity, and graceful outage fallback with telemetry verified with 5/5 tests passing. |
 | **`V2-06`** | **G2 / WS06** | Typed Read Functions & L2 Context Verification | `packages/schema/src/functions.ts`<br>`packages/schema/src/context-verification.ts`<br>`packages/runtime/src/functions/`<br>`packages/runtime/src/context/` | 🟢 **100% Done**<br>Derived from `OPR-FUN-001..006` & `OPR-L2-001..006`. | None. Pure typed query functions, staged edit discipline, materialized cache invalidation, model applicability envelopes, six-part predictions, rule precedence over model scores, L2 ground truth verification, Must-Answer completeness templates, citation resolution, communication compliance, and human extraction admission verified with 26/26 tests passing. |
-| **`V2-07`** | **G2 / WS07** | Generated Application Surfaces | `packages/generated-ui/`<br>`packages/runtime/src/views/` | ⚪ **Not Started**<br>Derived from `S13`, `OPR-UX-*`, `OPR-ORG-*`. | Dynamic/disposable generated UI surfaces over kernel contracts. Strict state distinction (accepted, proposed, running, confirmed, hypothetical). Audience and tenant isolation. Zero UI expansion of authority. |
+| **`V2-07`** | **G2 / WS07** | Generated Application Surfaces | `packages/generated-ui/`<br>`packages/runtime/src/views/` | 🟢 **100% Done**<br>Derived from `S13`, `OPR-UX-*`, `OPR-ORG-*`. | None. State distinction (accepted vs proposed), channel equivalence (Button, API, Agent Tool all denied on closed object), accessible keyboard navigation, room audience revocation with instant cache purging, Decision Canvas 8-stage deliverables, hostile script sanitization, shadow evaluation, and operational telemetry verified with 17/17 tests passing. |
 | **`V2-08`** | **G2 / WS08** | Recipes, Skills & Enterprise Composition | `packages/recipes/`<br>`packages/skills/`<br>`examples/` | ⚪ **Not Started**<br>Derived from `S14`, `OPR-HC-*`, `OPR-WW-*`. | Package contracts for multi-domain capabilities. Execute composition journeys (J1-J4) across two unrelated recipes and one generated app with survival across regeneration and migration. |
 
 ---
 
-## 3. Immediate Next Execution: `V2-07` (Generated Application Surfaces)
+## 3. Immediate Next Execution: `V2-08` (Recipes, Skills & Enterprise Composition)
 
-With `V2-01`, `V2-02`, `V2-03`, `V2-04`, `V2-05`, and `V2-06` resolved (completing Workstream `WS06 - Missions and agent runtime`), the next ticket is `V2-07` (Workstream `WS07 - Generated application surfaces`), addressing:
+With `V2-01` through `V2-07` resolved (completing Workstreams `WS06` and `WS07`), the final ticket to close Gate `G2` is `V2-08` (Workstream `WS08 - Recipes, skills and generated modules`), addressing:
 
-1. **Disposable, Generated Application Surfaces (`S13`, `OPR-UX-*`)**:
-   - Zero-permanent-UI discipline: surfaces are disposable projections generated dynamically from kernel contracts and current task mandates.
-   - Five unambiguous proposal/action state distinctions: `accepted`, `proposed`, `running`, `confirmed`, and `hypothetical`.
-2. **Authority & Tenant Isolation (`OPR-ORG-*`)**:
-   - UI surfaces cannot expand, mint, or forge kernel authority.
-   - Strict tenant boundary enforcement across all generated components and views.
-
+1. **S00 Gate G2 Exit Criterion**:
+   - "V2/G2 exits only when two unrelated recipes and one generated application use public kernel contracts and survive regeneration and migration."
+2. **Two Unrelated Recipes (`S14`, `OPR-HC-*`, `OPR-WW-*`)**:
+   - Recipe 1: Healthcare / Clinical Governance (`OPR-HC-*` e.g. safe dosage titration, ICU triage, clinician signoff).
+   - Recipe 2: Water & Wastewater / Industrial Operations (`OPR-WW-*` e.g. chemical dosing, pump telemetry, environmental compliance).
+3. **Enterprise Module Composition & Portability**:
+   - Skills, domain schemas, rule registries, and action definitions packaged modularly without kernel coupling.
+   - Survival of ontology, instances, and receipts across schema regeneration and migration.

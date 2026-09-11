@@ -582,3 +582,42 @@ export class UnadmittedCandidateError extends Data.TaggedError(
   readonly message: string;
   readonly status: string;
 }> {}
+
+/**
+ * RoomAccessRevokedError (OPR-FULL-038):
+ * Access to room, surfaces, or derived group memory revoked immediately upon membership departure.
+ */
+export class RoomAccessRevokedError extends Data.TaggedError(
+  "RoomAccessRevokedError"
+)<{
+  readonly message: string;
+  readonly revokedAt: number;
+  readonly roomId: string;
+  readonly userId: string;
+}> {}
+
+/**
+ * SurfaceAudienceDeniedError (S13 / OPR-FULL-038):
+ * Surface rendering rejected due to unauthorized audience.
+ */
+export class SurfaceAudienceDeniedError extends Data.TaggedError(
+  "SurfaceAudienceDeniedError"
+)<{
+  readonly audience: string;
+  readonly message: string;
+  readonly surfaceId: string;
+}> {}
+
+/**
+ * ClosedObjectModificationDeniedError (OPR-FULL-036):
+ * Attempted modification on closed or finalized object rejected identically across all channels (Button, API, Agent).
+ */
+export class ClosedObjectModificationDeniedError extends Data.TaggedError(
+  "ClosedObjectModificationDeniedError"
+)<{
+  readonly actionName: string;
+  readonly channel: "BUTTON" | "API" | "AGENT_TOOL";
+  readonly message: string;
+  readonly objectId: string;
+  readonly objectStatus: string;
+}> {}

@@ -26,3 +26,4 @@ export * from "./diagnostics.js";
 export * from "./missions.js";
 export * from "./functions.js";
 export * from "./context-verification.js";
+export * from "./surfaces.js";
