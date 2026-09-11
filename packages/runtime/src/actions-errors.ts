@@ -849,3 +849,41 @@ export class ProductionTenantInvalidError extends Data.TaggedError(
   readonly profile: string;
   readonly tenantId: string;
 }> {}
+
+/**
+ * BackupAuditIntegrityError (S16 / OPR-FULL-049 / FULL-ACC-049):
+ * Backup audit ledger hash chain verification failed (broken link, truncation, or payload tampering).
+ */
+export class BackupAuditIntegrityError extends Data.TaggedError(
+  "BackupAuditIntegrityError"
+)<{
+  readonly actualHash: string;
+  readonly backupId: string;
+  readonly blockIndex: number;
+  readonly expectedHash: string;
+  readonly message: string;
+}> {}
+
+/**
+ * SigningKeyInvalidError (S16):
+ * Cryptographic verification failed because key is revoked, expired, or unknown.
+ */
+export class SigningKeyInvalidError extends Data.TaggedError(
+  "SigningKeyInvalidError"
+)<{
+  readonly keyId: string;
+  readonly message: string;
+  readonly reason: "UNKNOWN_KEY" | "REVOKED_KEY" | "EXPIRED_KEY";
+}> {}
+
+/**
+ * UnconfinedProcessActionError (S16):
+ * Process attempted broad unconfined cleanup or destruction outside tracked owned resources.
+ */
+export class UnconfinedProcessActionError extends Data.TaggedError(
+  "UnconfinedProcessActionError"
+)<{
+  readonly action: string;
+  readonly message: string;
+  readonly targetPattern: string;
+}> {}

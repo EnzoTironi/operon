@@ -31,3 +31,4 @@ export * from "./connectors.js";
 export * from "./federation.js";
 export * from "./export.js";
 export * from "./deployment.js";
+export * from "./backup.js";
