@@ -42,8 +42,13 @@ This document establishes the authoritative mapping between the **Operon V3 Rele
 
 ## 3. Milestone Achievement: Gate G3 Fully Verified & Passed
 
-All 8 foundational workstream tickets comprising Gate G3 (`V3-01` through `V3-08`) have been implemented in accordance with `S15`, `S16`, `S17`, `S19`, `ADR-D-CONS-06`, and `S00-PROGRAM.md`.
+All 8 foundational workstream tickets comprising Gate G3 (`V3-01` through `V3-08`) and the Unified Gate G3 Isolated Enterprise Profile Acceptance Suite (`packages/runtime/src/g3-enterprise-profile.test.ts`) have been implemented in accordance with `S15`, `S16`, `S17`, `S19`, `ADR-D-CONS-06`, and `S00-PROGRAM.md`.
 
-- **Total G3 Tests**: 44 new dedicated acceptance tests passed with 100% success across `@operon/runtime`, `@operon/schema`, and `@operon/assurance`.
-- **Zero Regressions**: All 17 workspace packages pass continuous verification (`pnpm run fix`, `pnpm run check`, `pnpm run lint:knip`, and full test suite).
-- **Gate G3 Exit Criteria Satisfied**: Federated authority, regional recovery, sovereign deployment profiles, dual factory ledgers, adversarial mutation defense, and formal assurance gates are complete and pinned.
+- **Enterprise Profile Suite (`packages/runtime/src/g3-enterprise-profile.test.ts`)**:
+  - **Pillar 1: Federated Authority & Multi-Cell Compensation**: Enforces view contract, filters uncontracted properties, denies uncontracted link traversal (`FULL-ACC-044`), executes multi-cell saga with partial compensation without global transaction fantasy (`FULL-ACC-046`).
+  - **Pillar 2: Regional Recovery, Fencing & Sovereign Locality**: Strictly validates sovereign deployment profile, rejects in-memory authority in production, fences stale split-brain processes (`FULL-ACC-047`), qualifies restore with hash chain verification, executes clean replay-free restore (`FULL-ACC-045`, `FULL-ACC-049`), throttles bursting tenants while protecting co-tenant guarantees (`FULL-ACC-048`), and enforces regional locality fences on model invocations (`FULL-ACC-050`).
+  - **Pillar 3: Supply-Chain Provenance, Dual Ledgers & Adversarial Defense**: Enforces approved task contracts (`FULL-ACC-051`), protects adversarial test scenarios against deletion (`FULL-ACC-052`), detects and blocks parallel contract revision conflicts (`FULL-ACC-053`), enforces external gate for self-modifying runtime (`FULL-ACC-054`), and defends normative requirements against dropped/mutated candidate observations.
+  - **Pillar 4: Formal Checks (Gate I & II, AssuranceCase Reports)**: Rejects unbounded claims from bounded searches (`FULL-ACC-026`), catches differential translation divergences (`FULL-ACC-027`), traps scenario sandbox escapes (`FULL-ACC-028`), rejects inconclusive/timeout release qualifications (`FULL-ACC-029`), enforces incremental vs full consistency (`FULL-ACC-030`), and executes Gate I and Gate II evaluations.
+- **Total Tests**: 51 dedicated V3/G3 acceptance tests passing with 100% success across `@operon/runtime`, `@operon/schema`, and `@operon/assurance`.
+- **Zero Regressions**: All 17 workspace packages pass continuous verification (`pnpm run fix`, `pnpm run check`, `pnpm run lint:knip`, `tsc -b`, and full test suite).
+- **Gate G3 Exit Criteria Satisfied**: Federated authority, regional recovery, supply-chain provenance, and formal checks all pass in an isolated enterprise profile. Gate G3 is officially closed and verified.
