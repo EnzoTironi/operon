@@ -291,4 +291,10 @@ export async function runHigherEducationSimulation() {
   console.log(`   - Total Immutable Decision Records: ${decisions.length}`);
   console.log(`   - Evaluated under Curriculum: CURR-2024`);
   console.log("=== HIGHER EDUCATION SIMULATION COMPLETED SUCCESSFULLY ===\n");
+
+  return {
+    decisions,
+    standardResult,
+    workExpResult,
+  };
 }

@@ -344,4 +344,11 @@ export async function runSompoRdpSimulation() {
     `   - Cryptographic Audit Ledger Size: ${totalDecisionRecords.length} immutable records`
   );
   console.log("=== SOMPO SIMULATION COMPLETED SUCCESSFULLY ===\n");
+
+  return {
+    approvedClaim,
+    maskedClaimant,
+    totalDecisionRecords,
+    updatedResident,
+  };
 }

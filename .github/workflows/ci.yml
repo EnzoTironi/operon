@@ -44,3 +44,9 @@ jobs:
 
       - name: Run test suites
         run: pnpm -r run test
+
+      - name: Run independent validation gates
+        run: pnpm run test:validation
+
+      - name: Comprehensive end-to-end verification
+        run: pnpm run verify:all

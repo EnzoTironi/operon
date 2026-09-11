@@ -1,6 +1,6 @@
-import { PublicationBoundaryService } from "@operon/assurance";
 import { Effect, Exit } from "effect";
 
+import { PublicationBoundaryService } from "../../packages/assurance/src/publication-boundary.js";
 import { joinPath, resolvePath } from "./paths.js";
 
 const __dirname = import.meta.dirname;
