@@ -361,6 +361,32 @@ describe("email magic factor through MCP (Q -> C -> L)", () => {
       status: "suppressed",
     });
 
+    const gmailEmptyExtras = await call(
+      consumer,
+      "operon_derive_identity_keys",
+      {
+        email: "bruno@gmail.com",
+        suppressedDomains: [],
+      }
+    );
+    expect(gmailEmptyExtras.body.organization).toEqual({
+      domain: "gmail.com",
+      status: "suppressed",
+    });
+
+    const forgedOrg = await call(
+      builder,
+      "operon_propose_identity_resolution",
+      {
+        action: "link",
+        confidence: 0.95,
+        key: { kind: "domain", value: "gmail.com" },
+        targetCanonicalId: "org-gmail",
+      }
+    );
+    expect(forgedOrg.isError).toBe(true);
+    expect(forgedOrg.body.error).toBe("InvalidIdentityKey");
+
     const invalid = await call(consumer, "operon_derive_identity_keys", {
       email: "not-an-address",
     });

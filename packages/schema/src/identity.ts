@@ -4,6 +4,53 @@ const EMAIL_PATTERN = /^[^\s@]+@[a-z0-9-]+(?:\.[a-z0-9-]+)+$/u;
 const DOMAIN_PATTERN = /^[a-z0-9-]+(?:\.[a-z0-9-]+)+$/u;
 
 /**
+ * Mail domains shared by the public. A person on one of these has no
+ * organization to derive; these never become an Organização.
+ */
+export const PUBLIC_MAIL_DOMAINS: ReadonlySet<string> = new Set([
+  "aol.com",
+  "bol.com.br",
+  "gmail.com",
+  "googlemail.com",
+  "hotmail.com",
+  "hotmail.com.br",
+  "icloud.com",
+  "live.com",
+  "me.com",
+  "msn.com",
+  "outlook.com",
+  "outlook.com.br",
+  "proton.me",
+  "protonmail.com",
+  "terra.com.br",
+  "uol.com.br",
+  "yahoo.com",
+  "yahoo.com.br",
+  "ymail.com",
+]);
+
+export function isSuppressedDomain(
+  domain: string,
+  suppressedDomains: ReadonlySet<string>
+): boolean {
+  for (const suppressed of suppressedDomains) {
+    if (domain === suppressed || domain.endsWith(`.${suppressed}`)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function withPublicMailDomains(
+  extraSuppressedDomains: ReadonlySet<string>
+): ReadonlySet<string> {
+  if (extraSuppressedDomains.size === 0) {
+    return PUBLIC_MAIL_DOMAINS;
+  }
+  return new Set([...PUBLIC_MAIL_DOMAINS, ...extraSuppressedDomains]);
+}
+
+/**
  * Email address already normalized: trimmed, lower-cased, one `@`, dotted domain.
  * Build one with `normalizeEmailAddress`; never cast a raw string.
  */
@@ -19,13 +66,18 @@ export type EmailAddress = typeof EmailAddress.Type;
 
 /**
  * Lower-cased mail domain that may identify an organization.
- * Public mail domains never become one; see `organizationDomainOf`.
+ * Public mail domains are unrepresentable here; do not cast a raw string.
  */
 export const OrganizationDomain = Schema.String.pipe(
   Schema.check(
     Schema.isTrimmed(),
     Schema.isLowercased(),
-    Schema.isPattern(DOMAIN_PATTERN)
+    Schema.isPattern(DOMAIN_PATTERN),
+    Schema.makeFilter((domain: string) =>
+      isSuppressedDomain(domain, PUBLIC_MAIL_DOMAINS)
+        ? "public mail domains never identify an organization"
+        : undefined
+    )
   ),
   Schema.brand("OrganizationDomain")
 );
@@ -93,32 +145,6 @@ export const IDENTITY_KEY_CONFIDENCE = {
   email: 1,
 } as const;
 
-/**
- * Mail domains shared by the public. A person on one of these has no
- * organization to derive; these never become an Organização.
- */
-export const PUBLIC_MAIL_DOMAINS: ReadonlySet<string> = new Set([
-  "aol.com",
-  "bol.com.br",
-  "gmail.com",
-  "googlemail.com",
-  "hotmail.com",
-  "hotmail.com.br",
-  "icloud.com",
-  "live.com",
-  "me.com",
-  "msn.com",
-  "outlook.com",
-  "outlook.com.br",
-  "proton.me",
-  "protonmail.com",
-  "terra.com.br",
-  "uol.com.br",
-  "yahoo.com",
-  "yahoo.com.br",
-  "ymail.com",
-]);
-
 const decodeEmailAddress = Schema.decodeUnknownOption(EmailAddress);
 const decodeOrganizationDomain = Schema.decodeUnknownOption(OrganizationDomain);
 
@@ -132,27 +158,18 @@ export function normalizeEmailAddress(
   return decodeEmailAddress(raw.trim().toLowerCase());
 }
 
-export function isSuppressedDomain(
-  domain: string,
-  suppressedDomains: ReadonlySet<string>
-): boolean {
-  for (const suppressed of suppressedDomains) {
-    if (domain === suppressed || domain.endsWith(`.${suppressed}`)) {
-      return true;
-    }
-  }
-  return false;
-}
-
 /**
- * Domain part of a normalized email, unless it is a suppressed public domain.
+ * Domain part of a normalized email, unless it is a public mail domain or
+ * in the extra suppression list. Public domains cannot be opted out of.
  */
 export function organizationDomainOf(
   email: EmailAddress,
-  suppressedDomains: ReadonlySet<string> = PUBLIC_MAIL_DOMAINS
+  extraSuppressedDomains: ReadonlySet<string> = new Set()
 ): Option.Option<OrganizationDomain> {
   const domain = email.slice(email.lastIndexOf("@") + 1);
-  if (isSuppressedDomain(domain, suppressedDomains)) {
+  if (
+    isSuppressedDomain(domain, withPublicMailDomains(extraSuppressedDomains))
+  ) {
     return Option.none();
   }
   return decodeOrganizationDomain(domain);
@@ -186,11 +203,11 @@ export type EmailIdentityKeys = typeof EmailIdentityKeys.Type;
 
 export function deriveEmailIdentityKeys(
   raw: string,
-  suppressedDomains: ReadonlySet<string> = PUBLIC_MAIL_DOMAINS
+  extraSuppressedDomains: ReadonlySet<string> = new Set()
 ): Option.Option<EmailIdentityKeys> {
   return Option.map(normalizeEmailAddress(raw), (email) => {
     const organization: OrganizationDerivation = Option.match(
-      organizationDomainOf(email, suppressedDomains),
+      organizationDomainOf(email, extraSuppressedDomains),
       {
         onNone: () => ({
           domain: email.slice(email.lastIndexOf("@") + 1),

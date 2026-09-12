@@ -66,6 +66,24 @@ describe("identity keys", () => {
     );
   });
 
+  it("does not let a caller opt a public mail domain into an organization key", () => {
+    expect(
+      Option.isNone(decodeIdentityKey({ kind: "domain", value: "gmail.com" }))
+    ).toBe(true);
+    expect(
+      Option.isNone(
+        decodeIdentityKey({ kind: "domain", value: "mail.gmail.com" })
+      )
+    ).toBe(true);
+    const keys = Option.getOrThrow(
+      deriveEmailIdentityKeys("bruno@gmail.com", new Set())
+    );
+    expect(keys.organization).toEqual({
+      domain: "gmail.com",
+      status: "suppressed",
+    });
+  });
+
   it("renders one canonical registry string per key kind", () => {
     const email = Option.getOrThrow(
       decodeIdentityKey({ kind: "email", value: "ana@unimed.com.br" })

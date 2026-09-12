@@ -467,7 +467,7 @@ export const STANDARD_TOOL_DEFINITIONS: readonly StandardToolDefinition[] = [
         email: { type: "string" },
         suppressedDomains: {
           description:
-            "Domains that never become an organization. Defaults to the public mail domain list.",
+            "Extra domains that never become an organization, unioned with the public mail domain list. Public domains cannot be opted out of.",
           items: { type: "string" },
           type: "array",
         },

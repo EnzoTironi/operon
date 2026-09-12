@@ -31,7 +31,6 @@ import {
   createWorldView,
   decodeIdentityKey,
   deriveEmailIdentityKeys,
-  PUBLIC_MAIL_DOMAINS,
   serializeJson,
 } from "@operon/schema";
 import type {
@@ -674,20 +673,23 @@ const handleGetAdmission = Effect.fn("handleGetAdmission")(function* (
 const handleDeriveIdentityKeys = Effect.fn("handleDeriveIdentityKeys")(
   function* (ctx: ToolExecutionContext) {
     yield* checkMcpKeyPermission(ctx.callerKey, "query_runtime");
-    const suppressedDomains = Array.isArray(ctx.args.suppressedDomains)
+    const extraSuppressedDomains = Array.isArray(ctx.args.suppressedDomains)
       ? new Set(ctx.args.suppressedDomains.map(String))
-      : PUBLIC_MAIL_DOMAINS;
+      : new Set<string>();
     const email = String(ctx.args.email);
-    return Option.match(deriveEmailIdentityKeys(email, suppressedDomains), {
-      onNone: () =>
-        errorResult(
-          "InvalidEmailAddress",
-          `'${email}' is not an email address`
-        ),
-      onSome: (keys) => ({
-        content: [{ text: serializeJson(keys), type: "text" as const }],
-      }),
-    });
+    return Option.match(
+      deriveEmailIdentityKeys(email, extraSuppressedDomains),
+      {
+        onNone: () =>
+          errorResult(
+            "InvalidEmailAddress",
+            `'${email}' is not an email address`
+          ),
+        onSome: (keys) => ({
+          content: [{ text: serializeJson(keys), type: "text" as const }],
+        }),
+      }
+    );
   }
 );
 
