@@ -10,16 +10,16 @@ Current status is `SPEC_CONSISTENT_NOT_PRODUCT_PASS`: no runtime case has been e
 
 ## Status and applicability
 
-**Status:** OPEN  
+**Status:** APPROVED  
 **Applicability:** program contract
 
 ## Context
 
-Choose exact OSS license/rights and conditions for any future closed distribution. Blocks public package licensing claims, not V0 behavior or private development.
+Choose exact OSS license/rights and conditions for any future closed distribution. Public licensing claims follow this decision; it does not block V0 behavior or private development.
 
 ## Decision / required resolution
 
-OPEN: no implementation may silently choose among incompatible public meanings.
+Public license is MIT, matching the existing `LICENSE` file (Copyright (c) 2026 Enzo Tironi). A public licensing claim may use that meaning. This decision does not adopt a future closed distribution model.
 
 ## Consequences
 

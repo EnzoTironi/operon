@@ -17,7 +17,7 @@ Current status is `SPEC_CONSISTENT_NOT_PRODUCT_PASS`: no runtime case has been e
 - D-CONS-02: SQLite is the durable local/benchmark profile; Node/PostgreSQL is the real-company reference profile; evidence never transfers between profiles.
 - D15: V0 executes bounded registered actions only; larger plans and missions are post-V0.
 - D05 engineering default: business results are exactly ALLOW, DENY, REVIEW_REQUIRED or EVIDENCE_INSUFFICIENT; infrastructure failure is a separate channel. Changing this requires a versioned decision and migration.
-- D01-D04 are recipe-specific open decisions, never generic-kernel blockers. D-V0-BUSINESS-01 and D-V0-LICENSE-01 remain open and nonblocking until a commercial or public licensing claim is made. V0 OSS distribution excludes company data, hidden cases, gold outputs, private oracles, thresholds and evaluator weights.
+- D01-D04 are recipe-specific open decisions, never generic-kernel blockers. D-V0-BUSINESS-01 remains open and nonblocking until a commercial claim is made. D-V0-LICENSE-01 is approved: public license is MIT. V0 OSS distribution excludes company data, hidden cases, gold outputs, private oracles, thresholds and evaluator weights.
 
 ## Realization contract
 
