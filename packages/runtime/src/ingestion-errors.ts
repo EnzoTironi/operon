@@ -17,6 +17,24 @@ export class UnknownSourceError extends Data.TaggedError("UnknownSourceError")<{
   readonly sourceId: string;
 }> {}
 
+export class MappingProposalNotFoundError extends Data.TaggedError(
+  "MappingProposalNotFoundError"
+)<{
+  readonly proposalId: string;
+}> {}
+
+/**
+ * Only an authenticated human can approve or reject a batch admission.
+ * Agents prepare; they never grant.
+ */
+export class HumanReviewRequiredError extends Data.TaggedError(
+  "HumanReviewRequiredError"
+)<{
+  readonly proposalId: string;
+  readonly reviewerId: string;
+  readonly reviewerType: string;
+}> {}
+
 export class UnadmittedEvidenceError extends Data.TaggedError(
   "UnadmittedEvidenceError"
 )<{

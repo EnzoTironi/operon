@@ -396,7 +396,30 @@ export const STANDARD_TOOL_DEFINITIONS: readonly StandardToolDefinition[] = [
   },
   {
     description:
-      "Admit candidate records from an approved mapping proposal into the Object Store (V0-CH-05)",
+      "Record a human review of a mapping proposal (batch admission). The reviewer must be a human user other than the author and must cite the digest they viewed. Agents never grant approval.",
+    inputSchema: {
+      properties: {
+        comments: { type: "string" },
+        proposalId: { type: "string" },
+        reviewerId: { description: "Human reviewer ID", type: "string" },
+        reviewerRoles: { items: { type: "string" }, type: "array" },
+        verdict: {
+          enum: ["approve", "reject", "request_changes"],
+          type: "string",
+        },
+        viewedDigest: {
+          description: "Proposal digest the reviewer saw",
+          type: "string",
+        },
+      },
+      required: ["proposalId", "reviewerId", "verdict", "viewedDigest"],
+      type: "object",
+    },
+    name: "operon_review_mapping_proposal",
+  },
+  {
+    description:
+      "Admit an approved mapping proposal: writes every candidate record to main at admission grade 'batch'. Refused until the approvals policy is met (V0-CH-05)",
     inputSchema: {
       properties: {
         proposalId: { type: "string" },
@@ -405,6 +428,54 @@ export const STANDARD_TOOL_DEFINITIONS: readonly StandardToolDefinition[] = [
       type: "object",
     },
     name: "operon_admit_mapping_proposal",
+  },
+  {
+    description:
+      "Search quarantine: raw payload items (grade quarantine) and typed candidate records of open batches (grade candidate). Nothing here is an object in main.",
+    inputSchema: {
+      properties: {
+        grade: { enum: ["quarantine", "candidate"], type: "string" },
+        targetObjectTypeId: { type: "string" },
+        tenantId: { type: "string" },
+        text: {
+          description: "Case-insensitive substring to match",
+          type: "string",
+        },
+      },
+      type: "object",
+    },
+    name: "operon_search_quarantine",
+  },
+  {
+    description:
+      "Admission grade of an object in main: 'batch' (admitted by a reviewed mapping proposal) or 'decision' (written by an executed Action). Null when the object did not enter through the accountable pipeline.",
+    inputSchema: {
+      properties: {
+        objectId: { type: "string" },
+        typeId: { type: "string" },
+      },
+      required: ["typeId", "objectId"],
+      type: "object",
+    },
+    name: "operon_get_admission",
+  },
+  {
+    description:
+      "Derive identity resolution keys from an email address: a normalized email key for the person and, unless the domain is a public mail domain, a domain key for the organization.",
+    inputSchema: {
+      properties: {
+        email: { type: "string" },
+        suppressedDomains: {
+          description:
+            "Domains that never become an organization. Defaults to the public mail domain list.",
+          items: { type: "string" },
+          type: "array",
+        },
+      },
+      required: ["email"],
+      type: "object",
+    },
+    name: "operon_derive_identity_keys",
   },
   {
     description:
@@ -443,7 +514,7 @@ export const STANDARD_TOOL_DEFINITIONS: readonly StandardToolDefinition[] = [
   },
   {
     description:
-      "Propose an identity resolution (deterministic or language-model matching) with source-system keys and provenance (S03)",
+      "Propose an identity resolution keyed by an IdentityKey (email, domain or source_pk) with provenance (S03). Use operon_derive_identity_keys to build email and domain keys.",
     inputSchema: {
       properties: {
         action: { enum: ["link", "merge", "split"], type: "string" },
@@ -451,20 +522,23 @@ export const STANDARD_TOOL_DEFINITIONS: readonly StandardToolDefinition[] = [
         environmentId: { type: "string" },
         evidence: { items: { type: "object" }, type: "array" },
         idempotencyKey: { type: "string" },
+        key: {
+          description:
+            "{ kind: 'email', value } | { kind: 'domain', value } | { kind: 'source_pk', sourceSystem, value }",
+          properties: {
+            kind: { enum: ["email", "domain", "source_pk"], type: "string" },
+            sourceSystem: { type: "string" },
+            value: { type: "string" },
+          },
+          required: ["kind", "value"],
+          type: "object",
+        },
         proposalId: { type: "string" },
-        sourceKey: { type: "string" },
-        sourceSystem: { type: "string" },
         splitDetails: { type: "object" },
         targetCanonicalId: { type: "string" },
         tenantId: { type: "string" },
       },
-      required: [
-        "sourceSystem",
-        "sourceKey",
-        "targetCanonicalId",
-        "action",
-        "confidence",
-      ],
+      required: ["key", "targetCanonicalId", "action", "confidence"],
       type: "object",
     },
     name: "operon_propose_identity_resolution",

@@ -21,6 +21,7 @@ import type {
   PropertyDefinition,
   ProposalChangeSet,
   ProposalReview,
+  ProposalStatus,
   PublicationReceipt,
   QueryDef,
   RiskTier,
@@ -94,7 +95,7 @@ export interface ContextOptions {
  */
 const MAX_ARTIFACT_BYTES = 10 * 1024 * 1024;
 
-const defaultApprovalsPolicy: ApprovalsPolicy = {
+export const defaultApprovalsPolicy: ApprovalsPolicy = {
   requireComplianceReview: false,
   requireDomainSpecialistReview: false,
   requiredMinApprovals: 1,
@@ -362,8 +363,17 @@ function validateCandidateArtifactOrError(
   return Effect.void;
 }
 
-function validateProposalApprovals(
-  proposal: OntologyProposal,
+/**
+ * Shared review gate for anything that merges into `main`: ontology proposals
+ * and batch admission (mapping) proposals. Rejections block; approvals must
+ * meet the policy count and role requirements.
+ */
+export function validateProposalApprovals(
+  proposal: {
+    readonly id: string;
+    readonly status: ProposalStatus;
+    readonly reviews: readonly ProposalReview[];
+  },
   policy: ApprovalsPolicy
 ): Effect.Effect<void, ApprovalsPolicyViolationError> {
   if (

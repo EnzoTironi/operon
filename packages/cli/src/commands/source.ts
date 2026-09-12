@@ -345,8 +345,14 @@ const handleSourceAdmitMapping = Effect.fn("handleSourceAdmitMapping")(
     const admitted = yield* ctx.ingestion
       .admitProposal(proposalId, author)
       .pipe(
-        Effect.catchTag("UnknownSourceError", (err) => {
-          printCliError(`Error: Proposal '${err.sourceId}' not found.`);
+        Effect.catchTag("MappingProposalNotFoundError", (err) => {
+          printCliError(`Error: Proposal '${err.proposalId}' not found.`);
+          return Effect.void as Effect.Effect<undefined>;
+        }),
+        Effect.catchTag("ApprovalsPolicyViolationError", (err) => {
+          printCliError(
+            `Error: Batch '${err.proposalId}' is not approved for admission: ${err.reason}`
+          );
           return Effect.void as Effect.Effect<undefined>;
         }),
         Effect.catchTag("ConcurrentModificationError", (err) => {

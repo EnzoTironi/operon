@@ -1,4 +1,5 @@
-import { generatePrefixedId } from "@operon/schema";
+import { generatePrefixedId, identityKeyString } from "@operon/schema";
+import type { IdentityKey } from "@operon/schema";
 import { Effect } from "effect";
 
 import { printCli, printCliError, printCliJson } from "../io.js";
@@ -54,8 +55,7 @@ function printProposeResult(proposal: {
   readonly action: string;
   readonly confidence: number;
   readonly proposalId: string;
-  readonly sourceKey: string;
-  readonly sourceSystem: string;
+  readonly key: IdentityKey;
   readonly status: string;
   readonly targetCanonicalId: string;
 }): void {
@@ -63,7 +63,7 @@ function printProposeResult(proposal: {
   printCli(`Proposal ID: ${proposal.proposalId}`);
   printCli(`Action: ${proposal.action}`);
   printCli(`Confidence: ${proposal.confidence}`);
-  printCli(`Source: ${proposal.sourceSystem}:${proposal.sourceKey}`);
+  printCli(`Key: ${identityKeyString(proposal.key)}`);
   printCli(`Target Canonical: ${proposal.targetCanonicalId}`);
   printCli(`Status: ${proposal.status}`);
 }
@@ -114,9 +114,12 @@ const handleReconcilePropose = Effect.fn("handleReconcilePropose")(function* (
     confidence: parsed.confidence,
     evidence: [],
     idempotencyKey: parsed.idempotencyKey,
+    key: {
+      kind: "source_pk",
+      sourceSystem: parsed.sourceSystem,
+      value: parsed.sourceKey,
+    },
     proposalId,
-    sourceKey: parsed.sourceKey,
-    sourceSystem: parsed.sourceSystem,
     splitDetails,
     targetCanonicalId: parsed.targetCanonicalId,
   });
@@ -183,7 +186,7 @@ const handleReconcileList = Effect.fn("handleReconcileList")(function* (
     printCli(`Total: ${proposals.length}`);
     for (const p of proposals) {
       printCli(
-        `  - [${p.status.toUpperCase()}] ${p.proposalId}: ${p.action} ${p.sourceSystem}:${p.sourceKey} -> ${p.targetCanonicalId} (conf: ${p.confidence})`
+        `  - [${p.status.toUpperCase()}] ${p.proposalId}: ${p.action} ${identityKeyString(p.key)} -> ${p.targetCanonicalId} (conf: ${p.confidence})`
       );
     }
   }
@@ -208,7 +211,7 @@ const handleReconcileGet = Effect.fn("handleReconcileGet")(function* (
     printCli(`Status: ${proposal.status}`);
     printCli(`Action: ${proposal.action}`);
     printCli(`Confidence: ${proposal.confidence}`);
-    printCli(`Source: ${proposal.sourceSystem}:${proposal.sourceKey}`);
+    printCli(`Key: ${identityKeyString(proposal.key)}`);
     printCli(`Target: ${proposal.targetCanonicalId}`);
   }
   return 0;
