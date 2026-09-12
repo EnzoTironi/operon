@@ -1,9 +1,10 @@
 # Operon (Operational Ontology & Decision Runtime)
 
-> **The Type-Safe Operational Ontology and Decision Runtime for AI Agents and Enterprise Systems.**  
+Operon has not launched. This repository is a pre-launch kernel: types, quarantine, governed writes, inbox, and MCP. V0 through V3 are specification gates in `docs/specs/`, not a product pass.
+
 > Built natively with [Effect TypeScript](https://effect.website/) (`effect@4.0.0-rc.112`) and deployed via [Alchemy](https://alchemy.run).
 
-Based on the architectural principles and formal verification frameworks from _Operational Ontology: From Business Mirror to Decision Runtime_ (Bailing Zhang, 2026).
+Based on the architectural principles and formal verification frameworks from _Operational Ontology: From Business Mirror to Decision Runtime_ (Bailing Zhang, 2026). The archived dossier in `docs/archive/` is historical and is not a contract for this tree.
 
 ---
 
