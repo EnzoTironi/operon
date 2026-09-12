@@ -21,6 +21,7 @@ export * from "./sandbox.js";
 export * from "./cluster.js";
 export * from "./native-sqlite.js";
 export * from "./postgres.js";
+export * from "./principal.js";
 export * from "./services.js";
 export * from "./ingestion-errors.js";
 export * from "./reconciliation-errors.js";
