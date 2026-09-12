@@ -28,8 +28,11 @@ describe("ReconciliationService (V0-CH-06 / S03 / S04)", () => {
         confidence: 0.72, // Below 0.85 threshold!
         evidence: [mockProvenance],
         proposalId: "prop-ambiguous-1",
-        sourceKey: "crm:user-alice-1",
-        sourceSystem: "salesforce",
+        key: {
+          kind: "source_pk",
+          sourceSystem: "salesforce",
+          value: "crm:user-alice-1",
+        },
         splitDetails: null,
         targetCanonicalId: "canonical-customer-42",
       })
@@ -61,7 +64,7 @@ describe("ReconciliationService (V0-CH-06 / S03 / S04)", () => {
     expect(overrideReceipt.status).toBe("resolved");
     expect(overrideReceipt.canonicalId).toBe("canonical-customer-42");
     expect(overrideReceipt.invalidatedProjections).toContain(
-      "projection:salesforce:crm:user-alice-1"
+      "projection:source_pk:salesforce:crm:user-alice-1"
     );
   });
 
@@ -75,8 +78,7 @@ describe("ReconciliationService (V0-CH-06 / S03 / S04)", () => {
         confidence: 0.95,
         evidence: [mockProvenance],
         proposalId: "prop-merge-1",
-        sourceKey: "crm:cust-1",
-        sourceSystem: "crm",
+        key: { kind: "source_pk", sourceSystem: "crm", value: "crm:cust-1" },
         splitDetails: null,
         targetCanonicalId: "canonical-100",
       })
@@ -86,9 +88,11 @@ describe("ReconciliationService (V0-CH-06 / S03 / S04)", () => {
       service.resolveIdentity("prop-merge-1", "dec-merge-1")
     );
     expect(mergeReceipt.status).toBe("resolved");
-    expect(mergeReceipt.historicalReferences).toContain("crm:cust-1");
+    expect(mergeReceipt.historicalReferences).toContain(
+      "source_pk:crm:crm:cust-1"
+    );
     expect(mergeReceipt.invalidatedProjections).toContain(
-      "projection:crm:crm:cust-1"
+      "projection:source_pk:crm:crm:cust-1"
     );
 
     // 2. Correction Split: Split mistakenly merged entity per S03
@@ -98,8 +102,7 @@ describe("ReconciliationService (V0-CH-06 / S03 / S04)", () => {
         confidence: 1,
         evidence: [mockProvenance],
         proposalId: "prop-split-1",
-        sourceKey: "crm:cust-1",
-        sourceSystem: "crm",
+        key: { kind: "source_pk", sourceSystem: "crm", value: "crm:cust-1" },
         splitDetails: {
           originalIds: ["crm:cust-1", "canonical-100"],
           reason: "Customers share phone number but have different tax IDs",
@@ -125,7 +128,7 @@ describe("ReconciliationService (V0-CH-06 / S03 / S04)", () => {
 
     // Invalidation of affected projections
     expect(splitReceipt.invalidatedProjections).toContain(
-      "projection:crm:crm:cust-1"
+      "projection:source_pk:crm:crm:cust-1"
     );
     expect(splitReceipt.invalidatedProjections).toContain(
       "projection:canonical:canonical-100"
@@ -231,8 +234,11 @@ describe("ReconciliationService (V0-CH-06 / S03 / S04)", () => {
         confidence: 0.99,
         evidence: [mockProvenance],
         proposalId: "prop-secret-1",
-        sourceKey: "sec-key-1",
-        sourceSystem: "system-a",
+        key: {
+          kind: "source_pk",
+          sourceSystem: "system-a",
+          value: "sec-key-1",
+        },
         splitDetails: null,
         targetCanonicalId: "canonical-secret-1",
         tenantId: "tenant-corp-a",
@@ -272,8 +278,7 @@ describe("ReconciliationService (V0-CH-06 / S03 / S04)", () => {
         confidence: 0.95,
         evidence: [mockProvenance],
         proposalId: "prop-idem-1",
-        sourceKey: "crm:key-99",
-        sourceSystem: "crm",
+        key: { kind: "source_pk", sourceSystem: "crm", value: "crm:key-99" },
         splitDetails: null,
         targetCanonicalId: "canonical-99",
       })
@@ -319,8 +324,11 @@ describe("ReconciliationService (V0-CH-06 / S03 / S04)", () => {
         confidence: 0.99,
         evidence: [mockProvenance],
         proposalId: "prop-recovery-1",
-        sourceKey: "legacy:id-77",
-        sourceSystem: "legacy_db",
+        key: {
+          kind: "source_pk",
+          sourceSystem: "legacy_db",
+          value: "legacy:id-77",
+        },
         splitDetails: null,
         targetCanonicalId: "canonical-77",
       })

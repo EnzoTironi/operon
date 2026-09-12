@@ -1,6 +1,11 @@
-import { computeCanonicalDigest, generatePrefixedId } from "@operon/schema";
+import {
+  computeCanonicalDigest,
+  generatePrefixedId,
+  identityKeyString,
+} from "@operon/schema";
 import type {
   ExactQueryRequest,
+  IdentityKey,
   IdentityResolutionAction,
   IdentityResolutionProposal,
   ObjectInstance,
@@ -20,15 +25,18 @@ import {
 import type { BitemporalQueryOptions } from "./sql-store.js";
 import { SqlSchemaGenerator } from "./sql-store.js";
 
+export interface IdentityHistoryEntry {
+  readonly action: IdentityResolutionAction;
+  readonly decisionRef: string;
+  readonly timestamp: number;
+  readonly key: IdentityKey;
+}
+
 export interface CanonicalIdentityRecord {
   readonly canonicalId: string;
-  readonly sourceKeys: Set<string>;
-  readonly history: readonly {
-    readonly action: IdentityResolutionAction;
-    readonly decisionRef: string;
-    readonly timestamp: number;
-    readonly sourceKey: string;
-  }[];
+  /** Canonical strings (`identityKeyString`) of every key resolved to this id. */
+  readonly identityKeys: Set<string>;
+  readonly history: readonly IdentityHistoryEntry[];
 }
 
 export interface ResolveIdentityOptions {
@@ -55,13 +63,8 @@ export interface ReconciliationSnapshot {
   readonly receipts: readonly ResolutionReceipt[];
   readonly canonicalRegistry: readonly {
     readonly canonicalId: string;
-    readonly sourceKeys: readonly string[];
-    readonly history: readonly {
-      readonly action: IdentityResolutionAction;
-      readonly decisionRef: string;
-      readonly timestamp: number;
-      readonly sourceKey: string;
-    }[];
+    readonly identityKeys: readonly string[];
+    readonly history: readonly IdentityHistoryEntry[];
   }[];
 }
 
@@ -73,7 +76,7 @@ interface ResolutionState {
   >;
   readonly proposals: Map<string, IdentityResolutionProposal>;
   readonly receipts: Map<string, ResolutionReceipt>;
-  readonly sourceKeyToCanonical: Map<string, string>;
+  readonly keyToCanonical: Map<string, string>;
 }
 
 function checkIdempotencyResolution(
@@ -167,50 +170,45 @@ function applyMergeHistory(
   params: ApplyResolutionHistoryParams,
   state: ResolutionState
 ): { historicalReferences: string[]; invalidatedProjections: string[] } {
-  const { canonicalRegistry, sourceKeyToCanonical } = state;
+  const { canonicalRegistry, keyToCanonical } = state;
   const { proposal, decisionRef, now } = params;
   const canonicalId = proposal.targetCanonicalId;
-  const previousCanonicalId =
-    sourceKeyToCanonical.get(proposal.sourceKey) ?? null;
+  const keyString = identityKeyString(proposal.key);
+  const previousCanonicalId = keyToCanonical.get(keyString) ?? null;
   const record = canonicalRegistry.get(canonicalId) ?? {
     canonicalId,
     history: [],
-    sourceKeys: new Set<string>(),
+    identityKeys: new Set<string>(),
   };
 
-  const updatedHistory = [
+  const updatedHistory: IdentityHistoryEntry[] = [
     ...record.history,
     {
       action: proposal.action,
       decisionRef,
-      sourceKey: proposal.sourceKey,
+      key: proposal.key,
       timestamp: now,
     },
   ];
 
-  record.sourceKeys.add(proposal.sourceKey);
+  record.identityKeys.add(keyString);
   canonicalRegistry.set(canonicalId, {
     canonicalId,
     history: updatedHistory,
-    sourceKeys: record.sourceKeys,
+    identityKeys: record.identityKeys,
   });
-  sourceKeyToCanonical.set(proposal.sourceKey, canonicalId);
+  keyToCanonical.set(keyString, canonicalId);
 
   const historicalReferences = [
-    proposal.sourceKey,
+    keyString,
     ...(previousCanonicalId ? [previousCanonicalId] : []),
     ...record.history.map(
-      (h: {
-        readonly action: IdentityResolutionAction;
-        readonly decisionRef: string;
-        readonly sourceKey: string;
-        readonly timestamp: number;
-      }) => `${h.action}:${h.sourceKey}@${h.timestamp}`
+      (h) => `${h.action}:${identityKeyString(h.key)}@${h.timestamp}`
     ),
   ];
 
   const invalidatedProjections = [
-    `projection:${proposal.sourceSystem}:${proposal.sourceKey}`,
+    `projection:${keyString}`,
     `projection:canonical:${canonicalId}`,
   ];
 
@@ -221,20 +219,20 @@ function applySplitHistory(
   params: ApplyResolutionHistoryParams,
   state: ResolutionState
 ): { historicalReferences: string[]; invalidatedProjections: string[] } {
-  const { canonicalRegistry, sourceKeyToCanonical } = state;
+  const { canonicalRegistry, keyToCanonical } = state;
   const { proposal, proposalId, decisionRef, now } = params;
   const canonicalId = proposal.targetCanonicalId;
-  const previousCanonicalId =
-    sourceKeyToCanonical.get(proposal.sourceKey) ?? null;
+  const keyString = identityKeyString(proposal.key);
+  const previousCanonicalId = keyToCanonical.get(keyString) ?? null;
   const record = canonicalRegistry.get(canonicalId);
   if (record) {
-    record.sourceKeys.delete(proposal.sourceKey);
-    const updatedHistory = [
+    record.identityKeys.delete(keyString);
+    const updatedHistory: IdentityHistoryEntry[] = [
       ...record.history,
       {
-        action: "split" as const,
+        action: "split",
         decisionRef,
-        sourceKey: proposal.sourceKey,
+        key: proposal.key,
         timestamp: now,
       },
     ];
@@ -243,11 +241,9 @@ function applySplitHistory(
       history: updatedHistory,
     });
   }
-  sourceKeyToCanonical.delete(proposal.sourceKey);
+  keyToCanonical.delete(keyString);
 
-  const originalIds = proposal.splitDetails?.originalIds ?? [
-    proposal.sourceKey,
-  ];
+  const originalIds = proposal.splitDetails?.originalIds ?? [keyString];
   const historicalReferences = [
     ...originalIds,
     ...(previousCanonicalId ? [previousCanonicalId] : []),
@@ -255,7 +251,7 @@ function applySplitHistory(
   ];
 
   const invalidatedProjections = [
-    `projection:${proposal.sourceSystem}:${proposal.sourceKey}`,
+    `projection:${keyString}`,
     `projection:canonical:${canonicalId}`,
     `projection:split:${proposalId}`,
   ];
@@ -283,8 +279,8 @@ export class ReconciliationService {
     string,
     CanonicalIdentityRecord
   >();
-  // Reverse lookup: sourceKey -> canonicalId
-  private readonly sourceKeyToCanonical = new Map<string, string>();
+  // Reverse lookup: identityKeyString(key) -> canonicalId
+  private readonly keyToCanonical = new Map<string, string>();
 
   constructor(config?: ReconciliationServiceConfig) {
     this.confidenceThreshold = config?.confidenceThreshold ?? 0.85;
@@ -323,9 +319,8 @@ export class ReconciliationService {
       evidence: proposal.evidence,
       idempotencyKey: proposal.idempotencyKey ?? null,
       proposalId: proposal.proposalId,
+      key: proposal.key,
       proposedAt: proposal.proposedAt ?? now,
-      sourceKey: proposal.sourceKey,
-      sourceSystem: proposal.sourceSystem,
       splitDetails: proposal.splitDetails ?? null,
       status: proposal.status ?? "proposed",
       targetCanonicalId: proposal.targetCanonicalId,
@@ -396,15 +391,15 @@ export class ReconciliationService {
         idempotency,
         proposals,
         receipts,
-        sourceKeyToCanonical,
+        keyToCanonical,
       } = this;
 
       const state: ResolutionState = {
         canonicalRegistry,
         idempotency,
+        keyToCanonical,
         proposals,
         receipts,
-        sourceKeyToCanonical,
       };
 
       const expectedTenant = options?.tenantId ?? defaultTenantId;
@@ -445,7 +440,7 @@ export class ReconciliationService {
 
       // INVARIANT 2 & 3: Merge/split correction preserves history & invalidates projections
       const previousCanonicalId =
-        sourceKeyToCanonical.get(proposal.sourceKey) ?? null;
+        keyToCanonical.get(identityKeyString(proposal.key)) ?? null;
       let historicalReferences: string[] = [];
       let invalidatedProjections: string[] = [];
       const historyParams: ApplyResolutionHistoryParams = {
@@ -607,7 +602,7 @@ export class ReconciliationService {
       canonicalRegistry: [...this.canonicalRegistry.values()].map((r) => ({
         canonicalId: r.canonicalId,
         history: r.history,
-        sourceKeys: [...r.sourceKeys],
+        identityKeys: [...r.identityKeys],
       })),
       proposals: [...this.proposals.values()],
       receipts: [...this.receipts.values()],
@@ -627,15 +622,15 @@ export class ReconciliationService {
       this.receipts.set(r.resolutionId, r);
     }
     this.canonicalRegistry.clear();
-    this.sourceKeyToCanonical.clear();
+    this.keyToCanonical.clear();
     for (const reg of snapshot.canonicalRegistry) {
       this.canonicalRegistry.set(reg.canonicalId, {
         canonicalId: reg.canonicalId,
         history: reg.history,
-        sourceKeys: new Set(reg.sourceKeys),
+        identityKeys: new Set(reg.identityKeys),
       });
-      for (const sk of reg.sourceKeys) {
-        this.sourceKeyToCanonical.set(sk, reg.canonicalId);
+      for (const keyString of reg.identityKeys) {
+        this.keyToCanonical.set(keyString, reg.canonicalId);
       }
     }
   }

@@ -1,6 +1,7 @@
 import { Schema } from "effect";
 
 import { computeCanonicalDigest } from "./definition.js";
+import { ProposalReview, ProposalStatus } from "./proposals.js";
 import { Subject } from "./security.js";
 import { DataClassification, ObjectTypeId } from "./types.js";
 
@@ -61,17 +62,50 @@ export type CandidateRecord = typeof CandidateRecord.Type;
 export const CandidateRecordSchema = CandidateRecord;
 
 /**
- * MappingProposal (V0-CH-05)
- * Accountable mapping from raw sources to candidate records.
+ * One field rule of a mapping: copy `sourceField` from the raw item into
+ * `targetPropertyName` of the candidate record.
  */
-export const MappingProposal = Schema.Struct({
-  proposalId: Schema.String,
+export const MappingFieldRule = Schema.Struct({
+  sourceField: Schema.String,
+  targetPropertyName: Schema.String,
+});
+export type MappingFieldRule = typeof MappingFieldRule.Type;
+
+/**
+ * The filter a mapping proposal admits. Its canonical digest is what a human
+ * approves: sources, definition, target type, key field, field rules and the
+ * resulting candidate records. One digest covers the whole batch.
+ */
+export const MappingProposalFilter = Schema.Struct({
   definitionDigest: Schema.String,
   sources: Schema.Array(Schema.String),
+  targetObjectTypeId: ObjectTypeId,
+  primaryKeyField: Schema.String,
+  propertyMappings: Schema.Array(MappingFieldRule),
   records: Schema.Array(CandidateRecord),
   openQuestions: Schema.Array(Schema.String),
+});
+export type MappingProposalFilter = typeof MappingProposalFilter.Type;
+
+export function computeMappingProposalDigest(
+  filter: MappingProposalFilter
+): string {
+  return computeCanonicalDigest(filter);
+}
+
+/**
+ * MappingProposal (V0-CH-05)
+ * Accountable mapping from raw sources to candidate records. It is also the
+ * batch admission proposal: it opens for review, a human approves its digest,
+ * and merging writes every candidate record to `main` at grade `batch`.
+ */
+export const MappingProposal = Schema.Struct({
+  ...MappingProposalFilter.fields,
+  proposalId: Schema.String,
+  digest: Schema.String,
   confidence: Schema.Number,
-  status: Schema.Literals(["draft", "submitted", "approved", "rejected"]),
+  status: ProposalStatus,
+  reviews: Schema.Array(ProposalReview),
   createdAt: Schema.Number,
   createdBy: Subject,
 });

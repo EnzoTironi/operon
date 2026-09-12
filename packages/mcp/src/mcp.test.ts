@@ -719,16 +719,38 @@ describe("@operon/mcp", () => {
     );
     expect(beforeAdmit).toBeUndefined();
 
-    // 5. Admit proposal via MCP
+    // 5. Admission before human review is refused
+    const prematureRes = (await client.callTool({
+      arguments: { proposalId: proposal.proposalId },
+      name: "operon_admit_mapping_proposal",
+    })) as any;
+    expect(prematureRes.isError).toBe(true);
+    expect(JSON.parse(prematureRes.content[0].text).error).toBe(
+      "ApprovalsPolicyViolationError"
+    );
+
+    // 6. A human approves the digest, then admission merges the batch
+    const reviewRes = (await client.callTool({
+      arguments: {
+        proposalId: proposal.proposalId,
+        reviewerId: "ops-owner",
+        verdict: "approve",
+        viewedDigest: proposal.digest,
+      },
+      name: "operon_review_mapping_proposal",
+    })) as any;
+    expect(reviewRes.isError).toBeFalsy();
+    expect(JSON.parse(reviewRes.content[0].text).status).toBe("approved");
+
     const admitRes = (await client.callTool({
       arguments: { proposalId: proposal.proposalId },
       name: "operon_admit_mapping_proposal",
     })) as any;
     expect(admitRes.isError).toBeFalsy();
     const admitted = JSON.parse(admitRes.content[0].text);
-    expect(admitted.status).toBe("approved");
+    expect(admitted.status).toBe("merged");
 
-    // 6. Canonical store now contains admitted object instance
+    // 7. Canonical store now contains admitted object instance
     const afterAdmit = await Effect.runPromise(
       objectStore.getObject("StorageTank" as any, "T-900")
     );
@@ -814,8 +836,11 @@ describe("@operon/mcp", () => {
       arguments: {
         action: "merge",
         confidence: 0.65, // below 0.85 threshold
-        sourceKey: "legacy-tank-A",
-        sourceSystem: "scada_legacy",
+        key: {
+          kind: "source_pk",
+          sourceSystem: "scada_legacy",
+          value: "legacy-tank-A",
+        },
         targetCanonicalId: "tank-exact-1",
       },
       name: "operon_propose_identity_resolution",

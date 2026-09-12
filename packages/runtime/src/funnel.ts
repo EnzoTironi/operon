@@ -1,34 +1,54 @@
 import type {
+  AdmissionGrade,
+  ApprovalsPolicy,
+  BatchAdmission,
   CandidateRecord,
+  CandidateReviewStage,
   ConflictResolutionPolicy,
   FieldProvenance,
   FunnelPipelineConfig,
   IngestionReceipt,
+  MappingFieldRule,
   MappingProposal,
+  MappingProposalFilter,
+  ObjectAdmission,
   ObjectInstance,
   ObjectProperties,
   ObjectTypeId,
   PropertyMapping,
+  ProposalReview,
+  QuarantineSearchHit,
   SensitivityLevel,
   SourceArtifact,
   Subject,
 } from "@operon/schema";
 import {
+  ActionLogTypeId,
+  computeMappingProposalDigest,
   computeSourceDigest,
   generatePrefixedId,
   parseJson,
+  serializeJson,
 } from "@operon/schema";
 import type { Schema } from "effect";
-import { Clock, Data, Effect } from "effect";
+import { Clock, Data, Effect, Option } from "effect";
 
 import type { ConcurrentModificationError } from "./errors.js";
-import { IdempotencyConflictError } from "./errors.js";
+import {
+  IdempotencyConflictError,
+  SelfReviewDeniedError,
+  StaleReviewError,
+} from "./errors.js";
 import {
   ContradictoryInputError,
   CorruptInputError,
+  HumanReviewRequiredError,
+  MappingProposalNotFoundError,
   UnknownSourceError,
 } from "./ingestion-errors.js";
 import type { ObjectStore } from "./object-store.js";
+import type { ApprovalsPolicyViolationError } from "./oms.js";
+import { defaultApprovalsPolicy, validateProposalApprovals } from "./oms.js";
 
 export class PipelineNotFoundError extends Data.TaggedError(
   "PipelineNotFoundError"
@@ -271,26 +291,47 @@ export interface ProposeMappingOptions {
   readonly definitionDigest: string;
   readonly targetObjectTypeId: ObjectTypeId;
   readonly primaryKeyField: string;
-  readonly propertyMappings: readonly {
-    readonly sourceField: string;
-    readonly targetPropertyName: string;
-  }[];
+  readonly propertyMappings: readonly MappingFieldRule[];
   readonly author: Subject;
   readonly tenantId?: string;
 }
 
-/**
- * Accountable Ingestion Service (S03, S15, Chapter 15 & 16)
- *
- * Rules:
- * 1. Raw evidence stays attributed in SourceArtifact inventory and CANNOT silently
- *    become admitted truth in the Object Store (S03).
- * 2. Ingestion is strictly idempotent: replaying the same source returns the existing receipt;
- *    the same idempotency key with different payload conflicts (IdempotencyConflictError).
- * 3. Every accepted field in a mapping proposal resolves to artifact/locator/mapping/batch (FieldProvenance).
- * 4. Corrupt, unknown, and contradictory inputs yield explicit typed errors.
- * 5. Wrong tenant/environment reference does not disclose existence.
- */
+export interface ReviewMappingProposalOptions {
+  readonly proposalId: string;
+  readonly review: ProposalReview;
+  /** Digest the reviewer saw. Must equal the proposal digest (TOCTOU guard). */
+  readonly viewedDigest: string;
+  readonly policy?: ApprovalsPolicy;
+}
+
+export interface QuarantineSearchFilter {
+  readonly text?: string;
+  readonly grade?: Extract<AdmissionGrade, "quarantine" | "candidate">;
+  readonly targetObjectTypeId?: ObjectTypeId;
+  readonly tenantId?: string;
+}
+
+function candidateReviewStage(
+  proposal: MappingProposal
+): Option.Option<CandidateReviewStage> {
+  switch (proposal.status) {
+    case "open":
+    case "under_review":
+    case "approved": {
+      return Option.some(proposal.status);
+    }
+    case "draft":
+    case "rejected":
+    case "merged": {
+      return Option.none();
+    }
+    default: {
+      const exhaustive: never = proposal.status;
+      return exhaustive;
+    }
+  }
+}
+
 function extractPayloadItems(
   payload: unknown
 ): readonly Record<string, Schema.Json>[] {
@@ -305,9 +346,119 @@ function extractPayloadItems(
   return [];
 }
 
+function matchesText(value: unknown, text: string | undefined): boolean {
+  if (text === undefined || text === "") {
+    return true;
+  }
+  return serializeJson(value).toLowerCase().includes(text.toLowerCase());
+}
+
+function quarantineHits(
+  sources: readonly SourceArtifact[],
+  filter: QuarantineSearchFilter
+): QuarantineSearchHit[] {
+  const hits: QuarantineSearchHit[] = [];
+  for (const src of sources) {
+    const items = extractPayloadItems(src.rawPayload);
+    for (const [itemIndex, item] of items.entries()) {
+      if (matchesText(item, filter.text)) {
+        hits.push({
+          admission: {
+            batchId: src.batchId,
+            grade: "quarantine",
+            itemIndex,
+            locator: src.locator,
+            receivedAt: src.receivedAt,
+            sourceId: src.sourceId,
+          },
+          item,
+        });
+      }
+    }
+  }
+  return hits;
+}
+
+function candidateHits(
+  proposals: readonly MappingProposal[],
+  filter: QuarantineSearchFilter
+): QuarantineSearchHit[] {
+  const hits: QuarantineSearchHit[] = [];
+  for (const proposal of proposals) {
+    const stage = candidateReviewStage(proposal);
+    if (Option.isNone(stage)) {
+      continue;
+    }
+    if (
+      filter.targetObjectTypeId !== undefined &&
+      proposal.targetObjectTypeId !== filter.targetObjectTypeId
+    ) {
+      continue;
+    }
+    for (const record of proposal.records) {
+      if (matchesText(record.properties, filter.text)) {
+        hits.push({
+          admission: {
+            confidence: record.confidence,
+            grade: "candidate",
+            mappingProposalId: proposal.proposalId,
+            proposalDigest: proposal.digest,
+            rawRecordId: record.rawRecordId,
+            reviewStage: stage.value,
+            targetObjectTypeId: record.targetObjectTypeId,
+          },
+          record,
+        });
+      }
+    }
+  }
+  return hits;
+}
+
+function objectAdmissionKey(typeId: ObjectTypeId, objectId: string): string {
+  return `${typeId}/${objectId}`;
+}
+
+function decisionAdmissionOf(
+  actionLogs: readonly ObjectInstance[],
+  typeId: ObjectTypeId,
+  objectId: string
+): Option.Option<ObjectAdmission> {
+  const log = actionLogs.find(
+    (candidate) =>
+      candidate.properties.status === "executed" &&
+      candidate.properties.targetObjectTypeId === typeId &&
+      candidate.properties.targetObjectId === objectId
+  );
+  if (!log) {
+    return Option.none();
+  }
+  return Option.some({
+    decisionRecordId: String(log.properties.decisionRecordId),
+    grade: "decision",
+    objectId,
+    recordHash: String(log.properties.recordHash),
+    typeId,
+  });
+}
+
+/**
+ * Accountable Ingestion Service (S03, S15, Chapter 15 & 16)
+ *
+ * Rules:
+ * 1. Raw evidence stays attributed in SourceArtifact inventory and CANNOT silently
+ *    become admitted truth in the Object Store (S03).
+ * 2. Ingestion is strictly idempotent: replaying the same source returns the existing receipt;
+ *    the same idempotency key with different payload conflicts (IdempotencyConflictError).
+ * 3. Every accepted field in a mapping proposal resolves to artifact/locator/mapping/batch (FieldProvenance).
+ * 4. Corrupt, unknown, and contradictory inputs yield explicit typed errors.
+ * 5. Wrong tenant/environment reference does not disclose existence.
+ * 6. Candidate records reach `main` only through a mapping proposal whose digest
+ *    a human reviewer approved (batch admission). Agents propose and merge; they never approve.
+ */
 function mapItemProperties(
   item: Record<string, Schema.Json>,
-  mappings: readonly PropertyMapping[],
+  mappings: readonly MappingFieldRule[],
   src: SourceArtifact
 ): {
   mappedProps: Record<string, Schema.Json>;
@@ -359,6 +510,50 @@ function checkConflictingProperties(
   return Effect.void;
 }
 
+export interface AccountableIngestionSnapshot {
+  readonly sources: readonly SourceArtifact[];
+  readonly idempotency: readonly {
+    readonly key: string;
+    readonly sourceId: string;
+    readonly digest: string;
+    readonly receipt: IngestionReceipt;
+  }[];
+  readonly proposals: readonly MappingProposal[];
+  readonly admissions: readonly BatchAdmission[];
+}
+
+/**
+ * Share of field rules that resolved on this item. A deterministic copy of
+ * every requested field is full confidence; missing fields lower it.
+ */
+function mappingConfidence(
+  rules: readonly MappingFieldRule[],
+  mappedProps: Record<string, Schema.Json>
+): number {
+  if (rules.length === 0) {
+    return 1;
+  }
+  return Object.keys(mappedProps).length / rules.length;
+}
+
+function proposalConfidence(records: readonly CandidateRecord[]): number {
+  if (records.length === 0) {
+    return 0;
+  }
+  return Math.min(...records.map((r) => r.confidence));
+}
+
+function nextReviewStatus(
+  reviews: readonly ProposalReview[],
+  policy: ApprovalsPolicy
+): MappingProposal["status"] {
+  if (reviews.some((r) => r.verdict === "reject")) {
+    return "rejected";
+  }
+  const approvals = reviews.filter((r) => r.verdict === "approve").length;
+  return approvals >= policy.requiredMinApprovals ? "approved" : "under_review";
+}
+
 export class AccountableIngestionService {
   private readonly sourceInventory = new Map<string, SourceArtifact>();
   private readonly idempotencyRegistry = new Map<
@@ -370,6 +565,7 @@ export class AccountableIngestionService {
     }
   >();
   private readonly mappingProposals = new Map<string, MappingProposal>();
+  private readonly batchAdmissions = new Map<string, BatchAdmission>();
 
   constructor(private readonly store: ObjectStore) {}
 
@@ -560,7 +756,10 @@ export class AccountableIngestionService {
               }
 
               const candidate: CandidateRecord = {
-                confidence: 0.95,
+                confidence: mappingConfidence(
+                  options.propertyMappings,
+                  mappedProps
+                ),
                 properties: mappedProps,
                 provenance: {
                   batchId: src.batchId,
@@ -586,16 +785,25 @@ export class AccountableIngestionService {
     const now = yield* Clock.currentTimeMillis;
     const proposalId = generatePrefixedId("prop_map", now);
 
-    const proposal: MappingProposal = {
-      confidence: candidateRecords.length > 0 ? 0.95 : 0,
-      createdAt: now,
-      createdBy: options.author,
+    const filter: MappingProposalFilter = {
       definitionDigest: options.definitionDigest,
       openQuestions,
-      proposalId,
+      primaryKeyField: options.primaryKeyField,
+      propertyMappings: options.propertyMappings,
       records: candidateRecords,
       sources: options.sourceIds,
-      status: "draft",
+      targetObjectTypeId: options.targetObjectTypeId,
+    };
+
+    const proposal: MappingProposal = {
+      ...filter,
+      confidence: proposalConfidence(candidateRecords),
+      createdAt: now,
+      createdBy: options.author,
+      digest: computeMappingProposalDigest(filter),
+      proposalId,
+      reviews: [],
+      status: "open",
     };
 
     this.mappingProposals.set(proposalId, proposal);
@@ -603,70 +811,210 @@ export class AccountableIngestionService {
   });
 
   /**
-   * Admitting a mapping proposal writes candidate records to the canonical Object Store (S03).
-   * Raw evidence CANNOT mutate the store directly without this approved proposal.
+   * A human reviews the batch digest. Authors cannot review their own batch,
+   * agents cannot review at all, and the reviewed digest must be the current one.
+   */
+  readonly reviewProposal = Effect.fn(
+    "AccountableIngestionService.reviewProposal"
+  )(function* (
+    this: AccountableIngestionService,
+    options: ReviewMappingProposalOptions
+  ): Effect.fn.Return<
+    MappingProposal,
+    | MappingProposalNotFoundError
+    | HumanReviewRequiredError
+    | SelfReviewDeniedError
+    | StaleReviewError
+  > {
+    const { proposalId, review } = options;
+    const proposal = this.mappingProposals.get(proposalId);
+    if (!proposal) {
+      return yield* new MappingProposalNotFoundError({ proposalId });
+    }
+    if (review.reviewer.type !== "user") {
+      return yield* new HumanReviewRequiredError({
+        proposalId,
+        reviewerId: review.reviewer.id,
+        reviewerType: review.reviewer.type,
+      });
+    }
+    if (review.reviewer.id === proposal.createdBy.id) {
+      return yield* new SelfReviewDeniedError({
+        authorId: proposal.createdBy.id,
+        message: `Author '${proposal.createdBy.id}' cannot review own batch admission '${proposalId}'`,
+        reviewerId: review.reviewer.id,
+      });
+    }
+    if (options.viewedDigest !== proposal.digest) {
+      return yield* new StaleReviewError({
+        candidateDigest: proposal.digest,
+        message: `Review references digest '${options.viewedDigest}', current batch digest is '${proposal.digest}'`,
+        proposalId,
+        reviewDigest: options.viewedDigest,
+      });
+    }
+
+    const policy = options.policy ?? defaultApprovalsPolicy;
+    const reviews = [...proposal.reviews, review];
+    const reviewed: MappingProposal = {
+      ...proposal,
+      reviews,
+      status: nextReviewStatus(reviews, policy),
+    };
+    this.mappingProposals.set(proposalId, reviewed);
+    return reviewed;
+  });
+
+  /**
+   * Merging an approved batch writes every candidate record to `main` at
+   * grade `batch` (S03). Raw evidence cannot reach the store any other way.
+   * Merging an already merged batch is a no-op replay.
    */
   readonly admitProposal = Effect.fn(
     "AccountableIngestionService.admitProposal"
   )(function* (
     this: AccountableIngestionService,
     proposalId: string,
-    _author: Subject
+    admitter: Subject,
+    policy: ApprovalsPolicy = defaultApprovalsPolicy
   ): Effect.fn.Return<
     MappingProposal,
-    UnknownSourceError | ConcurrentModificationError
+    | MappingProposalNotFoundError
+    | ApprovalsPolicyViolationError
+    | ConcurrentModificationError
   > {
     const proposal = this.mappingProposals.get(proposalId);
     if (!proposal) {
-      return yield* new UnknownSourceError({ sourceId: proposalId });
+      return yield* new MappingProposalNotFoundError({ proposalId });
+    }
+    if (proposal.status === "merged") {
+      return proposal;
     }
 
+    yield* validateProposalApprovals(
+      {
+        id: proposal.proposalId,
+        reviews: proposal.reviews,
+        status: proposal.status,
+      },
+      policy
+    );
+
     const now = yield* Clock.currentTimeMillis;
+    const { batchAdmissions, store } = this;
     yield* Effect.forEach(
       proposal.records,
-      (record) =>
-        this.store.putObject({
+      Effect.fn("AccountableIngestionService.admitRecord")(function* (record) {
+        yield* store.putObject({
           id: record.rawRecordId,
           lastModifiedAt: now,
           properties: record.properties,
           typeId: record.targetObjectTypeId,
           version: 1,
-        }),
+        });
+        const admission: BatchAdmission = {
+          admittedAt: now,
+          admittedBy: admitter,
+          grade: "batch",
+          mappingProposalId: proposal.proposalId,
+          objectId: record.rawRecordId,
+          proposalDigest: proposal.digest,
+          typeId: record.targetObjectTypeId,
+        };
+        batchAdmissions.set(
+          objectAdmissionKey(record.targetObjectTypeId, record.rawRecordId),
+          admission
+        );
+      }),
       { concurrency: 1 }
     );
 
-    const approved: MappingProposal = {
+    const merged: MappingProposal = {
       ...proposal,
-      status: "approved",
+      status: "merged",
     };
-    this.mappingProposals.set(proposalId, approved);
-    return approved;
+    this.mappingProposals.set(proposalId, merged);
+    return merged;
   });
 
   readonly getProposal = Effect.fn("AccountableIngestionService.getProposal")(
     function* (
       this: AccountableIngestionService,
       proposalId: string
-    ): Effect.fn.Return<MappingProposal, UnknownSourceError> {
+    ): Effect.fn.Return<MappingProposal, MappingProposalNotFoundError> {
       const p = this.mappingProposals.get(proposalId);
       if (!p) {
-        return yield* new UnknownSourceError({ sourceId: proposalId });
+        return yield* new MappingProposalNotFoundError({ proposalId });
       }
       return p;
     }
   );
 
-  exportSnapshot(): {
-    readonly sources: readonly SourceArtifact[];
-    readonly idempotency: readonly {
-      readonly key: string;
-      readonly sourceId: string;
-      readonly digest: string;
-      readonly receipt: IngestionReceipt;
-    }[];
-    readonly proposals: readonly MappingProposal[];
-  } {
+  listProposals(tenantId?: string): Effect.Effect<readonly MappingProposal[]> {
+    return Effect.map(this.listSources(tenantId), (sources) => {
+      const visibleSources = new Set(sources.map((s) => s.sourceId));
+      return [...this.mappingProposals.values()].filter((p) =>
+        p.sources.every((sourceId) => visibleSources.has(sourceId))
+      );
+    });
+  }
+
+  /**
+   * Search quarantine (raw payload items) and candidates (typed records of
+   * open batches) without either becoming an ObjectInstance.
+   */
+  readonly searchQuarantine = Effect.fn(
+    "AccountableIngestionService.searchQuarantine"
+  )(function* (
+    this: AccountableIngestionService,
+    filter: QuarantineSearchFilter
+  ): Effect.fn.Return<readonly QuarantineSearchHit[], never> {
+    const sources = yield* this.listSources(filter.tenantId);
+    const proposals = yield* this.listProposals(filter.tenantId);
+    switch (filter.grade) {
+      case "quarantine": {
+        return quarantineHits(sources, filter);
+      }
+      case "candidate": {
+        return candidateHits(proposals, filter);
+      }
+      case undefined: {
+        return [
+          ...quarantineHits(sources, filter),
+          ...candidateHits(proposals, filter),
+        ];
+      }
+      default: {
+        const exhaustive: never = filter.grade;
+        return exhaustive;
+      }
+    }
+  });
+
+  /**
+   * Admission state of an object in `main`. An executed Action (ActionLog with
+   * this target) makes it decision-bearing; a merged batch makes it `batch`.
+   * Objects that reached the store any other way have no recorded admission.
+   */
+  admissionOf(
+    typeId: ObjectTypeId,
+    objectId: string
+  ): Effect.Effect<Option.Option<ObjectAdmission>> {
+    return Effect.map(
+      // SAFETY: ActionLogTypeId is the fixed ObjectTypeId the write pipeline materializes
+      this.store.findObjects(ActionLogTypeId as ObjectTypeId),
+      (actionLogs) =>
+        Option.orElse(decisionAdmissionOf(actionLogs, typeId, objectId), () =>
+          Option.fromNullishOr(
+            this.batchAdmissions.get(objectAdmissionKey(typeId, objectId))
+          )
+        )
+    );
+  }
+
+  exportSnapshot(): AccountableIngestionSnapshot {
     return {
+      admissions: [...this.batchAdmissions.values()],
       idempotency: [...this.idempotencyRegistry.entries()].map(
         ([key, val]) => ({
           digest: val.digest,
@@ -680,16 +1028,12 @@ export class AccountableIngestionService {
     };
   }
 
-  importSnapshot(snapshot: {
-    readonly sources?: readonly SourceArtifact[];
-    readonly idempotency?: readonly {
-      readonly key: string;
-      readonly sourceId: string;
-      readonly digest: string;
-      readonly receipt: IngestionReceipt;
-    }[];
-    readonly proposals?: readonly MappingProposal[];
-  }): void {
+  importSnapshot(snapshot: Partial<AccountableIngestionSnapshot>): void {
+    if (snapshot.admissions) {
+      for (const a of snapshot.admissions) {
+        this.batchAdmissions.set(objectAdmissionKey(a.typeId, a.objectId), a);
+      }
+    }
     if (snapshot.sources) {
       for (const s of snapshot.sources) {
         this.sourceInventory.set(s.sourceId, s);

@@ -27,12 +27,18 @@ import {
   evaluateDecisionReadiness,
   executeWritePipeline,
 } from "@operon/runtime";
-import { createWorldView, serializeJson } from "@operon/schema";
+import {
+  createWorldView,
+  decodeIdentityKey,
+  deriveEmailIdentityKeys,
+  serializeJson,
+} from "@operon/schema";
 import type {
   ActionParameters,
   ActionType,
   DefinitionArtifact,
   F2Receipt,
+  IdentityKey,
   IdentityResolutionProposal,
   ObjectType,
   ObjectTypeId,
@@ -41,8 +47,7 @@ import type {
   Subject,
 } from "@operon/schema";
 import type { SkillRegistryService } from "@operon/skills";
-import { Clock, Effect, Exit, Predicate } from "effect";
-import type { Schema } from "effect";
+import { Clock, Effect, Exit, Option, Predicate, Schema } from "effect";
 
 import type { McpKey } from "./keys.js";
 import { checkMcpKeyPermission } from "./keys.js";
@@ -544,6 +549,55 @@ const handleProposeMapping = Effect.fn("handleProposeMapping")(function* (
   };
 });
 
+function errorResult(error: string, message: string): ToolCallResult {
+  return {
+    content: [
+      { text: serializeJson({ error, message }), type: "text" as const },
+    ],
+    isError: true,
+  };
+}
+
+const decodeReviewVerdict = Schema.decodeUnknownOption(
+  Schema.Literals(["approve", "reject", "request_changes"])
+);
+
+/**
+ * The MCP session is an agent. A review is relayed on behalf of a named human;
+ * the runtime refuses agents, authors and stale digests.
+ */
+const handleReviewMappingProposal = Effect.fn("handleReviewMappingProposal")(
+  function* (ctx: ToolExecutionContext) {
+    yield* checkMcpKeyPermission(ctx.callerKey, "modify_pipeline");
+    const verdict = decodeReviewVerdict(ctx.args.verdict);
+    if (Option.isNone(verdict)) {
+      return errorResult(
+        "InvalidReviewVerdict",
+        "verdict must be one of approve, reject, request_changes"
+      );
+    }
+    const reviewerId = String(ctx.args.reviewerId);
+    // SAFETY: reviewerRoles is a string array
+    const roles = Array.isArray(ctx.args.reviewerRoles)
+      ? (ctx.args.reviewerRoles as string[])
+      : ["approver"];
+    const now = yield* Clock.currentTimeMillis;
+    const reviewed = yield* ctx.ingestionService.reviewProposal({
+      proposalId: String(ctx.args.proposalId),
+      review: {
+        comments: ctx.args.comments ? String(ctx.args.comments) : "",
+        reviewedAt: now,
+        reviewer: { id: reviewerId, name: reviewerId, roles, type: "user" },
+        verdict: verdict.value,
+      },
+      viewedDigest: String(ctx.args.viewedDigest),
+    });
+    return {
+      content: [{ text: serializeJson(reviewed), type: "text" as const }],
+    };
+  }
+);
+
 const handleAdmitMappingProposal = Effect.fn("handleAdmitMappingProposal")(
   function* (ctx: ToolExecutionContext) {
     yield* checkMcpKeyPermission(ctx.callerKey, "modify_schema");
@@ -554,6 +608,88 @@ const handleAdmitMappingProposal = Effect.fn("handleAdmitMappingProposal")(
     return {
       content: [{ text: serializeJson(admitted), type: "text" as const }],
     };
+  }
+);
+
+const decodeSearchGrade = Schema.decodeUnknownOption(
+  Schema.Literals(["quarantine", "candidate"])
+);
+
+const handleSearchQuarantine = Effect.fn("handleSearchQuarantine")(function* (
+  ctx: ToolExecutionContext
+) {
+  yield* checkMcpKeyPermission(ctx.callerKey, "query_runtime");
+  const grade =
+    ctx.args.grade === undefined
+      ? Option.some(undefined)
+      : decodeSearchGrade(ctx.args.grade);
+  if (Option.isNone(grade)) {
+    return errorResult(
+      "InvalidAdmissionGrade",
+      "grade must be 'quarantine' or 'candidate'; objects in main are queried with operon_query_objects"
+    );
+  }
+  const hits = yield* ctx.ingestionService.searchQuarantine({
+    grade: grade.value,
+    targetObjectTypeId: ctx.args.targetObjectTypeId
+      ? // SAFETY: targetObjectTypeId string maps to ObjectTypeId
+        (String(ctx.args.targetObjectTypeId) as ObjectTypeId)
+      : undefined,
+    tenantId: ctx.args.tenantId ? String(ctx.args.tenantId) : undefined,
+    text: ctx.args.text ? String(ctx.args.text) : undefined,
+  });
+  return {
+    content: [
+      {
+        text: serializeJson({ count: hits.length, hits }),
+        type: "text" as const,
+      },
+    ],
+  };
+});
+
+const handleGetAdmission = Effect.fn("handleGetAdmission")(function* (
+  ctx: ToolExecutionContext
+) {
+  yield* checkMcpKeyPermission(ctx.callerKey, "query_runtime");
+  // SAFETY: typeId string maps to ObjectTypeId
+  const typeId = String(ctx.args.typeId) as ObjectTypeId;
+  const objectId = String(ctx.args.objectId);
+  const admission = yield* ctx.ingestionService.admissionOf(typeId, objectId);
+  return {
+    content: [
+      {
+        text: serializeJson({
+          admission: Option.getOrNull(admission),
+          objectId,
+          typeId,
+        }),
+        type: "text" as const,
+      },
+    ],
+  };
+});
+
+const handleDeriveIdentityKeys = Effect.fn("handleDeriveIdentityKeys")(
+  function* (ctx: ToolExecutionContext) {
+    yield* checkMcpKeyPermission(ctx.callerKey, "query_runtime");
+    const extraSuppressedDomains = Array.isArray(ctx.args.suppressedDomains)
+      ? new Set(ctx.args.suppressedDomains.map(String))
+      : new Set<string>();
+    const email = String(ctx.args.email);
+    return Option.match(
+      deriveEmailIdentityKeys(email, extraSuppressedDomains),
+      {
+        onNone: () =>
+          errorResult(
+            "InvalidEmailAddress",
+            `'${email}' is not an email address`
+          ),
+        onSome: (keys) => ({
+          content: [{ text: serializeJson(keys), type: "text" as const }],
+        }),
+      }
+    );
   }
 );
 
@@ -641,7 +777,7 @@ function resolveProposalId(id?: Schema.Json): string {
     : `res_prop_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 }
 
-function buildIdentityProposalInput(args: ActionParameters) {
+function buildIdentityProposalInput(args: ActionParameters, key: IdentityKey) {
   const proposalId = resolveProposalId(args.proposalId);
   // SAFETY: action matches IdentityResolutionProposal action union
   const action = args.action as IdentityResolutionProposal["action"];
@@ -660,9 +796,8 @@ function buildIdentityProposalInput(args: ActionParameters) {
     idempotencyKey: args.idempotencyKey
       ? String(args.idempotencyKey)
       : undefined,
+    key,
     proposalId,
-    sourceKey: String(args.sourceKey),
-    sourceSystem: String(args.sourceSystem),
     splitDetails,
     targetCanonicalId: String(args.targetCanonicalId),
     tenantId: args.tenantId ? String(args.tenantId) : undefined,
@@ -673,8 +808,15 @@ const handleProposeIdentityResolution = Effect.fn(
   "handleProposeIdentityResolution"
 )(function* (ctx: ToolExecutionContext) {
   yield* checkMcpKeyPermission(ctx.callerKey, "modify_schema");
+  const key = decodeIdentityKey(ctx.args.key);
+  if (Option.isNone(key)) {
+    return errorResult(
+      "InvalidIdentityKey",
+      "key must be { kind: 'email', value } with a normalized address, { kind: 'domain', value } lower-cased, or { kind: 'source_pk', sourceSystem, value }"
+    );
+  }
   const proposal = yield* ctx.reconciliationService.proposeIdentityResolution(
-    buildIdentityProposalInput(ctx.args)
+    buildIdentityProposalInput(ctx.args, key.value)
   );
   return {
     content: [{ text: serializeJson(proposal), type: "text" as const }],
@@ -1112,6 +1254,7 @@ export const STANDARD_TOOL_HANDLERS: ReadonlyMap<
   ["operon_assurance_verify_receipt", handleAssuranceVerifyReceipt],
   ["operon_check_readiness", handleCheckReadiness],
   ["operon_commit_action", handleCommitAction],
+  ["operon_derive_identity_keys", handleDeriveIdentityKeys],
   ["operon_diagnose", handleDiagnose],
   ["operon_diff_candidate", handleDiffCandidate],
   ["operon_exact_query", handleExactQuery],
@@ -1119,6 +1262,7 @@ export const STANDARD_TOOL_HANDLERS: ReadonlyMap<
   ["operon_generate_view", handleGenerateView],
   ["operon_get_action_status", handleGetActionStatus],
   ["operon_get_active_release", handleGetActiveRelease],
+  ["operon_get_admission", handleGetAdmission],
   ["operon_get_object", handleGetObject],
   ["operon_get_publication", handleGetPublication],
   ["operon_get_recipe", handleGetRecipe],
@@ -1139,4 +1283,6 @@ export const STANDARD_TOOL_HANDLERS: ReadonlyMap<
   ["operon_query_objects", handleQueryObjects],
   ["operon_reject_proposal", handleRejectProposal],
   ["operon_resolve_identity", handleResolveIdentity],
+  ["operon_review_mapping_proposal", handleReviewMappingProposal],
+  ["operon_search_quarantine", handleSearchQuarantine],
 ]);
