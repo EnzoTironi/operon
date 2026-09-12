@@ -69,7 +69,8 @@ const McpOptions = Schema.Struct({
 );
 
 /** Consumer Propose. Tier 4 bounded autonomy is opt-in. */
-export const DEFAULT_MCP_AGENT_TIER = 2 as const satisfies AgentAuthorizationTier;
+export const DEFAULT_MCP_AGENT_TIER =
+  2 as const satisfies AgentAuthorizationTier;
 
 export const parseMcpOptions = Effect.fn("parseMcpOptions")(function* (
   args: readonly string[]

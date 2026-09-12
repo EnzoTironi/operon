@@ -9,10 +9,7 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { Effect, Schema } from "effect";
 import { afterEach, describe, expect, it } from "vitest";
 
-import {
-  DEFAULT_MCP_AGENT_TIER,
-  parseMcpOptions,
-} from "./commands/mcp.js";
+import { DEFAULT_MCP_AGENT_TIER, parseMcpOptions } from "./commands/mcp.js";
 
 const cli = fileURLToPath(new URL("../dist/bin.js", import.meta.url));
 const folders: string[] = [];

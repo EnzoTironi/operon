@@ -126,15 +126,18 @@ describe("ApiKeyRegistry & Scoped Key Validation", () => {
   });
 
   it("ships an empty default registry", async () => {
-    for (const secret of [
+    const secrets = [
       "ck_consumer_secret",
       "bk_builder_secret",
       "bk_builder_secret_789",
       "ck_consumer_123",
-    ]) {
-      const exit = await Effect.runPromiseExit(
-        defaultApiKeyRegistry.validateKey(secret)
-      );
+    ];
+    const exits = await Promise.all(
+      secrets.map((secret) =>
+        Effect.runPromiseExit(defaultApiKeyRegistry.validateKey(secret))
+      )
+    );
+    for (const exit of exits) {
       expect(exit._tag).toBe("Failure");
     }
   });
