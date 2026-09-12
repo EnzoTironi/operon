@@ -1,0 +1,1813 @@
+import { describe, expect, it } from "@effect/vitest";
+import { Cause, Effect, Exit, Layer, Option, Predicate, Schema, Tracer } from "effect";
+import { fileURLToPath } from "node:url";
+import {
+  HttpClient,
+  HttpClientRequest,
+  HttpClientResponse,
+  HttpServerResponse,
+} from "effect/unstable/http";
+
+import {
+  AuthTemplateSlug,
+  ConnectionName,
+  IntegrationSlug,
+  OAuthClientSlug,
+  ToolAddress,
+  createExecutor,
+} from "@operon/gateway/sdk";
+import {
+  makeTestConfig,
+  memoryCredentialsPlugin,
+  scopesFromAuthorizeUrl,
+  serveOAuthTestServer,
+  serveTestHttpApp,
+} from "@operon/gateway/sdk/testing";
+
+import { createMcpConnector } from "./connection";
+import { mcpPlugin, userFacingProbeMessage, toIntegrationConfig } from "./plugin";
+import { McpInvocationError } from "./errors";
+import { extractManifestFromListToolsResult, deriveMcpNamespace, joinToolPath } from "./manifest";
+import { makeAnnotationsMcpServer, serveMcpServer } from "../testing";
+
+// removed: the v1 addSource / scopes / secrets / credential-binding / usages /
+// sources.configure / multi-scope shadowing suites. v2 has no scope stack, no
+// secrets table, and no credential bindings — an MCP server is registered as an
+// integration (`addServer`) and a connection IS the credential (created via
+// `connections.create` / `oauth.start`). Owner isolation is covered by
+// owner-isolation.test.ts; the end-to-end auth/header path is covered by
+// elicitation.test.ts + owner-isolation.test.ts.
+
+const TEMPLATE = AuthTemplateSlug.make("none");
+const stdioNegotiationFixture = fileURLToPath(
+  new URL("./stdio-negotiation-test-server.ts", import.meta.url),
+);
+
+const JsonRpcId = Schema.Union([Schema.String, Schema.Number, Schema.Null]);
+const JsonRpcRequest = Schema.Struct({
+  id: Schema.optional(JsonRpcId),
+  method: Schema.String,
+});
+type JsonRpcRequest = typeof JsonRpcRequest.Type;
+
+const decodeJsonRpcRequest = Schema.decodeUnknownOption(Schema.fromJsonString(JsonRpcRequest));
+
+const jsonRpcResult = (request: JsonRpcRequest, result: unknown) =>
+  HttpServerResponse.jsonUnsafe({
+    jsonrpc: "2.0",
+    id: request.id ?? null,
+    result,
+  });
+
+// The call-tool fixtures share one JSON-RPC scaffold (handshake, tool listing,
+// unknown-method rejection); only the `tools/call` response varies. Each
+// scenario supplies that branch via a `CallToolResponder`.
+type CallToolResponder = (rpc: JsonRpcRequest) => ReturnType<typeof HttpServerResponse.text>;
+
+const callToolFixtureResponse = (rpc: JsonRpcRequest, callTool: CallToolResponder) => {
+  if (rpc.method === "initialize") {
+    return jsonRpcResult(rpc, {
+      protocolVersion: "2025-06-18",
+      capabilities: { tools: {} },
+      serverInfo: { name: "call-tool-fixture", version: "1.0.0" },
+    });
+  }
+  if (rpc.method === "notifications/initialized") {
+    return HttpServerResponse.text("", { status: 202 });
+  }
+  if (rpc.method === "tools/list") {
+    return jsonRpcResult(rpc, {
+      tools: [
+        {
+          name: "explode",
+          description: "Returns a failure from tools/call",
+          inputSchema: { type: "object", properties: {} },
+        },
+      ],
+    });
+  }
+  if (rpc.method === "tools/call") {
+    return callTool(rpc);
+  }
+  return HttpServerResponse.text("Unexpected JSON-RPC method", { status: 400 });
+};
+
+const serveCallToolServer = (callTool: CallToolResponder) =>
+  serveTestHttpApp((request) =>
+    Effect.gen(function* () {
+      if (request.method === "GET") {
+        return HttpServerResponse.text("SSE disabled", { status: 405 });
+      }
+
+      const body = yield* request.text.pipe(Effect.orDie);
+      return Option.match(decodeJsonRpcRequest(body), {
+        onNone: () => HttpServerResponse.text("Invalid JSON-RPC fixture request", { status: 400 }),
+        onSome: (rpc) => callToolFixtureResponse(rpc, callTool),
+      });
+    }),
+  );
+
+const rejectedOAuthDiscoveryLayer = (endpoint: string) => {
+  const issuer = new URL(endpoint).origin;
+  const requests: string[] = [];
+  const layer = Layer.succeed(HttpClient.HttpClient)(
+    HttpClient.make((request: HttpClientRequest.HttpClientRequest) => {
+      requests.push(request.url);
+      const url = new URL(request.url);
+      const response =
+        request.url === endpoint
+          ? new Response("", { status: 401 })
+          : url.pathname === "/.well-known/oauth-protected-resource/mcp"
+            ? Response.json({ resource: endpoint, authorization_servers: [issuer] })
+            : url.pathname === "/.well-known/oauth-authorization-server"
+              ? Response.json({
+                  issuer,
+                  authorization_endpoint: `${issuer}/authorize`,
+                  token_endpoint: `${issuer}/token`,
+                  registration_endpoint: `${issuer}/register`,
+                  response_types_supported: ["code"],
+                  code_challenge_methods_supported: ["S256"],
+                })
+              : url.pathname === "/register"
+                ? Response.json(
+                    {
+                      client_id: "replacement-client",
+                      redirect_uris: ["http://localhost/oauth/callback"],
+                      grant_types: ["authorization_code", "refresh_token"],
+                      response_types: ["code"],
+                      token_endpoint_auth_method: "none",
+                    },
+                    { status: 201 },
+                  )
+                : new Response("unexpected request", { status: 500 });
+      return Effect.succeed(HttpClientResponse.fromWeb(request, response));
+    }),
+  );
+  return { layer, requests };
+};
+
+const clientRpcOf = (request: HttpClientRequest.HttpClientRequest): JsonRpcRequest | undefined =>
+  Predicate.isTagged(request.body, "Uint8Array")
+    ? Option.getOrUndefined(decodeJsonRpcRequest(new TextDecoder().decode(request.body.body)))
+    : undefined;
+
+/** Streamable-http fixture for the post-handshake auth wall: the handshake
+ *  methods succeed and `tools/list` answers 401 for the first
+ *  `revokedListResponses` calls (Infinity = the bearer stays revoked). The
+ *  OAuth discovery + DCR endpoints are served so an SDK fallback that DID see
+ *  the 401 could register — the ledger proves it never gets there. Entries are
+ *  `pathname` or `pathname#jsonRpcMethod`. */
+const listRejectionFixtureLayer = (endpoint: string, revokedListResponses: number) => {
+  const issuer = new URL(endpoint).origin;
+  const requests: string[] = [];
+  let remaining = revokedListResponses;
+  const jsonRpc = (rpc: JsonRpcRequest, result: unknown) =>
+    Response.json({ jsonrpc: "2.0", id: rpc.id ?? null, result });
+  const layer = Layer.succeed(HttpClient.HttpClient)(
+    HttpClient.make((request: HttpClientRequest.HttpClientRequest) => {
+      const url = new URL(request.url);
+      const rpc = request.url === endpoint ? clientRpcOf(request) : undefined;
+      requests.push(rpc === undefined ? url.pathname : `${url.pathname}#${rpc.method}`);
+      const respond = (response: Response) =>
+        Effect.succeed(HttpClientResponse.fromWeb(request, response));
+      if (request.url === endpoint) {
+        if (rpc === undefined) return respond(new Response("SSE disabled", { status: 405 }));
+        if (rpc.method === "initialize") {
+          return respond(
+            jsonRpc(rpc, {
+              protocolVersion: "2025-06-18",
+              capabilities: { tools: {} },
+              serverInfo: { name: "list-reject-fixture", version: "1.0.0" },
+            }),
+          );
+        }
+        if (rpc.method === "notifications/initialized") {
+          return respond(new Response("", { status: 202 }));
+        }
+        if (rpc.method === "tools/list") {
+          if (remaining > 0) {
+            remaining -= 1;
+            return respond(new Response("", { status: 401 }));
+          }
+          return respond(
+            jsonRpc(rpc, {
+              tools: [
+                {
+                  name: "echo_back",
+                  description: "Echoes",
+                  inputSchema: { type: "object", properties: {} },
+                },
+              ],
+            }),
+          );
+        }
+        return respond(new Response("Unexpected JSON-RPC method", { status: 400 }));
+      }
+      const response =
+        url.pathname === "/.well-known/oauth-protected-resource/mcp"
+          ? Response.json({ resource: endpoint, authorization_servers: [issuer] })
+          : url.pathname === "/.well-known/oauth-authorization-server"
+            ? Response.json({
+                issuer,
+                authorization_endpoint: `${issuer}/authorize`,
+                token_endpoint: `${issuer}/token`,
+                registration_endpoint: `${issuer}/register`,
+                response_types_supported: ["code"],
+                code_challenge_methods_supported: ["S256"],
+              })
+            : url.pathname === "/register"
+              ? Response.json(
+                  {
+                    client_id: "replacement-client",
+                    redirect_uris: ["http://localhost/oauth/callback"],
+                    grant_types: ["authorization_code", "refresh_token"],
+                    response_types: ["code"],
+                    token_endpoint_auth_method: "none",
+                  },
+                  { status: 201 },
+                )
+              : new Response("unexpected request", { status: 500 });
+      return respond(response);
+    }),
+  );
+  return { layer, requests };
+};
+
+// `tools/call` responders. Both embed a "do-not-leak" sentinel the assertions
+// confirm never reaches the caller-facing failure.
+const httpStatusCallTool =
+  (status: number): CallToolResponder =>
+  () =>
+    HttpServerResponse.text("do-not-leak: upstream auth challenge", { status });
+
+const jsonRpcErrorCallTool =
+  (code: number): CallToolResponder =>
+  (rpc) =>
+    HttpServerResponse.jsonUnsafe({
+      jsonrpc: "2.0",
+      id: rpc.id ?? null,
+      error: { code, message: "application-level do-not-leak" },
+    });
+
+const seedCallToolExecutor = (input: {
+  slug: string;
+  callTool: CallToolResponder;
+  /** Seed an oauth2-templated connection with a static access token, so the
+   *  transport gets a real authProvider — the production OAuth path where the
+   *  SDK's own challenge handling would otherwise swallow scope signals. */
+  oauth?: boolean;
+}) =>
+  Effect.acquireRelease(
+    Effect.gen(function* () {
+      const server = yield* serveCallToolServer(input.callTool);
+      const config = makeTestConfig({
+        plugins: [memoryCredentialsPlugin(), mcpPlugin()] as const,
+      });
+      const executor = yield* createExecutor(config);
+
+      yield* executor.mcp.addServer({
+        name: "Call tool fixture",
+        endpoint: server.url("/mcp"),
+        slug: input.slug,
+        remoteTransport: "streamable-http",
+        ...(input.oauth ? { auth: { kind: "oauth2" as const } } : {}),
+      });
+      yield* executor.connections.create({
+        owner: "org",
+        name: ConnectionName.make("main"),
+        integration: IntegrationSlug.make(input.slug),
+        template: input.oauth ? AuthTemplateSlug.make("oauth2") : TEMPLATE,
+        value: input.oauth ? "static-access-token" : "",
+      });
+
+      return {
+        config,
+        executor,
+        toolAddress: ToolAddress.make(`tools.${input.slug}.org.main.explode`),
+      } as const;
+    }),
+    ({ config, executor }) =>
+      Effect.gen(function* () {
+        yield* executor.close().pipe(Effect.ignore);
+        yield* Effect.promise(() => config.testDb.close()).pipe(Effect.ignore);
+      }),
+  );
+
+// ---------------------------------------------------------------------------
+// Manifest extraction
+// ---------------------------------------------------------------------------
+
+describe("extractManifestFromListToolsResult", () => {
+  it.effect("extracts tools from a valid listTools response", () =>
+    Effect.sync(() => {
+      const result = extractManifestFromListToolsResult({
+        tools: [
+          {
+            name: "get_weather",
+            description: "Get weather for a location",
+            inputSchema: {
+              type: "object",
+              properties: { location: { type: "string" } },
+            },
+          },
+          { name: "search", description: "Search the web" },
+        ],
+      });
+
+      expect(result.tools).toHaveLength(2);
+      expect(result.tools[0]!.toolName).toBe("get_weather");
+      expect(result.tools[0]!.toolId).toBe("get_weather");
+      expect(result.tools[0]!.description).toBe("Get weather for a location");
+      expect(result.tools[1]!.toolName).toBe("search");
+    }),
+  );
+
+  it.effect("sanitizes tool IDs", () =>
+    Effect.sync(() => {
+      const result = extractManifestFromListToolsResult({
+        tools: [
+          { name: "My Tool!!", description: null },
+          { name: "My Tool!!", description: null },
+        ],
+      });
+
+      expect(result.tools[0]!.toolId).toBe("my_tool");
+      expect(result.tools[1]!.toolId).toBe("my_tool_2");
+    }),
+  );
+
+  it.effect("handles empty tools list", () =>
+    Effect.sync(() => {
+      const result = extractManifestFromListToolsResult({ tools: [] });
+      expect(result.tools).toHaveLength(0);
+    }),
+  );
+
+  it.effect("extracts server metadata", () =>
+    Effect.sync(() => {
+      const result = extractManifestFromListToolsResult(
+        { tools: [] },
+        { serverInfo: { name: "test-server", version: "1.0.0" } },
+      );
+      expect(result.server?.name).toBe("test-server");
+      expect(result.server?.version).toBe("1.0.0");
+    }),
+  );
+
+  it.effect("decodes upstream tool annotations", () =>
+    Effect.sync(() => {
+      const result = extractManifestFromListToolsResult({
+        tools: [
+          { name: "delete", annotations: { destructiveHint: true } },
+          { name: "list", annotations: { readOnlyHint: true } },
+          { name: "ping" },
+        ],
+      });
+
+      expect(result.tools[0]!.annotations?.destructiveHint).toBe(true);
+      expect(result.tools[1]!.annotations?.readOnlyHint).toBe(true);
+      expect(result.tools[2]!.annotations).toBeUndefined();
+    }),
+  );
+
+  it.effect("carries the reserved `_meta` map through verbatim", () =>
+    Effect.sync(() => {
+      const meta = {
+        serverName: "time",
+        shortDescription: "Current time",
+        defer_loading: false,
+        nested: { any: ["shape"] },
+      };
+
+      const result = extractManifestFromListToolsResult({
+        tools: [
+          {
+            name: "time_get_current_time",
+            description: "Get the current time",
+            inputSchema: { type: "object" },
+            _meta: meta,
+          },
+          { name: "no_meta", description: "Has no _meta" },
+        ],
+      });
+
+      expect(result.tools[0]!._meta).toEqual(meta);
+      expect(result.tools[1]!._meta).toBeUndefined();
+    }),
+  );
+
+  // `_meta` is opaque and server-controlled, so a value that does not match the
+  // spec's map shape must not take the rest of the list down with it.
+  it.effect("ignores a malformed `_meta` without dropping the tool", () =>
+    Effect.sync(() => {
+      const result = extractManifestFromListToolsResult({
+        tools: [{ name: "odd_meta", _meta: "not-a-map" }, { name: "plain" }],
+      });
+
+      expect(result.tools.map((tool) => tool.toolName)).toEqual(["odd_meta", "plain"]);
+      expect(result.tools[0]!._meta).toBeUndefined();
+    }),
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Namespace derivation
+// ---------------------------------------------------------------------------
+
+describe("deriveMcpNamespace", () => {
+  it.effect("derives from name", () =>
+    Effect.sync(() => {
+      expect(deriveMcpNamespace({ name: "GitHub MCP" })).toBe("github_mcp");
+    }),
+  );
+
+  it.effect("derives from endpoint", () =>
+    Effect.sync(() => {
+      expect(deriveMcpNamespace({ endpoint: "https://api.example.com/mcp" })).toBe(
+        "api_example_com",
+      );
+    }),
+  );
+
+  it.effect("derives from command", () =>
+    Effect.sync(() => {
+      expect(deriveMcpNamespace({ command: "/usr/local/bin/my-mcp-server" })).toBe("my_mcp_server");
+    }),
+  );
+
+  it.effect("falls back to 'mcp'", () =>
+    Effect.sync(() => {
+      expect(deriveMcpNamespace({})).toBe("mcp");
+    }),
+  );
+});
+
+// ---------------------------------------------------------------------------
+// joinToolPath
+// ---------------------------------------------------------------------------
+
+describe("joinToolPath", () => {
+  it.effect("joins namespace and toolId", () =>
+    Effect.sync(() => {
+      expect(joinToolPath("github", "search")).toBe("github.search");
+    }),
+  );
+
+  it.effect("returns toolId when namespace is undefined", () =>
+    Effect.sync(() => {
+      expect(joinToolPath(undefined, "search")).toBe("search");
+    }),
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Plugin lifecycle
+// ---------------------------------------------------------------------------
+
+describe("mcpPlugin", () => {
+  it.effect("surfaces OAuth reauthorization from resolveTools as expired health", () =>
+    Effect.gen(function* () {
+      const endpoint = "https://mcp.example.test/mcp";
+      const plugin = mcpPlugin();
+      const ledger = rejectedOAuthDiscoveryLayer(endpoint);
+      const result = yield* plugin.resolveTools!({
+        config: {
+          transport: "remote",
+          endpoint,
+          remoteTransport: "streamable-http",
+          authenticationTemplate: [{ slug: "oauth2", kind: "oauth2" }],
+        },
+        connection: {
+          owner: "org",
+          integration: IntegrationSlug.make("oauth_mcp"),
+          name: ConnectionName.make("main"),
+        },
+        template: AuthTemplateSlug.make("oauth2"),
+        getValues: () => Effect.succeed({ token: "rejected-token" }),
+        getValue: () => Effect.succeed("rejected-token"),
+        httpClientLayer: ledger.layer,
+        ctx: null as never,
+        integration: null as never,
+        storage: {},
+      });
+
+      expect(result).toMatchObject({
+        tools: [],
+        incomplete: true,
+        health: {
+          status: "expired",
+          detail: expect.stringContaining("reauthorization"),
+        },
+      });
+      expect(ledger.requests.filter((url) => new URL(url).pathname === "/register")).toEqual([]);
+    }),
+  );
+
+  // The connect path above classifies a handshake 401. This covers the other
+  // half of the window: the bearer is honoured at `initialize` and revoked by
+  // the time `tools/list` runs, so the reauthorization signal surfaces from
+  // the LISTING failure, not the connect failure.
+  it.effect(
+    "surfaces OAuth reauthorization when tools/list rejects a bearer the handshake accepted",
+    () =>
+      Effect.gen(function* () {
+        const endpoint = "https://mcp.example.test/mcp";
+        const plugin = mcpPlugin();
+        const ledger = listRejectionFixtureLayer(endpoint, Number.POSITIVE_INFINITY);
+        const result = yield* plugin.resolveTools!({
+          config: {
+            transport: "remote",
+            endpoint,
+            remoteTransport: "streamable-http",
+            authenticationTemplate: [{ slug: "oauth2", kind: "oauth2" }],
+          },
+          connection: {
+            owner: "org",
+            integration: IntegrationSlug.make("oauth_mcp"),
+            name: ConnectionName.make("main"),
+          },
+          template: AuthTemplateSlug.make("oauth2"),
+          getValues: () => Effect.succeed({ token: "revoked-after-handshake" }),
+          getValue: () => Effect.succeed("revoked-after-handshake"),
+          httpClientLayer: ledger.layer,
+          ctx: null as never,
+          integration: null as never,
+          storage: {},
+        });
+
+        expect(result).toMatchObject({
+          tools: [],
+          incomplete: true,
+          health: {
+            status: "expired",
+            detail: expect.stringContaining("reauthorization"),
+          },
+        });
+        expect(ledger.requests.filter((entry) => entry === "/register")).toEqual([]);
+        // Exactly 2: the original tools/list plus the adapter's single
+        // read-only replay. A third request would mean the replay loops; a
+        // single one would mean a lone 401 classified without the
+        // transient-blip re-sample.
+        expect(ledger.requests.filter((entry) => entry === "/mcp#tools/list")).toHaveLength(2);
+      }),
+  );
+
+  // A LONE 401 is not evidence of a revoked bearer: transient upstream blips
+  // must not stamp reauthorization-required. The adapter replays the request
+  // once and only a repeated 401 classifies.
+  it.effect("retries a lone tools/list 401 instead of demanding reauthorization", () =>
+    Effect.gen(function* () {
+      const endpoint = "https://mcp.example.test/mcp";
+      const plugin = mcpPlugin();
+      const ledger = listRejectionFixtureLayer(endpoint, 1);
+      const result = yield* plugin.resolveTools!({
+        config: {
+          transport: "remote",
+          endpoint,
+          remoteTransport: "streamable-http",
+          authenticationTemplate: [{ slug: "oauth2", kind: "oauth2" }],
+        },
+        connection: {
+          owner: "org",
+          integration: IntegrationSlug.make("oauth_mcp"),
+          name: ConnectionName.make("main"),
+        },
+        template: AuthTemplateSlug.make("oauth2"),
+        getValues: () => Effect.succeed({ token: "blipped-token" }),
+        getValue: () => Effect.succeed("blipped-token"),
+        httpClientLayer: ledger.layer,
+        ctx: null as never,
+        integration: null as never,
+        storage: {},
+      });
+
+      expect(result.incomplete).not.toBe(true);
+      expect(result.tools.map((tool) => String(tool.name))).toEqual(["echo_back"]);
+      expect(ledger.requests.filter((entry) => entry === "/mcp#tools/list")).toHaveLength(2);
+    }),
+  );
+
+  it.effect("creates executor with mcp plugin", () =>
+    Effect.gen(function* () {
+      const executor = yield* createExecutor(
+        makeTestConfig({
+          plugins: [mcpPlugin()] as const,
+        }),
+      );
+
+      expect(executor.mcp).toBeDefined();
+      expect(executor.mcp.addServer).toBeTypeOf("function");
+      expect(executor.mcp.removeServer).toBeTypeOf("function");
+      expect(executor.mcp.getServer).toBeTypeOf("function");
+      expect(executor.mcp.probeEndpoint).toBeTypeOf("function");
+      expect(executor.oauth.start).toBeTypeOf("function");
+      expect(executor.oauth.complete).toBeTypeOf("function");
+    }),
+  );
+
+  it.effect("routes remote connector traffic through the provided HttpClient layer", () =>
+    Effect.gen(function* () {
+      const seen: string[] = [];
+      const httpClientLayer = Layer.succeed(HttpClient.HttpClient)(
+        HttpClient.make((request: HttpClientRequest.HttpClientRequest) => {
+          seen.push(request.url);
+          return Effect.succeed(
+            HttpClientResponse.fromWeb(request, new Response("blocked", { status: 403 })),
+          );
+        }),
+      );
+
+      const error = yield* createMcpConnector({
+        transport: "remote",
+        endpoint: "https://internal.example/mcp",
+        remoteTransport: "streamable-http",
+        httpClientLayer,
+      }).pipe(Effect.flip);
+
+      expect(Predicate.isTagged(error, "McpConnectionError")).toBe(true);
+      expect(seen).toEqual(["https://internal.example/mcp"]);
+    }),
+  );
+
+  it.effect("integration catalog has no configured MCP integrations initially", () =>
+    Effect.gen(function* () {
+      const executor = yield* createExecutor(makeTestConfig({ plugins: [mcpPlugin()] as const }));
+      const integrations = yield* executor.integrations.list();
+      expect(integrations.filter((i) => i.kind === "mcp")).toHaveLength(0);
+    }),
+  );
+
+  it.effect("projects an MCP server family into the integration catalog", () =>
+    Effect.gen(function* () {
+      const executor = yield* createExecutor(makeTestConfig({ plugins: [mcpPlugin()] as const }));
+      yield* executor.mcp.addServer({
+        name: "Cloudflare Docs",
+        family: "cloudflare",
+        endpoint: "https://example.com/mcp",
+        slug: "cloudflare_docs",
+      });
+
+      const integrations = yield* executor.integrations.list();
+      expect(integrations.find((item) => item.slug === "cloudflare_docs")?.family).toBe(
+        "cloudflare",
+      );
+    }),
+  );
+
+  it.effect("connection tools list is empty until a connection is created", () =>
+    Effect.gen(function* () {
+      const executor = yield* createExecutor(makeTestConfig({ plugins: [mcpPlugin()] as const }));
+      const tools = yield* executor.tools.list();
+      expect(tools.filter((tool) => String(tool.address).startsWith("tools."))).toHaveLength(0);
+    }),
+  );
+
+  it.effect("removing an MCP server removes the OAuth client used by its connection", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const server = yield* serveOAuthTestServer({ scopes: [] });
+        const executor = yield* createExecutor(
+          makeTestConfig({ plugins: [memoryCredentialsPlugin(), mcpPlugin()] as const }),
+        );
+        const attachedClient = OAuthClientSlug.make("axiom-mcp");
+        const unrelatedClient = OAuthClientSlug.make("manual-app");
+
+        yield* executor.mcp.addServer({
+          name: "Axiom MCP",
+          endpoint: "http://127.0.0.1:1/mcp",
+          slug: "axiom_mcp",
+          auth: { kind: "oauth2" },
+        });
+        yield* executor.oauth.createClient({
+          owner: "org",
+          slug: attachedClient,
+          authorizationUrl: server.authorizationEndpoint,
+          tokenUrl: server.tokenEndpoint,
+          grant: "client_credentials",
+          clientId: "test-client",
+          clientSecret: "test-secret",
+          resource: server.mcpResourceUrl,
+          origin: {
+            kind: "dynamic_client_registration",
+            integration: IntegrationSlug.make("axiom_mcp"),
+          },
+        });
+        yield* executor.oauth.createClient({
+          owner: "org",
+          slug: unrelatedClient,
+          authorizationUrl: server.authorizationEndpoint,
+          tokenUrl: server.tokenEndpoint,
+          grant: "client_credentials",
+          clientId: "test-client",
+          clientSecret: "test-secret",
+          resource: server.mcpResourceUrl,
+        });
+
+        const connected = yield* executor.oauth.start({
+          owner: "org",
+          client: attachedClient,
+          clientOwner: "org",
+          name: ConnectionName.make("main"),
+          integration: IntegrationSlug.make("axiom_mcp"),
+          template: AuthTemplateSlug.make("oauth2"),
+        });
+        expect(connected.status).toBe("connected");
+
+        yield* executor.mcp.removeServer("axiom_mcp");
+
+        const clients = yield* executor.oauth.listClients();
+        expect(clients.map((client) => String(client.slug))).not.toContain("axiom-mcp");
+        expect(clients.map((client) => String(client.slug))).toContain("manual-app");
+      }),
+    ),
+  );
+
+  it.effect("removing an MCP server removes a legacy orphaned DCR-looking OAuth client", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const executor = yield* createExecutor(
+          makeTestConfig({ plugins: [memoryCredentialsPlugin(), mcpPlugin()] as const }),
+        );
+
+        yield* executor.mcp.addServer({
+          name: "Axiom MCP",
+          endpoint: "https://mcp.axiom.co/mcp",
+          slug: "axiom_mcp",
+          auth: { kind: "oauth2" },
+        });
+        yield* executor.oauth.createClient({
+          owner: "org",
+          slug: OAuthClientSlug.make("axiom-mcp"),
+          authorizationUrl: "https://mcp.axiom.co/authorize",
+          tokenUrl: "https://mcp.axiom.co/token",
+          grant: "authorization_code",
+          clientId: "stale-dcr-client",
+          clientSecret: "",
+          resource: "https://mcp.axiom.co/mcp",
+        });
+        yield* executor.oauth.createClient({
+          owner: "org",
+          slug: OAuthClientSlug.make("manual-app"),
+          authorizationUrl: "https://mcp.axiom.co/authorize",
+          tokenUrl: "https://mcp.axiom.co/token",
+          grant: "authorization_code",
+          clientId: "manual-client",
+          clientSecret: "",
+          resource: "https://mcp.axiom.co/mcp",
+        });
+
+        yield* executor.mcp.removeServer("axiom_mcp");
+
+        const clients = yield* executor.oauth.listClients();
+        expect(clients.map((client) => String(client.slug))).not.toContain("axiom-mcp");
+        expect(clients.map((client) => String(client.slug))).toContain("manual-app");
+      }),
+    ),
+  );
+
+  // Custom-method create (configureAuth) merge-appends onto the declared set —
+  // adding an API key to an OAuth server must NOT displace the OAuth method.
+  it.effect("configureAuth merge-appends a custom method without clobbering oauth", () =>
+    Effect.gen(function* () {
+      const executor = yield* createExecutor(makeTestConfig({ plugins: [mcpPlugin()] as const }));
+
+      yield* executor.mcp.addServer({
+        name: "OAuth MCP",
+        endpoint: "https://mcp.example.com/mcp",
+        slug: "oauth_mcp",
+        auth: { kind: "oauth2" },
+      });
+
+      const merged = yield* executor.mcp.configureAuth("oauth_mcp", {
+        authenticationTemplate: [
+          { type: "apiKey", headers: { "X-Api-Key": [{ type: "variable", name: "token" }] } },
+        ],
+      });
+
+      expect(merged.map((method) => method.kind)).toEqual(["oauth2", "apikey"]);
+      expect(merged[0]?.slug).toBe("oauth2");
+      expect(merged[1]?.slug).toMatch(/^custom_/);
+
+      // The catalog projects both methods.
+      const integration = yield* executor.integrations.get(IntegrationSlug.make("oauth_mcp"));
+      expect(integration?.authMethods.map((method) => method.kind)).toEqual(["oauth", "apikey"]);
+    }),
+  );
+
+  it.effect("configureAuth replace mode swaps the declared set with kind-based slugs", () =>
+    Effect.gen(function* () {
+      const executor = yield* createExecutor(makeTestConfig({ plugins: [mcpPlugin()] as const }));
+
+      yield* executor.mcp.addServer({
+        name: "Open MCP",
+        endpoint: "https://mcp.example.com/mcp",
+        slug: "open_mcp",
+      });
+
+      const merged = yield* executor.mcp.configureAuth("open_mcp", {
+        authenticationTemplate: [
+          { kind: "oauth2" },
+          {
+            type: "apiKey",
+            headers: { Authorization: ["Bearer ", { type: "variable", name: "token" }] },
+          },
+        ],
+        mode: "replace",
+      });
+
+      expect(merged.map((method) => method.slug)).toEqual(["oauth2", "header"]);
+    }),
+  );
+
+  it.effect("oauth.start discovers scopes for an MCP oauth method", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const server = yield* serveOAuthTestServer({
+          scopes: ["channels:history", "users:read"],
+        });
+        const executor = yield* createExecutor(
+          makeTestConfig({ plugins: [memoryCredentialsPlugin(), mcpPlugin()] as const }),
+        );
+
+        yield* executor.mcp.addServer({
+          name: "Slack MCP",
+          endpoint: server.mcpResourceUrl,
+          slug: "slack_mcp",
+          authenticationTemplate: [{ kind: "oauth2" }],
+        });
+        yield* executor.oauth.createClient({
+          owner: "org",
+          slug: OAuthClientSlug.make("slack-app"),
+          authorizationUrl: server.authorizationEndpoint,
+          tokenUrl: server.tokenEndpoint,
+          grant: "authorization_code",
+          clientId: "test-client",
+          clientSecret: "test-secret",
+          resource: server.mcpResourceUrl,
+        });
+
+        const started = yield* executor.oauth.start({
+          owner: "org",
+          client: OAuthClientSlug.make("slack-app"),
+          clientOwner: "org",
+          name: ConnectionName.make("main"),
+          integration: IntegrationSlug.make("slack_mcp"),
+          template: AuthTemplateSlug.make("oauth2"),
+        });
+
+        expect(started.status).toBe("redirect");
+        if (started.status !== "redirect") return;
+        expect(scopesFromAuthorizeUrl(started.authorizationUrl)).toEqual([
+          "channels:history",
+          "users:read",
+        ]);
+      }),
+    ),
+  );
+
+  it.effect("oauth.start uses declared MCP scopes when the client has no resource", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const server = yield* serveOAuthTestServer({ scopes: ["mcp"] });
+        const executor = yield* createExecutor(
+          makeTestConfig({ plugins: [memoryCredentialsPlugin(), mcpPlugin()] as const }),
+        );
+
+        yield* executor.mcp.addServer({
+          name: "GitLab MCP",
+          endpoint: server.mcpResourceUrl,
+          slug: "gitlab_mcp",
+          authenticationTemplate: [{ kind: "oauth2", scopes: ["mcp"] }],
+        });
+        yield* executor.oauth.createClient({
+          owner: "org",
+          slug: OAuthClientSlug.make("gitlab-app"),
+          authorizationUrl: server.authorizationEndpoint,
+          tokenUrl: server.tokenEndpoint,
+          grant: "authorization_code",
+          clientId: "test-client",
+          clientSecret: "test-secret",
+        });
+
+        const started = yield* executor.oauth.start({
+          owner: "org",
+          client: OAuthClientSlug.make("gitlab-app"),
+          clientOwner: "org",
+          name: ConnectionName.make("main"),
+          integration: IntegrationSlug.make("gitlab_mcp"),
+          template: AuthTemplateSlug.make("oauth2"),
+        });
+
+        expect(started.status).toBe("redirect");
+        if (started.status !== "redirect") return;
+        expect(scopesFromAuthorizeUrl(started.authorizationUrl)).toEqual(["mcp"]);
+      }),
+    ),
+  );
+
+  // When discovery fails (auth, network, etc.) the connection still lands with
+  // an empty tool set so the user can retry via `connections.refresh` once they
+  // fix the underlying problem.
+  it.effect("registers integration + connection with 0 tools when discovery fails", () =>
+    Effect.gen(function* () {
+      const executor = yield* createExecutor(
+        makeTestConfig({ plugins: [memoryCredentialsPlugin(), mcpPlugin()] as const }),
+      );
+
+      const slugStr = "broken_source";
+      yield* executor.mcp.addServer({
+        name: "broken",
+        // Port 1 is reserved — connection-refused immediately, giving a
+        // deterministic discovery failure without any server mocks.
+        endpoint: "http://127.0.0.1:1/mcp",
+        slug: slugStr,
+      });
+      const connection = yield* executor.connections.create({
+        owner: "org",
+        name: ConnectionName.make("main"),
+        integration: IntegrationSlug.make(slugStr),
+        template: TEMPLATE,
+        value: "",
+      });
+      expect(String(connection.address)).toBe("tools.broken_source.org.main");
+
+      const integration = yield* executor.integrations.get(IntegrationSlug.make(slugStr));
+      expect(integration?.kind).toBe("mcp");
+
+      const tools = yield* executor.tools.list();
+      expect(tools.filter((t) => String(t.integration) === slugStr)).toHaveLength(0);
+    }),
+  );
+
+  it.effect("static probeEndpoint returns actionable tool failures", () =>
+    Effect.gen(function* () {
+      const config = makeTestConfig({ plugins: [mcpPlugin()] as const });
+      const executor = yield* createExecutor(config);
+
+      const result = yield* executor.execute(ToolAddress.make("executor.mcp.probeEndpoint"), {
+        endpoint: "http://127.0.0.1:1/mcp",
+      });
+
+      expect(result).toMatchObject({
+        ok: false,
+        error: {
+          code: "mcp_connection_failed",
+        },
+      });
+
+      yield* executor.close();
+      yield* Effect.promise(() => config.testDb.close());
+    }),
+  );
+
+  for (const status of [401, 403] as const) {
+    it.effect(`returns an auth tool failure when tools/call responds HTTP ${status}`, () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const slug = `call_status_${status}`;
+          const { executor, toolAddress } = yield* seedCallToolExecutor({
+            slug,
+            callTool: httpStatusCallTool(status),
+          });
+
+          const result = yield* executor.execute(toolAddress, {}, { onElicitation: "accept-all" });
+
+          expect(result).toMatchObject({
+            ok: false,
+            error: {
+              code: "connection_rejected",
+              status,
+              retryable: false,
+              details: {
+                category: "authentication",
+                integration: { id: slug },
+                credential: { kind: "upstream", label: "main" },
+                upstream: { status },
+              },
+            },
+          });
+
+          const failure = result as {
+            readonly ok: false;
+            readonly error: { readonly message: string };
+          };
+          expect(failure.error).toMatchObject({
+            message: expect.not.stringContaining("do-not-leak"),
+          });
+        }),
+      ),
+    );
+  }
+
+  // The lone-401 replay above is restricted to read-only methods. A
+  // `tools/call` may have executed its side effect before the server answered
+  // 401 (HTTP gives no such guarantee), so the adapter must never re-send it
+  // — the single 401 classifies reauthorization directly instead.
+  it.effect("never replays a tools/call 401: the action must not run twice", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        let callToolRequests = 0;
+        const { executor, toolAddress } = yield* seedCallToolExecutor({
+          slug: "call_replay_401",
+          // oauth: the transport gets an authProvider, which is the
+          // staticOAuthBearer path where the adapter's 401 replay lives.
+          oauth: true,
+          callTool: () => {
+            callToolRequests += 1;
+            return HttpServerResponse.text("do-not-leak: revoked mid-session", { status: 401 });
+          },
+        });
+
+        const result = yield* executor.execute(toolAddress, {}, { onElicitation: "accept-all" });
+
+        expect(result).toMatchObject({
+          ok: false,
+          error: {
+            code: "oauth_reauth_required",
+            details: { category: "authentication" },
+          },
+        });
+        expect(callToolRequests, "a 401 tools/call must reach the server exactly once").toBe(1);
+      }),
+    ),
+  );
+
+  it.effect(
+    "classifies a scope-insufficient 403 as oauth_scope_insufficient, not connection_rejected",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const slug = "call_status_scope";
+          const { executor, toolAddress } = yield* seedCallToolExecutor({
+            slug,
+            // RFC 6750 insufficient_scope in the response body: re-running the
+            // same grant cannot fix this, so the failure must not carry the
+            // re-authenticate recovery (whose oauth.start hint would loop).
+            callTool: () =>
+              HttpServerResponse.text(
+                '{"error":"insufficient_scope","error_description":"do-not-leak: needs files.read"}',
+                { status: 403 },
+              ),
+          });
+
+          const result = yield* executor.execute(toolAddress, {}, { onElicitation: "accept-all" });
+
+          expect(result).toMatchObject({
+            ok: false,
+            error: {
+              code: "oauth_scope_insufficient",
+              status: 403,
+              retryable: false,
+              details: {
+                category: "authentication",
+                integration: { id: slug },
+                credential: { kind: "oauth", label: "main" },
+                upstream: { status: 403 },
+              },
+            },
+          });
+
+          const failure = result as {
+            readonly ok: false;
+            readonly error: {
+              readonly message: string;
+              readonly details: { readonly recovery: Record<string, string> };
+            };
+          };
+          expect(failure.error.message).not.toContain("do-not-leak");
+          expect(
+            failure.error.details.recovery.startOAuthTool,
+            "no oauth.start hint: re-running the identical grant cannot satisfy the scope",
+          ).toBeUndefined();
+          expect(failure.error.details.recovery.scopeInstructions).toBeDefined();
+        }),
+      ),
+  );
+
+  it.effect(
+    "classifies a challenge-header scope 403 on an OAuth connection as oauth_scope_insufficient",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          // The production path: an oauth2-templated connection gives the
+          // transport an authProvider, and the MCP SDK reacts to an RFC 6750
+          // insufficient_scope challenge by re-running auth itself
+          // ("upscoping") — which our static-token provider can only answer by
+          // demanding reauthorization. The fetch adapter intercepts the
+          // challenge below the SDK, so the failure classifies as the scope
+          // shortfall it is instead of oauth_reauth_required.
+          const slug = "call_status_oauth_scope";
+          const { executor, toolAddress } = yield* seedCallToolExecutor({
+            slug,
+            oauth: true,
+            callTool: () =>
+              HttpServerResponse.text("do-not-leak: forbidden", {
+                status: 403,
+                headers: {
+                  "www-authenticate":
+                    'Bearer realm="mcp", error="insufficient_scope", scope="files.read"',
+                },
+              }),
+          });
+
+          const result = yield* executor.execute(toolAddress, {}, { onElicitation: "accept-all" });
+
+          expect(result).toMatchObject({
+            ok: false,
+            error: {
+              code: "oauth_scope_insufficient",
+              status: 403,
+              details: { category: "authentication" },
+            },
+          });
+          const failure = result as { readonly error: { readonly message: string } };
+          expect(failure.error.message).not.toContain("do-not-leak");
+        }),
+      ),
+  );
+
+  it.effect("does not classify non-auth tools/call HTTP failures as auth failures", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { executor, toolAddress } = yield* seedCallToolExecutor({
+          slug: "call_status_500",
+          callTool: httpStatusCallTool(500),
+        });
+
+        const failure = yield* executor
+          .execute(toolAddress, {}, { onElicitation: "accept-all" })
+          .pipe(Effect.flip);
+        expect(Predicate.isTagged(failure, "ToolInvocationError")).toBe(true);
+
+        const error = failure as { readonly message: string; readonly cause?: unknown };
+        expect(error).toMatchObject({ message: "MCP tool call failed for explode" });
+        expect(error).toMatchObject({ message: expect.not.stringContaining("do-not-leak") });
+        expect(Predicate.isTagged(error.cause, "McpInvocationError")).toBe(true);
+        const cause = error.cause as McpInvocationError;
+        expect(cause.status).toBe(500);
+        expect(cause).toMatchObject({ message: expect.not.stringContaining("do-not-leak") });
+        expect("cause" in cause).toBe(false);
+      }),
+    ),
+  );
+
+  it.effect("does not classify JSON-RPC error codes as auth failures", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { executor, toolAddress } = yield* seedCallToolExecutor({
+          slug: "call_jsonrpc_401",
+          callTool: jsonRpcErrorCallTool(401),
+        });
+
+        const failure = yield* executor
+          .execute(toolAddress, {}, { onElicitation: "accept-all" })
+          .pipe(Effect.flip);
+        expect(Predicate.isTagged(failure, "ToolInvocationError")).toBe(true);
+
+        const error = failure as { readonly message: string; readonly cause?: unknown };
+        expect(error).toMatchObject({ message: "MCP tool call failed for explode" });
+        expect(error).toMatchObject({ message: expect.not.stringContaining("do-not-leak") });
+        expect(Predicate.isTagged(error.cause, "McpInvocationError")).toBe(true);
+        const cause = error.cause as McpInvocationError;
+        expect(cause.status).toBeUndefined();
+      }),
+    ),
+  );
+
+  it.effect("probeEndpoint returns manual auth when MCP requires auth without OAuth metadata", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const server = yield* serveTestHttpApp((request) =>
+          Effect.succeed(
+            (request.url ?? "").includes("/.well-known/")
+              ? HttpServerResponse.text("missing", { status: 404 })
+              : HttpServerResponse.jsonUnsafe(
+                  {
+                    jsonrpc: "2.0",
+                    id: null,
+                    error: { code: -32000, message: "Unauthorized: Valid API key required." },
+                  },
+                  { status: 401, headers: { "www-authenticate": "Bearer" } },
+                ),
+          ),
+        );
+        const config = makeTestConfig({ plugins: [mcpPlugin()] as const });
+        const executor = yield* createExecutor(config);
+
+        const result = yield* executor.mcp.probeEndpoint(server.url("/mcp"));
+
+        expect(result).toMatchObject({
+          connected: false,
+          requiresAuthentication: true,
+          requiresOAuth: false,
+          supportsDynamicRegistration: false,
+          toolCount: null,
+        });
+
+        yield* executor.close();
+        yield* Effect.promise(() => config.testDb.close());
+      }),
+    ),
+  );
+
+  it.effect(
+    "probeEndpoint treats a non-spec-compliant 401 as requires-auth instead of dead-ending",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          // Auth-gated shape: a 401 with no Bearer WWW-Authenticate, no
+          // RFC 9728 protected-resource metadata, and a non-JSON-RPC body.
+          // probeMcpEndpointShape classifies this `not-mcp`/auth-required, but
+          // the user should still get the auth editor (not a dead-end error)
+          // so they can declare a method and connect an account afterward.
+          const server = yield* serveTestHttpApp((request) =>
+            Effect.succeed(
+              (request.url ?? "").includes("/.well-known/")
+                ? HttpServerResponse.text("missing", { status: 404 })
+                : HttpServerResponse.jsonUnsafe({ message: "Unauthorized" }, { status: 401 }),
+            ),
+          );
+          const config = makeTestConfig({ plugins: [mcpPlugin()] as const });
+          const executor = yield* createExecutor(config);
+
+          const result = yield* executor.mcp.probeEndpoint(server.url("/mcp"));
+
+          expect(result).toMatchObject({
+            connected: false,
+            requiresAuthentication: true,
+            requiresOAuth: false,
+            toolCount: null,
+          });
+
+          yield* executor.close();
+          yield* Effect.promise(() => config.testDb.close());
+        }),
+      ),
+  );
+
+  it.effect("probeEndpoint keeps auth-gated non-MCP OAuth services on manual auth", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const server = yield* serveTestHttpApp((request) =>
+          Effect.sync(() => {
+            const origin = `http://${request.headers.host ?? "127.0.0.1"}`;
+            const requestUrl = new URL(request.url, origin);
+
+            if (
+              requestUrl.pathname === "/.well-known/oauth-authorization-server" ||
+              requestUrl.pathname === "/.well-known/openid-configuration"
+            ) {
+              return HttpServerResponse.jsonUnsafe({
+                issuer: origin,
+                authorization_endpoint: `${origin}/authorize`,
+                token_endpoint: `${origin}/token`,
+                response_types_supported: ["code"],
+                grant_types_supported: ["authorization_code"],
+              });
+            }
+
+            return HttpServerResponse.jsonUnsafe({ message: "Unauthorized" }, { status: 401 });
+          }),
+        );
+        const config = makeTestConfig({ plugins: [mcpPlugin()] as const });
+        const executor = yield* createExecutor(config);
+
+        const result = yield* executor.mcp.probeEndpoint(server.url("/mcp"));
+
+        expect(result).toMatchObject({
+          connected: false,
+          requiresAuthentication: true,
+          requiresOAuth: false,
+          supportsDynamicRegistration: false,
+          toolCount: null,
+        });
+
+        yield* executor.close();
+        yield* Effect.promise(() => config.testDb.close());
+      }),
+    ),
+  );
+});
+
+// ---------------------------------------------------------------------------
+// destructiveHint → requiresApproval (end-to-end with a real local server)
+// ---------------------------------------------------------------------------
+
+const serveAnnotationsTestServer = serveMcpServer(makeAnnotationsMcpServer);
+
+const seedAnnotationsExecutor = (serverUrl: string) =>
+  createExecutor(
+    makeTestConfig({ plugins: [memoryCredentialsPlugin(), mcpPlugin()] as const }),
+  ).pipe(
+    Effect.tap((executor) =>
+      Effect.gen(function* () {
+        yield* executor.mcp.addServer({
+          name: "annotations-test",
+          endpoint: serverUrl,
+          slug: "annotations_test",
+        });
+        yield* executor.connections.create({
+          owner: "org",
+          name: ConnectionName.make("main"),
+          integration: IntegrationSlug.make("annotations_test"),
+          template: TEMPLATE,
+          value: "",
+        });
+      }),
+    ),
+  );
+
+describe("MCP destructiveHint → requiresApproval", () => {
+  it.effect("destructiveHint becomes requiresApproval, others stay false", () =>
+    Effect.gen(function* () {
+      const server = yield* serveAnnotationsTestServer;
+      const executor = yield* seedAnnotationsExecutor(server.url);
+
+      const tools = yield* executor.tools.list();
+
+      const deleteTool = tools.find((t) => String(t.name) === "delete");
+      expect(deleteTool?.annotations?.requiresApproval).toBe(true);
+
+      const listTool = tools.find((t) => String(t.name) === "list");
+      expect(listTool?.annotations?.requiresApproval).toBeFalsy();
+
+      const pingTool = tools.find((t) => String(t.name) === "ping");
+      expect(pingTool?.annotations?.requiresApproval).toBeFalsy();
+    }),
+  );
+
+  it.effect("uses annotations.title as approvalDescription when present", () =>
+    Effect.gen(function* () {
+      const server = yield* serveAnnotationsTestServer;
+      const executor = yield* seedAnnotationsExecutor(server.url);
+
+      const tools = yield* executor.tools.list();
+      const deleteTitled = tools.find((t) => String(t.name) === "delete_titled");
+      expect(deleteTitled?.annotations?.requiresApproval).toBe(true);
+      expect(deleteTitled?.annotations?.approvalDescription).toBe("Delete dataset");
+    }),
+  );
+
+  // Executor's `Tool` has no `_meta` field, so the reserved MCP map rides in
+  // the `mcp` stamp the plugin persists into the tool row's annotations. A host
+  // embedding the plugin reads it back from there.
+  it.effect("persists the tool's reserved `_meta` into the catalog stamp", () =>
+    Effect.gen(function* () {
+      const server = yield* serveAnnotationsTestServer;
+      const executor = yield* seedAnnotationsExecutor(server.url);
+
+      const tools = yield* executor.tools.list();
+
+      const stamped = tools.find((t) => String(t.name) === "meta_stamped");
+      expect(stamped?.annotations).toMatchObject({
+        mcp: {
+          toolName: "meta_stamped",
+          _meta: { serverName: "time", shortDescription: "Current time", defer_loading: false },
+        },
+      });
+
+      const ping = tools.find((t) => String(t.name) === "ping");
+      expect(
+        (ping?.annotations as { readonly mcp?: { readonly _meta?: unknown } })?.mcp?._meta,
+      ).toBeUndefined();
+    }),
+  );
+});
+
+describe("userFacingProbeMessage", () => {
+  it("turns wrong-shape into a 'not an MCP server' message", () => {
+    const message = userFacingProbeMessage({
+      kind: "not-mcp",
+      category: "wrong-shape",
+      reason: "2xx POST body is not a JSON-RPC envelope",
+    });
+    expect(message).toMatch(/doesn't appear to host an MCP server/i);
+  });
+
+  it("turns unreachable into a connectivity message", () => {
+    const message = userFacingProbeMessage({
+      kind: "unreachable",
+      reason: "ECONNREFUSED",
+    });
+    expect(message).toMatch(/couldn't reach/i);
+  });
+
+  it("never surfaces the raw probe reason verbatim", () => {
+    const reason = "2xx POST body is not a JSON-RPC envelope";
+    const message = userFacingProbeMessage({ kind: "not-mcp", category: "wrong-shape", reason });
+    expect(message).not.toContain(reason);
+  });
+});
+
+describe("mcpPlugin detect URL-token fallback", () => {
+  // Port 1 connection-refuses immediately, so wire-shape detection returns
+  // `unreachable` and the URL-token fallback is the only thing that can produce
+  // a candidate.
+  it.effect("returns low-confidence candidate when path has /mcp segment", () =>
+    Effect.gen(function* () {
+      const executor = yield* createExecutor(makeTestConfig({ plugins: [mcpPlugin()] as const }));
+      const results = yield* executor.integrations.detect("http://127.0.0.1:1/api/mcp");
+      const mcp = results.find((r) => r.kind === "mcp");
+      expect(mcp).toBeDefined();
+      expect(mcp?.confidence).toBe("low");
+    }),
+  );
+
+  it.effect("matches mcp on hostname label", () =>
+    Effect.gen(function* () {
+      const executor = yield* createExecutor(makeTestConfig({ plugins: [mcpPlugin()] as const }));
+      const results = yield* executor.integrations.detect("http://mcp.127.0.0.1.nip.io:1/");
+      const mcp = results.find((r) => r.kind === "mcp");
+      expect(mcp?.confidence).toBe("low");
+    }),
+  );
+
+  it.effect("does not match mcp as a substring", () =>
+    Effect.gen(function* () {
+      const executor = yield* createExecutor(makeTestConfig({ plugins: [mcpPlugin()] as const }));
+      // `/mcpstore` contains `mcp` but it is not a separator-bounded run, so
+      // the URL-token fallback must not fire.
+      const results = yield* executor.integrations.detect("http://127.0.0.1:1/mcpstore");
+      expect(results.find((r) => r.kind === "mcp")).toBeUndefined();
+    }),
+  );
+
+  it.effect("returns null when no token match and no wire-shape match", () =>
+    Effect.gen(function* () {
+      const executor = yield* createExecutor(makeTestConfig({ plugins: [mcpPlugin()] as const }));
+      const results = yield* executor.integrations.detect("http://127.0.0.1:1/api/v1");
+      expect(results.find((r) => r.kind === "mcp")).toBeUndefined();
+    }),
+  );
+});
+
+describe("mcpPlugin endpoint telemetry", () => {
+  // A credential in the endpoint's query string is a first-class supported
+  // input shape here (the shipped preset list carries one, and the add-flow
+  // passes the raw paste through), so the endpoint must be sanitized before it
+  // is stamped onto a span. Synthetic placeholders only.
+  const QUERY_TOKEN = "synthetic-endpoint-token";
+  const USERINFO_PASSWORD = "synthetic-endpoint-password";
+
+  /** Records every span the program opens, so the stamped attributes can be
+   *  read back. Port 1 connection-refuses immediately, so detection resolves
+   *  without any network dependency. */
+  const recordingTracer = (spans: Array<Tracer.NativeSpan>) =>
+    Tracer.make({
+      span: (options) => {
+        const span = new Tracer.NativeSpan(options);
+        spans.push(span);
+        return span;
+      },
+      context: (primitive, fiber) => primitive["~effect/Effect/evaluate"](fiber),
+    });
+
+  /** Serializes spans the way the OTel export bridge would see them —
+   *  attributes, events, and, for a failed span, the error channel
+   *  (`@effect/opentelemetry` stamps each pretty error's message/stack as an
+   *  exception EVENT and `errors[0].message` as `status.message`). A
+   *  credential hiding in any of those channels fails the assertion, not just
+   *  one hiding in an attribute. */
+  const serializeExportChannels = (spans: ReadonlyArray<Tracer.NativeSpan>): string =>
+    JSON.stringify(
+      spans.map((span) => ({
+        attributes: Object.fromEntries(span.attributes.entries()),
+        events: span.events.map(([name, , attributes]) => ({ name, attributes })),
+        errors:
+          Predicate.isTagged(span.status, "Ended") && Exit.isFailure(span.status.exit)
+            ? Cause.prettyErrors(span.status.exit.cause).map((prettyError) => ({
+                name: prettyError.name,
+                message: prettyError.message,
+                stack: prettyError.stack ?? "",
+              }))
+            : [],
+      })),
+    );
+
+  it.effect("stamps a sanitized endpoint on the detect span", () =>
+    Effect.gen(function* () {
+      const spans: Array<Tracer.NativeSpan> = [];
+      const executor = yield* createExecutor(makeTestConfig({ plugins: [mcpPlugin()] as const }));
+
+      yield* executor.integrations
+        .detect(`http://svc-user:${USERINFO_PASSWORD}@127.0.0.1:1/api/mcp?token=${QUERY_TOKEN}`)
+        .pipe(Effect.provideService(Tracer.Tracer, recordingTracer(spans)));
+
+      const detect = spans.find((span) => span.name === "mcp.plugin.detect");
+      expect(detect).toBeDefined();
+      expect(detect?.attributes.get("mcp.endpoint")).toBe("http://127.0.0.1:1/api/mcp");
+      // The non-sensitive companions keep the trace debuggable.
+      expect(detect?.attributes.get("mcp.endpoint.origin")).toBe("http://127.0.0.1:1");
+      expect(detect?.attributes.get("mcp.endpoint.has_query")).toBe(true);
+      expect(detect?.attributes.get("mcp.endpoint.has_userinfo")).toBe(true);
+
+      // Scoped to the plugin's own spans. Effect's HttpClient separately
+      // stamps `url.full`/`url.query` on its outgoing client spans
+      // (`effect/unstable/http/HttpClient.ts:685,690`); those are scrubbed
+      // downstream by the cloud export pipeline's `UrlRedactingSpanProcessor`,
+      // which is not installed at this level.
+      const serialized = serializeExportChannels(
+        spans.filter((span) => span.name.startsWith("mcp.plugin.")),
+      );
+      expect(serialized).not.toContain(QUERY_TOKEN);
+      expect(serialized).not.toContain(USERINFO_PASSWORD);
+    }),
+  );
+
+  it.effect("stamps a sanitized endpoint on the probe_endpoint span", () =>
+    Effect.gen(function* () {
+      const spans: Array<Tracer.NativeSpan> = [];
+      const executor = yield* createExecutor(makeTestConfig({ plugins: [mcpPlugin()] as const }));
+
+      yield* executor.mcp
+        .probeEndpoint(`http://127.0.0.1:1/mcp?token=${QUERY_TOKEN}`)
+        .pipe(Effect.exit, Effect.provideService(Tracer.Tracer, recordingTracer(spans)));
+
+      const probe = spans.find((span) => span.name === "mcp.plugin.probe_endpoint");
+      expect(probe).toBeDefined();
+      expect(probe?.attributes.get("mcp.endpoint")).toBe("http://127.0.0.1:1/mcp");
+      expect(probe?.attributes.get("mcp.endpoint.has_query")).toBe(true);
+
+      // Scoped to the plugin's own spans. Effect's HttpClient separately
+      // stamps `url.full`/`url.query` on its outgoing client spans
+      // (`effect/unstable/http/HttpClient.ts:685,690`); those are scrubbed
+      // downstream by the cloud export pipeline's `UrlRedactingSpanProcessor`,
+      // which is not installed at this level.
+      const serialized = serializeExportChannels(
+        spans.filter((span) => span.name.startsWith("mcp.plugin.")),
+      );
+      expect(serialized).not.toContain(QUERY_TOKEN);
+    }),
+  );
+});
+
+describe("stdio static env", () => {
+  it.effect("uses stored credentials instead of legacy inline stdio env at runtime", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const config = makeTestConfig({
+          plugins: [
+            memoryCredentialsPlugin(),
+            mcpPlugin({ dangerouslyAllowStdioMCP: true }),
+          ] as const,
+        });
+        const executor = yield* Effect.acquireRelease(createExecutor(config), (executor) =>
+          executor
+            .close()
+            .pipe(Effect.orDie, Effect.ensuring(Effect.promise(() => config.testDb.close()))),
+        );
+        const integration = IntegrationSlug.make("legacy-stdio-with-auth");
+
+        yield* executor.mcp.addServer({
+          name: "Legacy stdio with auth",
+          endpoint: "http://127.0.0.1:1/mcp",
+          slug: String(integration),
+        });
+        yield* executor.mcp.configureServer(String(integration), {
+          transport: "stdio",
+          command: "bun",
+          args: ["run", stdioNegotiationFixture],
+          env: { API_KEY: "legacy-secret" },
+        });
+
+        const projected = yield* executor.integrations.get(integration);
+        expect(projected?.authMethods).toEqual([
+          {
+            id: "env",
+            label: "Environment variables",
+            kind: "apikey",
+            template: "env",
+            placements: [{ carrier: "env", name: "API_KEY", prefix: "", variable: "API_KEY" }],
+          },
+        ]);
+
+        const error = yield* executor.connections
+          .create({
+            owner: "org",
+            name: ConnectionName.make("empty"),
+            integration,
+            template: AuthTemplateSlug.make("env"),
+            values: {},
+          })
+          .pipe(Effect.flip);
+        expect(error).toMatchObject({
+          _tag: "InvalidConnectionInputError",
+          message: "A connection must supply at least one credential input.",
+        });
+        expect(yield* executor.connections.list({ integration })).toEqual([]);
+
+        yield* executor.connections.create({
+          owner: "org",
+          name: ConnectionName.make("fresh"),
+          integration,
+          template: AuthTemplateSlug.make("env"),
+          values: { API_KEY: "fresh-secret" },
+        });
+
+        const result = yield* executor.execute(
+          ToolAddress.make("tools.legacy-stdio-with-auth.org.fresh.read_env"),
+          { name: "API_KEY" },
+        );
+        expect(result).toMatchObject({
+          ok: true,
+          data: {
+            content: [{ type: "text", text: "fresh-secret" }],
+          },
+        });
+      }),
+    ),
+  );
+
+  it.effect("projects legacy stdio without inline env as no-auth and accepts empty values", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const config = makeTestConfig({
+          plugins: [
+            memoryCredentialsPlugin(),
+            mcpPlugin({ dangerouslyAllowStdioMCP: true }),
+          ] as const,
+        });
+        const executor = yield* Effect.acquireRelease(createExecutor(config), (executor) =>
+          executor
+            .close()
+            .pipe(Effect.orDie, Effect.ensuring(Effect.promise(() => config.testDb.close()))),
+        );
+        const integration = IntegrationSlug.make("legacy-stdio-without-auth");
+
+        yield* executor.mcp.addServer({
+          name: "Legacy stdio without auth",
+          endpoint: "http://127.0.0.1:1/mcp",
+          slug: String(integration),
+        });
+        yield* executor.mcp.configureServer(String(integration), {
+          transport: "stdio",
+          command: "bun",
+          args: ["run", stdioNegotiationFixture],
+        });
+
+        const projected = yield* executor.integrations.get(integration);
+        expect(projected?.authMethods).toEqual([
+          {
+            id: "none",
+            label: "No authentication",
+            kind: "none",
+            template: "none",
+          },
+        ]);
+
+        const connection = yield* executor.connections.create({
+          owner: "org",
+          name: ConnectionName.make("public"),
+          integration,
+          template: AuthTemplateSlug.make("none"),
+          values: {},
+        });
+        expect(String(connection.address)).toBe("tools.legacy-stdio-without-auth.org.public");
+        expect(yield* executor.connections.list({ integration })).toHaveLength(1);
+      }),
+    ),
+  );
+
+  it.effect(
+    "rejects credential input for legacy no-auth stdio and accepts an empty input map",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const config = makeTestConfig({
+            plugins: [
+              memoryCredentialsPlugin(),
+              mcpPlugin({ dangerouslyAllowStdioMCP: true }),
+            ] as const,
+          });
+          const executor = yield* Effect.acquireRelease(createExecutor(config), (executor) =>
+            executor
+              .close()
+              .pipe(Effect.orDie, Effect.ensuring(Effect.promise(() => config.testDb.close()))),
+          );
+          const integration = IntegrationSlug.make("legacy-stdio-no-auth-create");
+
+          yield* executor.mcp.addServer({
+            name: "Legacy stdio no-auth create",
+            endpoint: "http://127.0.0.1:1/mcp",
+            slug: String(integration),
+          });
+          yield* executor.mcp.configureServer(String(integration), {
+            transport: "stdio",
+            command: "bun",
+            args: ["run", stdioNegotiationFixture],
+          });
+
+          const error = yield* executor.connections
+            .create({
+              owner: "org",
+              name: ConnectionName.make("with-secret"),
+              integration,
+              template: AuthTemplateSlug.make("none"),
+              value: "must-not-be-stored",
+            })
+            .pipe(Effect.flip);
+          expect(error).toMatchObject({
+            _tag: "InvalidConnectionInputError",
+            message: "A no-auth connection cannot accept credential inputs.",
+          });
+          expect(yield* executor.connections.list({ integration })).toEqual([]);
+
+          const connection = yield* executor.connections.create({
+            owner: "org",
+            name: ConnectionName.make("public"),
+            integration,
+            template: AuthTemplateSlug.make("none"),
+            values: {},
+          });
+          expect(String(connection.address)).toBe("tools.legacy-stdio-no-auth-create.org.public");
+          expect(yield* executor.connections.list({ integration })).toHaveLength(1);
+        }),
+      ),
+  );
+
+  it.effect("reconciles a legacy no-secret stdio integration with its default connection", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const config = makeTestConfig({
+          plugins: [
+            memoryCredentialsPlugin(),
+            mcpPlugin({ dangerouslyAllowStdioMCP: true }),
+          ] as const,
+        });
+        const executor = yield* Effect.acquireRelease(createExecutor(config), (executor) =>
+          executor
+            .close()
+            .pipe(Effect.orDie, Effect.ensuring(Effect.promise(() => config.testDb.close()))),
+        );
+        const slug = "legacy-stdio-no-auth";
+
+        yield* executor.mcp.addServer({
+          name: "Legacy stdio no auth",
+          endpoint: "http://127.0.0.1:1/mcp",
+          slug,
+        });
+        yield* executor.mcp.configureServer(slug, {
+          transport: "stdio",
+          command: "bun",
+          args: ["run", stdioNegotiationFixture],
+        });
+
+        const projected = yield* executor.integrations.get(IntegrationSlug.make(slug));
+        expect(projected?.authMethods).toEqual([
+          {
+            id: "none",
+            label: "No authentication",
+            kind: "none",
+            template: "none",
+          },
+        ]);
+
+        yield* executor.mcp.reconcileStdioConnections();
+
+        const connections = yield* executor.connections.list({
+          integration: IntegrationSlug.make(slug),
+        });
+        expect(connections).toHaveLength(1);
+        expect(String(connections[0]?.name)).toBe("default");
+
+        const tools = yield* executor.tools.list({ integration: IntegrationSlug.make(slug) });
+        expect(tools.map((tool) => String(tool.name))).toContain("add");
+      }),
+    ),
+  );
+
+  it("keeps non-secret env off the credential surface", () => {
+    // `env` declares a credential the user must type; `staticEnv` is machine
+    // knowledge stored on the integration. A path the scanner already resolved
+    // belongs in the second, or adding the integration asks for it.
+    const config = toIntegrationConfig({
+      transport: "stdio",
+      name: "Computer Use",
+      command: "/usr/local/bin/codex",
+      args: ["app-server"],
+      staticEnv: { CODEX_HOME: "/home/a/.codex" },
+    });
+
+    expect(config).toMatchObject({
+      env: { CODEX_HOME: "/home/a/.codex" },
+      authenticationTemplate: [{ slug: "none", kind: "none" }],
+    });
+  });
+
+  it("still treats declared env values as credentials", () => {
+    const config = toIntegrationConfig({
+      transport: "stdio",
+      name: "Secret server",
+      command: "run",
+      env: { API_KEY: "sk-live" },
+    });
+
+    expect(config).toMatchObject({
+      authenticationTemplate: [{ slug: "env", kind: "stdio_env", vars: ["API_KEY"] }],
+    });
+    expect(
+      (config as { env?: unknown }).env,
+      "the secret never lands in the config",
+    ).toBeUndefined();
+  });
+});

@@ -1,0 +1,549 @@
+import { describe, expect, it } from "@effect/vitest";
+import { Effect, Layer, Ref } from "effect";
+import {
+  HttpClient,
+  HttpClientError,
+  HttpClientRequest,
+  HttpClientResponse,
+  HttpServerResponse,
+} from "effect/unstable/http";
+import { serveTestHttpApp } from "@operon/gateway/sdk/testing";
+
+import { probeMcpEndpointShape } from "./probe-shape";
+
+interface CapturedProbeRequest {
+  readonly method: string;
+  readonly url: string;
+  readonly headers: Readonly<Record<string, string>>;
+  readonly body: string;
+}
+
+type ProbeHandler = (request: CapturedProbeRequest) => HttpServerResponse.HttpServerResponse;
+
+const serveProbeEndpoint = (handler: ProbeHandler) =>
+  Effect.gen(function* () {
+    const requests = yield* Ref.make<readonly CapturedProbeRequest[]>([]);
+    const server = yield* serveTestHttpApp((request) =>
+      Effect.gen(function* () {
+        const body = yield* request.text;
+        const captured = {
+          method: request.method,
+          url: request.url ?? "/",
+          headers: request.headers,
+          body,
+        };
+        yield* Ref.update(requests, (all) => [...all, captured]);
+        return handler(captured);
+      }).pipe(
+        Effect.catch(() =>
+          Effect.succeed(HttpServerResponse.text("probe fixture request failed", { status: 500 })),
+        ),
+      ),
+    );
+
+    return {
+      endpoint: server.url("/probe"),
+      requests: Ref.get(requests),
+    } as const;
+  });
+
+const withServer = <A, E>(handler: ProbeHandler, use: (endpoint: string) => Effect.Effect<A, E>) =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const server = yield* serveProbeEndpoint(handler);
+      return yield* use(server.endpoint);
+    }),
+  );
+
+describe("probeMcpEndpointShape", () => {
+  it.effect("classifies 2xx as unauth-OK MCP", () =>
+    withServer(
+      () =>
+        HttpServerResponse.jsonUnsafe({
+          jsonrpc: "2.0",
+          id: 1,
+          result: {
+            protocolVersion: "2025-06-18",
+            capabilities: {},
+            serverInfo: { name: "t", version: "0" },
+          },
+        }),
+      (endpoint) =>
+        Effect.gen(function* () {
+          const result = yield* probeMcpEndpointShape(endpoint);
+          expect(result).toEqual({ kind: "mcp", requiresAuth: false });
+        }),
+    ),
+  );
+
+  it.effect("classifies 401 with Bearer + JSON-RPC error envelope as MCP+auth", () =>
+    withServer(
+      () =>
+        HttpServerResponse.jsonUnsafe(
+          {
+            jsonrpc: "2.0",
+            id: null,
+            error: { code: -32000, message: "Unauthorized" },
+          },
+          {
+            status: 401,
+            headers: {
+              "www-authenticate":
+                'Bearer resource_metadata="https://mcp.example/.well-known/oauth-protected-resource"',
+            },
+          },
+        ),
+      (endpoint) =>
+        Effect.gen(function* () {
+          const result = yield* probeMcpEndpointShape(endpoint);
+          expect(result).toEqual({ kind: "mcp", requiresAuth: true });
+        }),
+    ),
+  );
+
+  // mcp.sentry.dev/mcp/ shape: spec-compliant `resource_metadata=`
+  // attribute, body is RFC 6750 OAuth-shape (`{error: "invalid_token",
+  // ...}`), not JSON-RPC. The `resource_metadata=` attribute alone is
+  // enough to classify as MCP — the body-shape gate is for the bare-Bearer
+  // case where we have no other signal.
+  it.effect("classifies 401 with resource_metadata + OAuth error body as MCP+auth", () =>
+    withServer(
+      () =>
+        HttpServerResponse.jsonUnsafe(
+          {
+            error: "invalid_token",
+            error_description: "Missing or invalid access token",
+          },
+          {
+            status: 401,
+            headers: {
+              "www-authenticate":
+                'Bearer realm="OAuth", resource_metadata="https://mcp.example/.well-known/oauth-protected-resource/mcp/", error="invalid_token"',
+            },
+          },
+        ),
+      (endpoint) =>
+        Effect.gen(function* () {
+          const result = yield* probeMcpEndpointShape(endpoint);
+          expect(result).toEqual({ kind: "mcp", requiresAuth: true });
+        }),
+    ),
+  );
+
+  // Supabase shape: Bearer challenge has `error=`/`error_description=`
+  // auth-params (RFC 6750 §3.1) but no `resource_metadata=`, and body is
+  // a non-RFC-6750 `{"message":"Unauthorized"}` envelope. The `error=`
+  // attribute alone is the accept signal.
+  it.effect("classifies 401 with Bearer error= auth-param as MCP+auth", () =>
+    withServer(
+      () =>
+        HttpServerResponse.jsonUnsafe(
+          { message: "Unauthorized" },
+          {
+            status: 401,
+            headers: {
+              "www-authenticate":
+                'Bearer error="invalid_request", error_description="No authorization header found"',
+            },
+          },
+        ),
+      (endpoint) =>
+        Effect.gen(function* () {
+          const result = yield* probeMcpEndpointShape(endpoint);
+          expect(result).toEqual({ kind: "mcp", requiresAuth: true });
+        }),
+    ),
+  );
+
+  // cubic.dev/api/mcp shape: bare `Bearer` challenge, no resource_metadata.
+  // The JSON-RPC error body is what tells us this is MCP rather than some
+  // other OAuth/API-key protected service.
+  it.effect("classifies 401 with bare Bearer + JSON-RPC error as MCP+auth", () =>
+    withServer(
+      () =>
+        HttpServerResponse.jsonUnsafe(
+          {
+            jsonrpc: "2.0",
+            id: null,
+            error: { code: -32000, message: "Unauthorized: Valid API key required." },
+          },
+          { status: 401, headers: { "www-authenticate": "Bearer" } },
+        ),
+      (endpoint) =>
+        Effect.gen(function* () {
+          const result = yield* probeMcpEndpointShape(endpoint);
+          expect(result).toEqual({ kind: "mcp", requiresAuth: true });
+        }),
+    ),
+  );
+
+  it.effect("rejects 401 without WWW-Authenticate as auth-required", () =>
+    withServer(
+      () => HttpServerResponse.text("nope", { status: 401 }),
+      (endpoint) =>
+        Effect.gen(function* () {
+          const result = yield* probeMcpEndpointShape(endpoint);
+          expect(result).toMatchObject({ kind: "not-mcp", category: "auth-required" });
+        }),
+    ),
+  );
+
+  // Datadog shape: bare `401 {"errors":["Unauthorized"]}` with no
+  // WWW-Authenticate header at all, but the server still publishes
+  // RFC 9728 protected-resource metadata at the path-scoped well-known
+  // URL. The metadata probe is what lets us classify it as MCP+auth.
+  it.effect("classifies 401 w/o WWW-Authenticate but with RFC 9728 metadata as MCP+auth", () =>
+    withServer(
+      (request) => {
+        if (request.url.includes("/.well-known/oauth-protected-resource")) {
+          const host = request.headers.host ?? "127.0.0.1";
+          return HttpServerResponse.jsonUnsafe({
+            resource: `http://${host}/probe`,
+            authorization_servers: [`http://${host}`],
+          });
+        }
+        return HttpServerResponse.jsonUnsafe({ errors: ["Unauthorized"] }, { status: 401 });
+      },
+      (endpoint) =>
+        Effect.gen(function* () {
+          const result = yield* probeMcpEndpointShape(endpoint);
+          expect(result).toEqual({ kind: "mcp", requiresAuth: true });
+        }),
+    ),
+  );
+
+  // The metadata probe must not rescue a 401 when the published
+  // `resource` describes some unrelated resource on the same host.
+  it.effect("rejects 401 when RFC 9728 metadata resource doesn't match endpoint", () =>
+    withServer(
+      (request) => {
+        if (request.url.includes("/.well-known/oauth-protected-resource")) {
+          const host = request.headers.host ?? "127.0.0.1";
+          return HttpServerResponse.jsonUnsafe({
+            resource: `http://${host}/some-other-api`,
+            authorization_servers: [`http://${host}`],
+          });
+        }
+        return HttpServerResponse.jsonUnsafe({ errors: ["Unauthorized"] }, { status: 401 });
+      },
+      (endpoint) =>
+        Effect.gen(function* () {
+          const result = yield* probeMcpEndpointShape(endpoint);
+          expect(result).toMatchObject({ kind: "not-mcp", category: "auth-required" });
+        }),
+    ),
+  );
+
+  it.effect("rejects 401 + Bearer with empty body as auth-required", () =>
+    withServer(
+      () =>
+        HttpServerResponse.empty({
+          status: 401,
+          headers: { "www-authenticate": "Bearer" },
+        }),
+      (endpoint) =>
+        Effect.gen(function* () {
+          const result = yield* probeMcpEndpointShape(endpoint);
+          expect(result).toMatchObject({ kind: "not-mcp", category: "auth-required" });
+        }),
+    ),
+  );
+
+  // Railway-style: OAuth-protected GraphQL endpoint that returns a Bearer
+  // challenge but a non-JSON-RPC error envelope. Must NOT be classified as
+  // MCP — otherwise we misclassify any OAuth-protected non-MCP service.
+  it.effect("rejects 401 + Bearer with GraphQL-shape body as auth-required", () =>
+    withServer(
+      () =>
+        HttpServerResponse.jsonUnsafe(
+          { errors: [{ message: "Unauthorized" }] },
+          { status: 401, headers: { "www-authenticate": "Bearer" } },
+        ),
+      (endpoint) =>
+        Effect.gen(function* () {
+          const result = yield* probeMcpEndpointShape(endpoint);
+          expect(result).toMatchObject({ kind: "not-mcp", category: "auth-required" });
+        }),
+    ),
+  );
+
+  // Cloudflare Access shape: an edge authenticator in front of the MCP
+  // server answers an unauthenticated request with `403` and an HTML
+  // login page. The MCP server is never reached, so there is no Bearer
+  // challenge and no JSON-RPC body. This must read as "supply
+  // credentials", not as "this URL is not MCP" — the latter told users
+  // the endpoint was unreachable when it was merely protected.
+  it.effect("classifies a 403 HTML edge challenge as auth-required", () =>
+    withServer(
+      () =>
+        HttpServerResponse.text("<html><body>Sign in</body></html>", {
+          status: 403,
+          contentType: "text/html",
+        }),
+      (endpoint) =>
+        Effect.gen(function* () {
+          const result = yield* probeMcpEndpointShape(endpoint);
+          expect(result).toMatchObject({ kind: "not-mcp", category: "auth-required" });
+        }),
+    ),
+  );
+
+  it.effect("classifies 403 with Bearer + JSON-RPC error envelope as MCP+auth", () =>
+    withServer(
+      () =>
+        HttpServerResponse.jsonUnsafe(
+          {
+            jsonrpc: "2.0",
+            id: null,
+            error: { code: -32000, message: "Forbidden" },
+          },
+          { status: 403, headers: { "www-authenticate": "Bearer" } },
+        ),
+      (endpoint) =>
+        Effect.gen(function* () {
+          const result = yield* probeMcpEndpointShape(endpoint);
+          expect(result).toEqual({ kind: "mcp", requiresAuth: true });
+        }),
+    ),
+  );
+
+  it.effect("rejects a 403 whose Bearer challenge carries a GraphQL body", () =>
+    withServer(
+      () =>
+        HttpServerResponse.jsonUnsafe(
+          { errors: [{ message: "Forbidden" }] },
+          { status: 403, headers: { "www-authenticate": "Bearer" } },
+        ),
+      (endpoint) =>
+        Effect.gen(function* () {
+          const result = yield* probeMcpEndpointShape(endpoint);
+          expect(result).toMatchObject({ kind: "not-mcp", category: "auth-required" });
+        }),
+    ),
+  );
+
+  // The other half of the Cloudflare Access story: once the service-token
+  // headers are configured, the same endpoint answers normally. Proves the
+  // probe actually puts `options.headers` on the wire.
+  it.effect("sends configured request headers and clears an edge challenge", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const server = yield* serveProbeEndpoint((request) => {
+          if (request.headers["cf-access-client-id"] !== "client-id") {
+            return HttpServerResponse.text("<html>Sign in</html>", {
+              status: 403,
+              contentType: "text/html",
+            });
+          }
+          return HttpServerResponse.jsonUnsafe({
+            jsonrpc: "2.0",
+            id: 1,
+            result: {
+              protocolVersion: "2025-06-18",
+              capabilities: {},
+              serverInfo: { name: "t", version: "0" },
+            },
+          });
+        });
+
+        const blocked = yield* probeMcpEndpointShape(server.endpoint);
+        expect(blocked).toMatchObject({ kind: "not-mcp", category: "auth-required" });
+
+        const allowed = yield* probeMcpEndpointShape(server.endpoint, {
+          headers: { "CF-Access-Client-Id": "client-id" },
+        });
+        expect(allowed).toEqual({ kind: "mcp", requiresAuth: false });
+      }),
+    ),
+  );
+
+  it.effect("falls back to GET for OAuth-protected SSE endpoints", () =>
+    withServer(
+      (request) => {
+        if (request.method === "POST") {
+          return HttpServerResponse.empty({ status: 405 });
+        }
+        return HttpServerResponse.jsonUnsafe(
+          {
+            jsonrpc: "2.0",
+            id: null,
+            error: { code: -32000, message: "Unauthorized" },
+          },
+          {
+            status: 401,
+            headers: {
+              "www-authenticate":
+                'Bearer resource_metadata="https://mcp.example/.well-known/oauth-protected-resource"',
+            },
+          },
+        );
+      },
+      (endpoint) =>
+        Effect.gen(function* () {
+          const result = yield* probeMcpEndpointShape(endpoint);
+          expect(result).toEqual({ kind: "mcp", requiresAuth: true });
+        }),
+    ),
+  );
+
+  it.effect("classifies unauthenticated SSE GET endpoints as MCP", () =>
+    withServer(
+      (request) => {
+        if (request.method === "POST") {
+          return HttpServerResponse.empty({ status: 405 });
+        }
+        return HttpServerResponse.text("event: endpoint\n\n", {
+          status: 200,
+          contentType: "text/event-stream",
+        });
+      },
+      (endpoint) =>
+        Effect.gen(function* () {
+          const result = yield* probeMcpEndpointShape(endpoint);
+          expect(result).toEqual({ kind: "mcp", requiresAuth: false });
+        }),
+    ),
+  );
+
+  it.effect("rejects 2xx with non-JSON-RPC JSON body as wrong-shape", () =>
+    withServer(
+      () => HttpServerResponse.jsonUnsafe({ ok: true, data: { id: "x" } }),
+      (endpoint) =>
+        Effect.gen(function* () {
+          const result = yield* probeMcpEndpointShape(endpoint);
+          expect(result).toMatchObject({ kind: "not-mcp", category: "wrong-shape" });
+        }),
+    ),
+  );
+
+  it.effect("falls through a wrong-shape legacy GET retry to modern server discovery", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const server = yield* serveProbeEndpoint((request) => {
+          if (request.body.includes('"method":"server/discover"')) {
+            return HttpServerResponse.jsonUnsafe({
+              jsonrpc: "2.0",
+              id: 2,
+              error: { code: -32601, message: "Method not found" },
+            });
+          }
+          if (request.method === "GET") {
+            return HttpServerResponse.jsonUnsafe({ error: "legacy SSE is unsupported" });
+          }
+          return HttpServerResponse.empty({ status: 405 });
+        });
+
+        const result = yield* probeMcpEndpointShape(server.endpoint);
+        expect(result).toEqual({ kind: "mcp", requiresAuth: false });
+
+        const requests = yield* server.requests;
+        expect(requests).toHaveLength(3);
+        expect(requests[0]?.body).toContain('"protocolVersion":"2025-11-25"');
+        expect(requests[1]?.method).toBe("GET");
+        expect(requests[2]?.body).toBe(
+          JSON.stringify({
+            jsonrpc: "2.0",
+            id: 2,
+            method: "server/discover",
+            params: {
+              _meta: { "io.modelcontextprotocol/protocolVersion": "2026-07-28" },
+            },
+          }),
+        );
+        expect(requests[2]?.headers["mcp-protocol-version"]).toBe("2026-07-28");
+      }),
+    ),
+  );
+
+  // First request (initialize) answers 200 HTML; second (the discover
+  // fallback) dies at the transport. The endpoint already proved reachable,
+  // so the verdict must stay the initialize classification, not "unreachable".
+  it.effect("keeps the initialize verdict when the discover fallback fails at the transport", () =>
+    Effect.gen(function* () {
+      let requestCount = 0;
+      const httpClientLayer = Layer.succeed(HttpClient.HttpClient)(
+        HttpClient.make((request: HttpClientRequest.HttpClientRequest) => {
+          requestCount += 1;
+          if (requestCount > 1) {
+            return Effect.fail(
+              new HttpClientError.HttpClientError({
+                reason: new HttpClientError.TransportError({
+                  request,
+                  description: "connection reset by peer",
+                }),
+              }),
+            );
+          }
+          return Effect.succeed(
+            HttpClientResponse.fromWeb(
+              request,
+              new Response("<html>not mcp</html>", {
+                status: 200,
+                headers: { "content-type": "text/html" },
+              }),
+            ),
+          );
+        }),
+      );
+
+      const result = yield* probeMcpEndpointShape("https://internal.example/mcp", {
+        httpClientLayer,
+      });
+      expect(result).toEqual({
+        kind: "not-mcp",
+        category: "wrong-shape",
+        reason: "2xx POST body is not a JSON-RPC envelope",
+      });
+      expect(requestCount).toBe(2);
+    }),
+  );
+
+  it.effect("rejects 2xx with HTML body as wrong-shape", () =>
+    withServer(
+      () =>
+        HttpServerResponse.text("<!doctype html><html></html>", {
+          contentType: "text/html",
+        }),
+      (endpoint) =>
+        Effect.gen(function* () {
+          const result = yield* probeMcpEndpointShape(endpoint);
+          expect(result).toMatchObject({ kind: "not-mcp", category: "wrong-shape" });
+        }),
+    ),
+  );
+
+  it.effect("rejects 400 GraphQL-shape responses as wrong-shape", () =>
+    withServer(
+      () =>
+        HttpServerResponse.jsonUnsafe(
+          { errors: [{ message: "Problem processing request" }] },
+          { status: 400 },
+        ),
+      (endpoint) =>
+        Effect.gen(function* () {
+          const result = yield* probeMcpEndpointShape(endpoint);
+          expect(result).toMatchObject({ kind: "not-mcp", category: "wrong-shape" });
+        }),
+    ),
+  );
+
+  it.effect("rejects 404 as wrong-shape", () =>
+    withServer(
+      () => HttpServerResponse.empty({ status: 404 }),
+      (endpoint) =>
+        Effect.gen(function* () {
+          const result = yield* probeMcpEndpointShape(endpoint);
+          expect(result).toMatchObject({ kind: "not-mcp", category: "wrong-shape" });
+        }),
+    ),
+  );
+
+  it.effect("reports transport failure as unreachable", () =>
+    Effect.gen(function* () {
+      const result = yield* probeMcpEndpointShape("http://127.0.0.1:1/missing", {
+        timeoutMs: 100,
+      });
+      expect(result.kind).toBe("unreachable");
+    }),
+  );
+});

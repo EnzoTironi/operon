@@ -1,0 +1,151 @@
+import { describe, expect, it } from "@effect/vitest";
+import { AuthTemplateSlug } from "@operon/gateway/sdk/shared";
+import {
+  IntegrationSlug,
+  type IntegrationConfig,
+  type IntegrationRecord,
+} from "@operon/gateway/sdk";
+
+import { describeOpenApiAuthMethods, describeOpenApiIntegrationDisplay } from "./plugin";
+import { type Authentication } from "./types";
+
+// ---------------------------------------------------------------------------
+// `describeOpenApiAuthMethods` projects the stored `authenticationTemplate[]`
+// into the catalog's plugin-agnostic `AuthMethodDescriptor[]` (server-side
+// mirror of the client's `authMethodsFromConfig`). OpenAPI also renders its own
+// accounts slot, so this is consistency work; an empty valid config describes
+// genuine no-auth while malformed/foreign config still yields `[]`.
+// ---------------------------------------------------------------------------
+
+const recordWith = (templates: readonly Authentication[]): IntegrationRecord => ({
+  slug: IntegrationSlug.make("petstore"),
+  name: "Petstore",
+  description: "Petstore",
+  kind: "openapi",
+  canRemove: true,
+  canRefresh: true,
+  authMethods: [],
+  config: { spec: "{}", authenticationTemplate: templates } as IntegrationConfig,
+});
+
+describe("describeOpenApiAuthMethods", () => {
+  it("projects an apiKey header template to an apikey method with the placement prefix", () => {
+    const methods = describeOpenApiAuthMethods(
+      recordWith([
+        {
+          slug: AuthTemplateSlug.make("bearer"),
+          kind: "apikey",
+          placements: [{ carrier: "header", name: "Authorization", prefix: "Bearer " }],
+        },
+      ]),
+    );
+
+    expect(methods).toEqual([
+      {
+        id: "bearer",
+        label: "API key (Authorization)",
+        kind: "apikey",
+        template: "bearer",
+        // The canonical `token` input is stored (and projected) as absent.
+        placements: [{ carrier: "header", name: "Authorization", prefix: "Bearer " }],
+      },
+    ]);
+  });
+
+  it("projects an oauth template to an oauth method carrying endpoints + scopes", () => {
+    const methods = describeOpenApiAuthMethods(
+      recordWith([
+        {
+          slug: AuthTemplateSlug.make("oauth"),
+          kind: "oauth2",
+          authorizationUrl: "https://auth.example/authorize",
+          tokenUrl: "https://auth.example/token",
+          resource: "https://api.example",
+          scopes: ["read", "write"],
+          supportsClientIdMetadataDocument: true,
+        },
+      ]),
+    );
+
+    expect(methods).toEqual([
+      {
+        id: "oauth",
+        label: "OAuth2",
+        kind: "oauth",
+        template: "oauth",
+        oauth: {
+          authorizationUrl: "https://auth.example/authorize",
+          tokenUrl: "https://auth.example/token",
+          resource: "https://api.example",
+          scopes: ["read", "write"],
+          supportsClientIdMetadataDocument: true,
+        },
+      },
+    ]);
+  });
+
+  it("prefers a stored oauth label over the generic OAuth2 fallback", () => {
+    const methods = describeOpenApiAuthMethods(
+      recordWith([
+        {
+          slug: AuthTemplateSlug.make("azureAdDelegated"),
+          kind: "oauth2",
+          label: "OAuth2 (user)",
+          authorizationUrl: "https://auth.example/authorize",
+          tokenUrl: "https://auth.example/token",
+          scopes: ["read"],
+        },
+      ]),
+    );
+
+    expect(methods.map((method) => method.label)).toEqual(["OAuth2 (user)"]);
+  });
+
+  it("projects no auth when no template is declared and returns [] for a foreign config", () => {
+    expect(describeOpenApiAuthMethods(recordWith([]))).toEqual([
+      {
+        id: "none",
+        label: "No authentication",
+        kind: "none",
+        template: "none",
+      },
+    ]);
+    expect(
+      describeOpenApiAuthMethods({
+        slug: IntegrationSlug.make("x"),
+        name: "x",
+        description: "x",
+        kind: "openapi",
+        canRemove: true,
+        canRefresh: true,
+        authMethods: [],
+        config: null,
+      }),
+    ).toEqual([]);
+  });
+
+  it("projects baseUrl as display metadata", () => {
+    expect(
+      describeOpenApiIntegrationDisplay({
+        ...recordWith([]),
+        config: {
+          spec: "{}",
+          specUrl: "https://api.example.com/openapi.json",
+          baseUrl: "https://api.example.com",
+        } as IntegrationConfig,
+      }),
+    ).toEqual({ url: "https://api.example.com" });
+  });
+
+  it("falls back to specUrl for display metadata", () => {
+    expect(
+      describeOpenApiIntegrationDisplay({
+        ...recordWith([]),
+        config: {
+          spec: "{}",
+          specUrl: "https://api.example.com/openapi.json",
+        } as IntegrationConfig,
+      }),
+    ).toEqual({ url: "https://api.example.com/openapi.json" });
+  });
+});

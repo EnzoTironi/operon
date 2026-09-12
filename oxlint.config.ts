@@ -8,6 +8,7 @@ export default defineConfig({
     "**/dist/**",
     "**/*.d.ts",
     "**/*.d.mts",
+    "packages/gateway/vendor/**",
     ".agent/**",
     ".agents/**",
     ".claude/**",
