@@ -81,44 +81,8 @@ export class ApiKeyRegistry {
   );
 }
 
+/** Ships empty. Callers register keys; nothing is preloaded for operators. */
 export const defaultApiKeyRegistry = new ApiKeyRegistry();
-
-// Pre-register standard bootstrap keys
-defaultApiKeyRegistry.registerKey("bk_builder_secret", {
-  active: true,
-  agentId: "dev-agent",
-  agentTier: 4,
-  keyId: "bk-default",
-  name: "Default Builder",
-  role: "builder",
-});
-
-defaultApiKeyRegistry.registerKey("bk_builder_secret_789", {
-  active: true,
-  agentId: "ai-fde",
-  agentTier: 4,
-  keyId: "bk-fde",
-  name: "FDE Builder",
-  role: "builder",
-});
-
-defaultApiKeyRegistry.registerKey("ck_consumer_secret", {
-  active: true,
-  agentId: "agent-1",
-  agentTier: 2,
-  keyId: "ck-default",
-  name: "Default Consumer",
-  role: "consumer",
-});
-
-defaultApiKeyRegistry.registerKey("ck_consumer_123", {
-  active: true,
-  agentId: "agent-2",
-  agentTier: 2,
-  keyId: "ck-fde",
-  name: "FDE Consumer",
-  role: "consumer",
-});
 
 /**
  * Validates that an MCP caller possesses the appropriate key for the requested operation.
