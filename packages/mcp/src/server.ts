@@ -19,6 +19,7 @@ import type {
   ObjectStore,
   OntologyMetadataService,
   OperonService,
+  StorageError,
 } from "@operon/runtime";
 import {
   AccountableIngestionService,
@@ -38,10 +39,12 @@ import type {
 } from "@operon/schema";
 import { BUILTIN_SKILLS, SkillService } from "@operon/skills";
 import type { SkillRegistryService } from "@operon/skills";
-import { Cause, Data, Effect, Exit, Predicate } from "effect";
+import { Cause, Data, Effect, Exit, Predicate, Semaphore } from "effect";
 
 import type { ApproverBinding } from "./approver.js";
 import { resolveApprover } from "./approver.js";
+import { verifyHostApproval } from "./host-approval.js";
+import type { OperonServer } from "./host-approval.js";
 import type { McpKey } from "./keys.js";
 import { projectActionToTool } from "./projection.js";
 import type {
@@ -68,6 +71,10 @@ export interface OperonMcpServerOptions {
   readonly oms: OntologyMetadataService;
   /** Human approver bound to this server; `unboundApprover` for plain agent sessions. */
   readonly approver: ApproverBinding;
+  /** Trust the private stdio host to revalidate a specific human-approved operation. */
+  readonly hostApprover?: boolean;
+  /** Persist the runtime before acknowledging a tool result. Omit for transient runtimes. */
+  readonly checkpoint?: Effect.Effect<void, StorageError>;
   readonly inbox?: ActionInbox;
   readonly securityEngine?: DynamicSecurityEngine;
   readonly defaultCallerKey?: McpKey;
@@ -85,7 +92,9 @@ export interface OperonMcpServerOptions {
 }
 
 interface ToolExecutionDeps {
+  readonly checkpoint: Effect.Effect<void, StorageError>;
   readonly approverBinding: ApproverBinding;
+  readonly hostApprover: boolean;
   readonly actionMap: Map<string, ActionType>;
   readonly objectTypeMap: Map<string, ObjectType>;
   readonly objectStore: ObjectStore;
@@ -314,7 +323,7 @@ function formatToolFailure(cause: Cause.Cause<unknown>): ToolCallResult {
 }
 
 function registerListToolsHandler(
-  server: Server,
+  server: OperonServer,
   actionTypes: readonly ActionType[]
 ) {
   server.setRequestHandler(ListToolsRequestSchema, (_request) => {
@@ -331,7 +340,7 @@ function registerListToolsHandler(
 }
 
 function registerResourceHandlers(
-  server: Server,
+  server: OperonServer,
   skillService: SkillRegistryService,
   recipeService: RecipeRegistryService
 ) {
@@ -399,8 +408,12 @@ function registerResourceHandlers(
   );
 }
 
-function registerCallToolHandler(server: Server, deps: ToolExecutionDeps) {
-  server.setRequestHandler(CallToolRequestSchema, (request) => {
+function registerCallToolHandler(
+  server: OperonServer,
+  deps: ToolExecutionDeps
+) {
+  const calls = Semaphore.makeUnsafe(1);
+  server.setRequestHandler(CallToolRequestSchema, (request, extra) => {
     const name = request.params.name;
     // SAFETY: request parameters parsed as ActionParameters (Record<string, Schema.Json>)
     const args = (request.params.arguments ?? {}) as ActionParameters;
@@ -413,10 +426,12 @@ function registerCallToolHandler(server: Server, deps: ToolExecutionDeps) {
       type: "agent",
     };
 
-    const { approverBinding, ...services } = deps;
+    const { approverBinding, hostApprover, checkpoint, ...services } = deps;
     const ctx: ToolExecutionContext = {
       ...services,
-      approver: resolveApprover(approverBinding),
+      approver: hostApprover
+        ? verifyHostApproval(server, name, args)
+        : resolveApprover(approverBinding),
       args,
       callerKey,
       callerSubject,
@@ -427,11 +442,15 @@ function registerCallToolHandler(server: Server, deps: ToolExecutionDeps) {
     return Effect.runPromise(
       Effect.gen(function* () {
         const exit = yield* Effect.exit(executeTool(name, ctx));
+        const persisted = yield* Effect.exit(checkpoint);
+        if (Exit.isFailure(persisted))
+          return formatToolFailure(persisted.cause);
         if (Exit.isSuccess(exit)) {
           return exit.value;
         }
         return formatToolFailure(exit.cause);
-      })
+      }).pipe(calls.withPermit),
+      { signal: extra.signal }
     ) as Promise<CallToolResult>;
   });
 }
@@ -475,7 +494,7 @@ export function createOperonMcpServer(options: OperonMcpServerOptions) {
     reconciliationService,
   });
 
-  const server = new Server(
+  const server: OperonServer = new Server(
     {
       name: "operon-mcp-server",
       version: "0.1.0",
@@ -493,6 +512,8 @@ export function createOperonMcpServer(options: OperonMcpServerOptions) {
   registerCallToolHandler(server, {
     actionMap: actionTypesMap,
     approverBinding: options.approver,
+    hostApprover: options.hostApprover ?? false,
+    checkpoint: options.checkpoint ?? Effect.void,
     atomicCommitService,
     auditStore,
     authorityService,

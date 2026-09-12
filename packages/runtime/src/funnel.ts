@@ -753,6 +753,7 @@ export class AccountableIngestionService {
               const prev = seenRecordsById.get(pkStr);
               if (prev) {
                 yield* checkConflictingProperties(prev, mappedProps, pkStr);
+                return;
               }
 
               const candidate: CandidateRecord = {
@@ -795,12 +796,20 @@ export class AccountableIngestionService {
       targetObjectTypeId: options.targetObjectTypeId,
     };
 
+    const digest = computeMappingProposalDigest(filter);
+    const existing = [...this.mappingProposals.values()].find(
+      (candidate) =>
+        candidate.digest === digest &&
+        candidate.createdBy.id === options.author.id
+    );
+    if (existing) return existing;
+
     const proposal: MappingProposal = {
       ...filter,
       confidence: proposalConfidence(candidateRecords),
       createdAt: now,
       createdBy: options.author,
-      digest: computeMappingProposalDigest(filter),
+      digest,
       proposalId,
       reviews: [],
       status: "open",
@@ -854,6 +863,8 @@ export class AccountableIngestionService {
       });
     }
 
+    if (proposal.status === "merged" && review.verdict === "approve")
+      return proposal;
     const policy = options.policy ?? defaultApprovalsPolicy;
     const reviews = [...proposal.reviews, review];
     const reviewed: MappingProposal = {
@@ -905,12 +916,16 @@ export class AccountableIngestionService {
     yield* Effect.forEach(
       proposal.records,
       Effect.fn("AccountableIngestionService.admitRecord")(function* (record) {
+        const existing = yield* store.getObject(
+          record.targetObjectTypeId,
+          record.rawRecordId
+        );
         yield* store.putObject({
           id: record.rawRecordId,
           lastModifiedAt: now,
           properties: record.properties,
           typeId: record.targetObjectTypeId,
-          version: 1,
+          version: (existing?.version ?? 0) + 1,
         });
         const admission: BatchAdmission = {
           admittedAt: now,

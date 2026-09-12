@@ -20,6 +20,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@effect/sql-pg": "4.0.0-rc.112",
     "@modelcontextprotocol/sdk": "^1.30.0",
     "@operon/assurance": "workspace:*",
     "@operon/cell-auth": "workspace:^",
