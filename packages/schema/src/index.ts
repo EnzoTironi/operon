@@ -12,6 +12,8 @@ export * from "./action-log.js";
 export * from "./funnel-types.js";
 export * from "./definition.js";
 export * from "./ingestion.js";
+export * from "./admission.js";
+export * from "./identity.js";
 export * from "./reconciliation.js";
 export * from "./actions.js";
 export * from "./assurance.js";

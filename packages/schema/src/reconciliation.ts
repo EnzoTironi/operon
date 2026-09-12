@@ -1,6 +1,7 @@
 import { Schema } from "effect";
 
 import { computeCanonicalDigest } from "./definition.js";
+import { IdentityKey } from "./identity.js";
 import { FieldProvenanceSchema } from "./ingestion.js";
 
 /**
@@ -94,8 +95,7 @@ export const IdentityResolutionProposalSchema = Schema.Struct({
   proposalId: Schema.String,
   tenantId: Schema.String,
   environmentId: Schema.String,
-  sourceSystem: Schema.String,
-  sourceKey: Schema.String,
+  key: IdentityKey,
   targetCanonicalId: Schema.String,
   action: IdentityResolutionAction,
   confidence: Schema.Number, // 0.0 to 1.0
