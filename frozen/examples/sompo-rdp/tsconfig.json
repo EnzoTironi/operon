@@ -1,5 +1,5 @@
 {
-  "extends": "../../tsconfig.json",
+  "extends": "../../../tsconfig.json",
   "compilerOptions": {
     "outDir": "./dist",
     "rootDir": "./src",
@@ -8,8 +8,8 @@
   "include": ["src/**/*"],
   "exclude": ["node_modules", "dist", "**/*.test.ts"],
   "references": [
-    { "path": "../../packages/schema" },
-    { "path": "../../packages/runtime" },
-    { "path": "../../packages/osdk" }
+    { "path": "../../../packages/schema" },
+    { "path": "../../../packages/runtime" },
+    { "path": "../../../packages/osdk" }
   ]
 }
