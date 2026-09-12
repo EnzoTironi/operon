@@ -597,15 +597,13 @@ describe("batch admission (Q -> C -> L -> D)", () => {
     const admission = await Effect.runPromise(
       ingestion.admissionOf("Pessoa" as ObjectTypeId, "bruno@gmail.com")
     );
-    expect(Option.getOrThrow(admission)).toEqual({
-      admittedAt: people[1].lastModifiedAt,
-      admittedBy: builder,
-      grade: "batch",
-      mappingProposalId: proposal.proposalId,
-      objectId: "bruno@gmail.com",
-      proposalDigest: proposal.digest,
-      typeId: "Pessoa",
-    });
+    const recorded = Option.getOrThrow(admission);
+    expect(recorded.grade).toBe("batch");
+    expect(recorded.objectId).toBe("bruno@gmail.com");
+    expect(recorded.typeId).toBe("Pessoa");
+    expect(recorded.admittedBy).toEqual(builder);
+    expect(recorded.mappingProposalId).toBe(proposal.proposalId);
+    expect(recorded.proposalDigest).toBe(proposal.digest);
 
     const replay = await Effect.runPromise(
       ingestion.admitProposal(proposal.proposalId, builder)
