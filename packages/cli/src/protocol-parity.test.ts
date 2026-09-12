@@ -1,4 +1,4 @@
-import { createOperonMcpServer } from "@operon/mcp";
+import { createOperonMcpServer, unboundApprover } from "@operon/mcp";
 import { createOperonClient } from "@operon/osdk";
 import { computeDiagnosticBundleHash } from "@operon/schema";
 import { Effect } from "effect";
@@ -69,6 +69,7 @@ describe("Gate G1 / Ticket V1-08: Agent Protocol Parity and Diagnostics (S18)", 
 
       // 3. MCP Server
       const mcpServer = createOperonMcpServer({
+        approver: unboundApprover,
         actionTypes,
         auditStore,
         objectStore,

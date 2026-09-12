@@ -40,6 +40,8 @@ import { BUILTIN_SKILLS, SkillService } from "@operon/skills";
 import type { SkillRegistryService } from "@operon/skills";
 import { Cause, Data, Effect, Exit, Predicate } from "effect";
 
+import type { ApproverBinding } from "./approver.js";
+import { resolveApprover } from "./approver.js";
 import type { McpKey } from "./keys.js";
 import { projectActionToTool } from "./projection.js";
 import type {
@@ -64,6 +66,8 @@ export interface OperonMcpServerOptions {
   readonly objectStore: ObjectStore;
   readonly auditStore: AuditStore;
   readonly oms: OntologyMetadataService;
+  /** Human approver bound to this server; `unboundApprover` for plain agent sessions. */
+  readonly approver: ApproverBinding;
   readonly inbox?: ActionInbox;
   readonly securityEngine?: DynamicSecurityEngine;
   readonly defaultCallerKey?: McpKey;
@@ -81,6 +85,7 @@ export interface OperonMcpServerOptions {
 }
 
 interface ToolExecutionDeps {
+  readonly approverBinding: ApproverBinding;
   readonly actionMap: Map<string, ActionType>;
   readonly objectTypeMap: Map<string, ObjectType>;
   readonly objectStore: ObjectStore;
@@ -251,10 +256,16 @@ function extractFailureRecord(cause: unknown): FailureInfo {
       readonly _tag?: string;
       readonly name?: string;
       readonly message?: string;
+      readonly reason?: unknown;
       readonly details?: unknown;
     };
     const error = errorRecord._tag ?? errorRecord.name ?? "ExecutionError";
-    const message = errorRecord.message ?? String(cause);
+    // Errors such as AuthenticationError carry their text in `reason`, not `message`.
+    const message =
+      errorRecord.message ||
+      (Predicate.isString(errorRecord.reason)
+        ? errorRecord.reason
+        : String(cause));
     return {
       details: errorRecord.details,
       error,
@@ -402,8 +413,10 @@ function registerCallToolHandler(server: Server, deps: ToolExecutionDeps) {
       type: "agent",
     };
 
+    const { approverBinding, ...services } = deps;
     const ctx: ToolExecutionContext = {
-      ...deps,
+      ...services,
+      approver: resolveApprover(approverBinding),
       args,
       callerKey,
       callerSubject,
@@ -479,6 +492,7 @@ export function createOperonMcpServer(options: OperonMcpServerOptions) {
   registerResourceHandlers(server, skillService, recipeService);
   registerCallToolHandler(server, {
     actionMap: actionTypesMap,
+    approverBinding: options.approver,
     atomicCommitService,
     auditStore,
     authorityService,

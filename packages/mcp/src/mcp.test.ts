@@ -1,9 +1,11 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { CellAuth, CellSessionVerifier } from "@operon/cell-auth";
 import {
   InMemoryAuditStore,
   InMemoryObjectStore,
   OntologyMetadataService,
+  SessionVerifier,
 } from "@operon/runtime";
 import {
   defineActionType,
@@ -11,10 +13,10 @@ import {
   defineObjectType,
   defineProperty,
 } from "@operon/schema";
-import { Effect, Schema } from "effect";
+import { Effect, Layer, Redacted, Schema } from "effect";
 import { describe, expect, it } from "vitest";
 
-import type { McpKey } from "./index.js";
+import type { ApproverBinding, McpKey } from "./index.js";
 import {
   assertBuilderKey,
   assertMcpKeyPermission,
@@ -22,7 +24,42 @@ import {
   McpSecurityError,
   projectActionToTool,
   projectObjectTypeToGrounding,
+  unboundApprover,
 } from "./index.js";
+
+interface MemoryApprover {
+  readonly binding: ApproverBinding;
+  readonly userId: string;
+}
+
+/** A human with a live session on a memory-backed cell auth store. */
+async function issueMemoryApprover(input: {
+  readonly email: string;
+  readonly name: string;
+}): Promise<MemoryApprover> {
+  return await Effect.runPromise(
+    Effect.gen(function* () {
+      const auth = yield* CellAuth;
+      const verifier = yield* SessionVerifier;
+      const issued = yield* auth.issueApproverSession(input);
+      return {
+        binding: { _tag: "Session", token: issued.token, verifier },
+        userId: issued.userId,
+      } satisfies MemoryApprover;
+    }).pipe(
+      Effect.provide(
+        Layer.provideMerge(
+          CellSessionVerifier,
+          CellAuth.layer({
+            secret: Redacted.make("mcp-test-secret-with-32-characters!!"),
+            store: { kind: "memory" },
+          })
+        )
+      ),
+      Effect.scoped
+    )
+  );
+}
 
 describe("@operon/mcp", () => {
   it("enforces key boundaries between Consumer Key and Builder Key", () => {
@@ -201,6 +238,7 @@ describe("@operon/mcp", () => {
     });
 
     const server = createOperonMcpServer({
+      approver: unboundApprover,
       actionTypes: [ProposeAction, AutomatedAction],
       auditStore,
       defaultCallerKey: {
@@ -391,6 +429,7 @@ describe("@operon/mcp", () => {
     const objectStore = new InMemoryObjectStore();
     const auditStore = new InMemoryAuditStore();
     const server = createOperonMcpServer({
+      approver: unboundApprover,
       actionTypes: [],
       auditStore,
       objectStore,
@@ -415,6 +454,7 @@ describe("@operon/mcp", () => {
     const objectStore = new InMemoryObjectStore();
     const auditStore = new InMemoryAuditStore();
     const server = createOperonMcpServer({
+      approver: unboundApprover,
       actionTypes: [],
       auditStore,
       objectStore,
@@ -544,6 +584,7 @@ describe("@operon/mcp", () => {
     const oms = new OntologyMetadataService();
 
     const server = createOperonMcpServer({
+      approver: unboundApprover,
       actionTypes: [],
       auditStore,
       defaultCallerKey: {
@@ -638,6 +679,7 @@ describe("@operon/mcp", () => {
     const oms = new OntologyMetadataService();
 
     const server = createOperonMcpServer({
+      approver: unboundApprover,
       actionTypes: [],
       auditStore,
       defaultCallerKey: {
@@ -783,6 +825,7 @@ describe("@operon/mcp", () => {
     };
 
     const server = createOperonMcpServer({
+      approver: unboundApprover,
       actionTypes: [],
       auditStore,
       defaultCallerKey: builderKey,
@@ -937,8 +980,13 @@ describe("@operon/mcp", () => {
       targetObjectTypeId: "Patient",
     });
 
+    const physician = await issueMemoryApprover({
+      email: "physician@clinic.example",
+      name: "Dra. Helena",
+    });
     const server = createOperonMcpServer({
       actionTypes: [updateVitalsAction],
+      approver: physician.binding,
       auditStore,
       objectStore,
       objectTypes: [],
@@ -995,13 +1043,11 @@ describe("@operon/mcp", () => {
     expect(unmodObj).toBeDefined();
     expect((unmodObj!.properties as any).heartRate).toBe(70);
 
-    // 3. Approve prepared action via MCP
+    // 3. Approve prepared action via MCP as the bound human session
     const appRes = (await client.callTool({
       arguments: {
         decision: "approved",
         preparedDigest: prepared.canonicalDigest,
-        reviewerId: "human-physician",
-        reviewerRoles: ["physician", "approver"],
         viewedDigest: prepared.canonicalDigest,
       },
       name: "operon_approve_prepared_action",
@@ -1010,6 +1056,9 @@ describe("@operon/mcp", () => {
     const approval = JSON.parse(appRes.content[0].text);
     expect(approval.id).toBeDefined();
     expect(approval.recordHash).toBeDefined();
+    expect(approval.reviewerContext.reviewer.id).toBe(physician.userId);
+    expect(approval.reviewerContext.reviewer.type).toBe("user");
+    expect(approval.reviewerContext.assurance).toBe("human_verified");
 
     // 4. Commit action via MCP
     const commitRes = (await client.callTool({
@@ -1067,6 +1116,7 @@ describe("@operon/mcp", () => {
     const auditStore = new InMemoryAuditStore();
 
     const server = createOperonMcpServer({
+      approver: unboundApprover,
       actionTypes: [],
       auditStore,
       defaultCallerKey: {

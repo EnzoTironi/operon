@@ -2,6 +2,7 @@ import { OperonTelemetryService } from "@operon/telemetry";
 import { Clock, Effect } from "effect";
 
 import { runAction } from "./commands/action.js";
+import { runApprover } from "./commands/approver.js";
 import { runAssurance } from "./commands/assurance.js";
 import { runAudit } from "./commands/audit.js";
 import { runDoctor } from "./commands/doctor.js";
@@ -40,12 +41,13 @@ Commands:
   sandbox             Execute sandboxed models with fiber timeouts and verify determinism proofs
   view                Generate disposable application views with lifecycle state badges (S13)
   assurance           Dual F1/F2 release evaluation, mirror verification, and publication boundary check
+  approver            Issue a cell approver session (Better Auth on the cell Postgres) for the MCP host
   mcp                 Launch Model Context Protocol (MCP) server over stdio for Claude Desktop / Cursor
   telemetry           Inspect Sentry & PostHog telemetry status, privacy scrubber, and diagnostic ping
 
 Global Flags:
   --json              Output structured machine-readable JSON
-  --db <path>         Path to SQLite database (defaults to in-memory store)
+  --db <path|url>     SQLite file path or postgresql:// URL of the cell (defaults to OPERON_DATABASE_URL, then in-memory)
   --help, -h          Print contextual help with copy-pasteable examples
   --version, -v       Print CLI version
 
@@ -160,11 +162,27 @@ Examples:
 
 const MCP_HELP = `
 Usage:
-  operon mcp start [--agent-tier <1-4>] [--db <path>]
+  operon mcp start [--agent-tier <1-4>] [--db <path|postgres-url>]
+
+The approver is bound from OPERON_APPROVER_SESSION_TOKEN (see operon approver session).
+Without it the server runs unbound and operon_approve_prepared_action refuses.
 
 Examples:
   operon mcp start
   operon mcp start --agent-tier 4
+  OPERON_APPROVER_SESSION_TOKEN=<token> operon mcp start
+`;
+
+const APPROVER_HELP = `
+Usage:
+  operon approver session --email <email> --name <name> [--db <postgres-url>] [--json]
+
+Needs OPERON_DATABASE_URL (postgresql://) and OPERON_AUTH_SECRET, both written by pnpm cell:up.
+Prints the session token once; hand it to the host that starts operon mcp start.
+
+Examples:
+  operon approver session --email ana@clinica.example --name "Ana"
+  operon approver session --email ana@clinica.example --name "Ana" --json
 `;
 
 const TELEMETRY_HELP = `
@@ -262,6 +280,7 @@ type CommandRunner = (args: string[]) => Effect.Effect<number, unknown, never>;
 
 const COMMAND_RUNNERS = {
   action: (args) => runAction(args.slice(1)),
+  approver: (args) => runApprover(args.slice(1)),
   assurance: (args) => runAssurance(args.slice(1)),
   audit: (args) => runAudit(args.slice(1)),
   doctor: (args) => executeDoctor(args),
@@ -281,6 +300,7 @@ const COMMAND_RUNNERS = {
 
 const COMMAND_HELP = {
   action: ACTION_HELP,
+  approver: APPROVER_HELP,
   assurance: ASSURANCE_HELP,
   audit: AUDIT_HELP,
   doctor: DOCTOR_HELP,
@@ -300,6 +320,7 @@ const COMMAND_HELP = {
 
 const REQUIRE_SUBCOMMAND_FOR_HELP = new Set([
   "action",
+  "approver",
   "assurance",
   "audit",
   "inbox",

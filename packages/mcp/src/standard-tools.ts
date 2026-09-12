@@ -599,13 +599,9 @@ export const STANDARD_TOOL_DEFINITIONS: readonly StandardToolDefinition[] = [
   },
   {
     description:
-      "Approve or reject a prepared action proposal. Enforces exact digest binding (viewedDigest === preparedDigest), human reviewer requirements, no self-approval, and non-staleness (S07).",
+      "Approve or reject a prepared action proposal as the human whose authenticated cell session is bound to this server. Enforces exact digest binding (viewedDigest === preparedDigest), no self-approval, and non-staleness (S07). Fails when no approver session is bound; reviewer identity is never taken from arguments.",
     inputSchema: {
       properties: {
-        assurance: {
-          enum: ["human_verified", "delegated_service"],
-          type: "string",
-        },
         decision: { enum: ["approved", "rejected"], type: "string" },
         environmentId: { type: "string" },
         preparedDigest: {
@@ -613,8 +609,6 @@ export const STANDARD_TOOL_DEFINITIONS: readonly StandardToolDefinition[] = [
           type: "string",
         },
         reason: { type: "string" },
-        reviewerId: { type: "string" },
-        reviewerRoles: { items: { type: "string" }, type: "array" },
         tenantId: { type: "string" },
         viewedDigest: {
           description: "Digest viewed by reviewer",

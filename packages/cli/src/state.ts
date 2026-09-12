@@ -253,7 +253,7 @@ function parseDatabaseTarget(value: string): DatabaseTarget {
     : { kind: "sqlite", path: value };
 }
 
-function resolveDatabaseTarget(dbPath?: string): DatabaseTarget {
+export function resolveDatabaseTarget(dbPath?: string): DatabaseTarget {
   if (dbPath) {
     return parseDatabaseTarget(dbPath);
   }

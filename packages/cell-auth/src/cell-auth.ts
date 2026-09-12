@@ -49,7 +49,8 @@ export interface IssuedSession {
 
 function makeAuth(config: CellAuthConfig, pool: Pg.Pool | undefined) {
   return betterAuth({
-    advanced: { disableCSRFCheck: true },
+    // `migrate` owns the schema; the startup diff would only log noise before it runs.
+    advanced: { database: { validateSchema: false }, disableCSRFCheck: true },
     appName: "Operon Cell",
     baseURL: "http://operon-cell.invalid",
     database:
