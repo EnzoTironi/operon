@@ -4,7 +4,7 @@ import { betterAuth } from "better-auth";
 import { memoryAdapter } from "better-auth/adapters/memory";
 import { getMigrations } from "better-auth/db/migration";
 import { bearer } from "better-auth/plugins";
-import { Context, Effect, Layer, Redacted, Schema } from "effect";
+import { Context, Data, Effect, Layer, Redacted, Schema } from "effect";
 import * as Pg from "pg";
 
 /** Value of `HumanPrincipal.issuer` for sessions this cell vouched for. */
