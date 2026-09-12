@@ -13,8 +13,8 @@ const config: KnipConfig = {
   },
   workspaces: {
     "packages/alchemy": {
-      entry: ["src/worker.ts!"],
-      ignoreDependencies: ["alchemy"],
+      entry: ["alchemy.run.ts!"],
+      ignoreBinaries: ["umask"],
     },
     "packages/gateway": {
       entry: ["src/index.ts!"],

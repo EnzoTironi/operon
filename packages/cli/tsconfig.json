@@ -14,7 +14,6 @@
     { "path": "../runtime" },
     { "path": "../mcp" },
     { "path": "../osdk" },
-    { "path": "../alchemy" },
     { "path": "../telemetry" },
     { "path": "../skills" },
     { "path": "../recipes" }
