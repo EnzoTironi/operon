@@ -36,7 +36,8 @@ The workspace is organized into a modular pnpm monorepo of core packages under `
 | [`@operon/telemetry`](file:///Users/enzotironi/operationalonto/packages/telemetry/README.md) | Production observability (Sentry + PostHog), PII/secret scrubbing, Effect log layers, and distributed tracing. |
 | [`@operon/osdk`](file:///Users/enzotironi/operationalonto/packages/osdk/README.md) | Type-safe client SDK and TypeScript code generator for frontend and service integration. |
 | [`@operon/mcp`](file:///Users/enzotironi/operationalonto/packages/mcp/README.md) | Model Context Protocol server, dual-key isolation (Consumer vs Builder), and AI-FDE autonomous agents. |
-| [`@operon/alchemy`](file:///Users/enzotironi/operationalonto/packages/alchemy/README.md) | Serverless Cloudflare edge infrastructure synthesis via [Alchemy](https://alchemy.run) (Workers, D1, R2, Queues). |
+| [`@operon/cell-auth`](./packages/cell-auth) | Better Auth on the cell Postgres: approver sessions and the `SessionVerifier` the kernel trusts. |
+| [`@operon/alchemy`](./packages/alchemy/README.md) | The cell's PostgreSQL 17 in Docker, provisioned by [Alchemy](https://alchemy.run) (`pnpm cell:up`). |
 
 ### Frozen code (`frozen/`)
 
@@ -82,13 +83,33 @@ Maintains two independent time dimensions across all entities:
 
 ---
 
+## Running a cell
+
+A cell is one Operon runtime with its own PostgreSQL 17. With Docker running:
+
+```bash
+pnpm install --frozen-lockfile
+pnpm cell:up                 # writes the cell keys to .env and starts Postgres via Alchemy
+pnpm operon doctor           # opens the cell database through OPERON_DATABASE_URL
+
+# bind a human approver to the cell and start the MCP server as that human
+pnpm operon approver session --email ana@example.com --name "Ana"
+OPERON_APPROVER_SESSION_TOKEN=<token> pnpm operon mcp start
+
+pnpm cell:down               # removes the container and, except for prod, the volume
+```
+
+`OPERON_DATABASE_URL` may also point at a SQLite file for local experiments; without it the CLI runs in memory. See [`packages/alchemy/README.md`](./packages/alchemy/README.md) for stages, ports and state.
+
+---
+
 ## Operon CLI Reference
 
 The CLI provides full operator and agent control over the platform:
 
 ```bash
 # Preflight health checks
-operon doctor [--json] [--db <path>]
+operon doctor [--json] [--db <path|postgres-url>]
 
 # Bitemporal object inspection and mutation
 operon object get <typeId> <id> [--json]
@@ -121,7 +142,10 @@ operon oms proposal merge <id> --author <id>
 operon sandbox verify <modelId> [--inputs '<json>'] [--iterations <n>]
 
 # Launch MCP Stdio Server
-operon mcp start [--agent-tier <1|2|3|4>]
+operon mcp start [--agent-tier <1|2|3|4>]   # approver bound from OPERON_APPROVER_SESSION_TOKEN
+
+# Cell approver sessions (Better Auth on the cell Postgres)
+operon approver session --email <email> --name <name> [--json]
 
 # Production Telemetry & Diagnostics
 operon telemetry status [--ping] [--json]
