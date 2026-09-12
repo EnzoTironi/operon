@@ -222,10 +222,4 @@ export async function runWastewaterSimulation() {
     `   - Latest Decision Hash: ${decisions[0]?.recordHash.slice(0, 16)}...`
   );
   console.log("=== WASTEWATER SIMULATION COMPLETED SUCCESSFULLY ===\n");
-
-  return {
-    decisions,
-    finalTank,
-    overrides,
-  };
 }
