@@ -68,7 +68,11 @@ const McpOptions = Schema.Struct({
   )
 );
 
-const parseMcpOptions = Effect.fn("parseMcpOptions")(function* (
+/** Consumer Propose. Tier 4 bounded autonomy is opt-in. */
+export const DEFAULT_MCP_AGENT_TIER =
+  2 as const satisfies AgentAuthorizationTier;
+
+export const parseMcpOptions = Effect.fn("parseMcpOptions")(function* (
   args: readonly string[]
 ) {
   const values = new Map<string, string | boolean>();
@@ -89,7 +93,7 @@ const parseMcpOptions = Effect.fn("parseMcpOptions")(function* (
     index += 1;
   }
   return yield* Schema.decodeUnknownEffect(McpOptions)({
-    agentTier: Number(values.get("--agent-tier") ?? 4),
+    agentTier: Number(values.get("--agent-tier") ?? DEFAULT_MCP_AGENT_TIER),
     role: values.get("--role") ?? "consumer",
     dbPath: values.get("--db"),
     workspaceId: values.get("--workspace"),
@@ -104,7 +108,10 @@ export function runMcp(args: string[]): Effect.Effect<number> {
     if (sub !== "start") {
       printCliError(`Error: Unknown mcp subcommand '${sub}'`);
       printCliError(
-        "  Usage: operon mcp start [--agent-tier <1|2|3|4>] [--db <path>]"
+        "  Usage: operon mcp start [--agent-tier <1|2|3|4>] [--role <consumer|builder>] [--db <path>] [--workspace <id>] [--host-approver]"
+      );
+      printCliError(
+        "  Default --agent-tier is 2 (Consumer, Propose). Tier 4 must be set explicitly."
       );
       return 1;
     }

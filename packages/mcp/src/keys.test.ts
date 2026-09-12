@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import {
   ApiKeyRegistry,
   assertMcpKeyPermission,
+  defaultApiKeyRegistry,
   McpSecurityError,
 } from "./keys.js";
 
@@ -122,5 +123,22 @@ describe("ApiKeyRegistry & Scoped Key Validation", () => {
     expect(() =>
       assertMcpKeyPermission(builder, "modify_schema")
     ).not.toThrow();
+  });
+
+  it("ships an empty default registry", async () => {
+    const secrets = [
+      "ck_consumer_secret",
+      "bk_builder_secret",
+      "bk_builder_secret_789",
+      "ck_consumer_123",
+    ];
+    const exits = await Promise.all(
+      secrets.map((secret) =>
+        Effect.runPromiseExit(defaultApiKeyRegistry.validateKey(secret))
+      )
+    );
+    for (const exit of exits) {
+      expect(exit._tag).toBe("Failure");
+    }
   });
 });

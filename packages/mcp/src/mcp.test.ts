@@ -9,7 +9,6 @@ import {
 } from "@operon/runtime";
 import {
   defineActionType,
-  defineLinkType,
   defineObjectType,
   defineProperty,
 } from "@operon/schema";
@@ -18,6 +17,7 @@ import { describe, expect, it } from "vitest";
 
 import type { ApproverBinding, McpKey } from "./index.js";
 import {
+  ApiKeyRegistry,
   assertBuilderKey,
   assertMcpKeyPermission,
   createOperonMcpServer,
@@ -62,6 +62,11 @@ async function issueMemoryApprover(input: {
 }
 
 describe("@operon/mcp", () => {
+  it("does not export the frozen regex AI-FDE extractor", async () => {
+    const mcp = await import("./index.js");
+    expect("AIFdeAgent" in mcp).toBe(false);
+  });
+
   it("enforces key boundaries between Consumer Key and Builder Key", () => {
     const consumerKey: McpKey = {
       agentId: "agent-1",
@@ -107,12 +112,21 @@ describe("@operon/mcp", () => {
     ).not.toThrow();
 
     // assertBuilderKey helper validation
+    const registry = new ApiKeyRegistry();
+    registry.registerKey("bk_test_builder", {
+      active: true,
+      agentId: "dev-agent",
+      agentTier: 4,
+      keyId: "builder-1",
+      name: "SchemaEngineer",
+      role: "builder",
+    });
     expect(() =>
-      Effect.runSync(assertBuilderKey("bk_builder_secret"))
+      Effect.runSync(assertBuilderKey("bk_test_builder", registry))
     ).not.toThrow();
     expect(() => Effect.runSync(assertBuilderKey(builderKey))).not.toThrow();
     expect(() =>
-      Effect.runSync(assertBuilderKey("ck_consumer_secret"))
+      Effect.runSync(assertBuilderKey("ck_test_consumer", registry))
     ).toThrow(/Builder key required/u);
     expect(() => Effect.runSync(assertBuilderKey(consumerKey))).toThrow(
       /Builder key required/u
@@ -336,93 +350,6 @@ describe("@operon/mcp", () => {
       name: "operon_set_valve_position",
     })) as any;
     expect(invalidResult.isError).toBe(true);
-  });
-
-  it("enforces Builder Key on AI FDE and creates branch proposals with full changesets", async () => {
-    const { AIFdeAgent } = await import("./ai-fde.js");
-    const oms = new OntologyMetadataService();
-    const fde = new AIFdeAgent(oms);
-
-    const fdeAuthor = {
-      id: "ai-fde",
-      name: "AI Forward Deployed Engineer",
-      roles: ["fde_agent"],
-      type: "agent" as const,
-    };
-
-    // Consumer key fails
-    const failAttempt = await Effect.runPromise(
-      fde
-        .executeInstruction({
-          apiKey: "ck_consumer_123",
-          author: fdeAuthor,
-          instruction: "Add FlightObservation",
-          synthesizedChangeSet: {},
-          targetBranchName: "fde-flight-obs",
-        })
-        .pipe(Effect.result)
-    );
-    expect(failAttempt._tag).toBe("Failure");
-
-    // Builder key succeeds with full objectTypes, linkTypes, and actionTypes changeset
-    const successResult = await Effect.runPromise(
-      fde.executeInstruction({
-        apiKey: "bk_builder_secret_789",
-        author: fdeAuthor,
-        instruction: "Add FlightObservation and Link",
-        synthesizedChangeSet: {
-          actionTypes: [
-            defineActionType({
-              defaultExecutionMode: "automated",
-              description: "Log altimeter reading",
-              id: "log_altimeter",
-              minimumAgentTier: 1,
-              name: "Log Altimeter",
-              parametersSchema: Schema.Struct({ reading: Schema.Number }),
-              riskTier: "low",
-            }),
-          ],
-          linkTypes: [
-            defineLinkType({
-              cardinality: "one-to-many",
-              description: "Flight to observation link",
-              id: "FlightToObservation",
-              sourceToTargetName: "observations",
-              sourceTypeId: "Flight",
-              targetToSourceName: "flight",
-              targetTypeId: "FlightObservation",
-            }),
-          ],
-          objectTypes: [
-            defineObjectType({
-              description: "Flight Sensor Data",
-              id: "FlightObservation",
-              name: "Flight Observation",
-              primaryKey: "id",
-              properties: {
-                altitude: defineProperty({
-                  description: "Feet",
-                  schema: Schema.Number,
-                }),
-                id: defineProperty({
-                  description: "ID",
-                  schema: Schema.String,
-                }),
-              },
-              typology: "observation",
-            }),
-          ],
-        },
-        targetBranchName: "fde-flight-obs",
-      })
-    );
-
-    expect(successResult.branchName).toBe("fde-flight-obs");
-    expect(successResult.proposal.status).toBe("open");
-    expect(successResult.proposal.changeSet.addedObjectTypes.length).toBe(1);
-    expect(successResult.proposal.changeSet.addedLinkTypes.length).toBe(1);
-    expect(successResult.proposal.changeSet.addedActionTypes.length).toBe(1);
-    expect(successResult.summary).toContain("AI FDE created branch");
   });
 
   it("uses fallback default caller key when defaultCallerKey option is omitted", async () => {

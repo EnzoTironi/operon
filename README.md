@@ -1,9 +1,10 @@
 # Operon (Operational Ontology & Decision Runtime)
 
-> **The Type-Safe Operational Ontology and Decision Runtime for AI Agents and Enterprise Systems.**  
+Operon has not launched. This repository is a pre-launch kernel: types, quarantine, governed writes, inbox, and MCP. V0 through V3 are specification gates in `docs/specs/`, not a product pass.
+
 > Built natively with [Effect TypeScript](https://effect.website/) (`effect@4.0.0-rc.112`) and deployed via [Alchemy](https://alchemy.run).
 
-Based on the architectural principles and formal verification frameworks from _Operational Ontology: From Business Mirror to Decision Runtime_ (Bailing Zhang, 2026).
+Based on the architectural principles and formal verification frameworks from _Operational Ontology: From Business Mirror to Decision Runtime_ (Bailing Zhang, 2026). The archived dossier in `docs/archive/` is historical and is not a contract for this tree.
 
 ---
 
@@ -35,13 +36,13 @@ The workspace is organized into a modular pnpm monorepo of core packages under `
 | [`@operon/cli`](file:///Users/enzotironi/operationalonto/packages/cli/README.md) | Official command-line interface built on pure Effect fibers (`doctor`, `object`, `readiness`, `action`, etc.). |
 | [`@operon/telemetry`](file:///Users/enzotironi/operationalonto/packages/telemetry/README.md) | Production observability (Sentry + PostHog), PII/secret scrubbing, Effect log layers, and distributed tracing. |
 | [`@operon/osdk`](file:///Users/enzotironi/operationalonto/packages/osdk/README.md) | Type-safe client SDK and TypeScript code generator for frontend and service integration. |
-| [`@operon/mcp`](file:///Users/enzotironi/operationalonto/packages/mcp/README.md) | Model Context Protocol server, dual-key isolation (Consumer vs Builder), and AI-FDE autonomous agents. |
+| [`@operon/mcp`](./packages/mcp/README.md) | Model Context Protocol server and dual-key isolation (Consumer vs Builder). |
 | [`@operon/cell-auth`](./packages/cell-auth) | Better Auth on the cell Postgres: approver sessions and the `SessionVerifier` the kernel trusts. |
 | [`@operon/alchemy`](./packages/alchemy/README.md) | The cell's PostgreSQL 17 in Docker, provisioned by [Alchemy](https://alchemy.run) (`pnpm cell:up`). |
 
 ### Frozen code (`frozen/`)
 
-The five industry example simulations and the S17/publication validation scripts are frozen out of the build, test, lint, and knip graphs. See [`frozen/README.md`](./frozen/README.md) for the index and rationale.
+The five industry example simulations, the S17/publication validation scripts, and the regex AI-FDE extractor are frozen out of the build, test, lint, and knip graphs. See [`frozen/README.md`](./frozen/README.md) for the index and rationale.
 
 ---
 
@@ -142,7 +143,7 @@ operon oms proposal merge <id> --author <id>
 operon sandbox verify <modelId> [--inputs '<json>'] [--iterations <n>]
 
 # Launch MCP Stdio Server
-operon mcp start [--agent-tier <1|2|3|4>]   # approver bound from OPERON_APPROVER_SESSION_TOKEN
+operon mcp start [--agent-tier <1|2|3|4>]   # default 2 (Propose); approver from OPERON_APPROVER_SESSION_TOKEN
 
 # Cell approver sessions (Better Auth on the cell Postgres)
 operon approver session --email <email> --name <name> [--json]

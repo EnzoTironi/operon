@@ -8,16 +8,14 @@ Model Context Protocol (MCP) server for **Operon**, allowing AI agents (Claude D
 
 - **Dual Key Isolation**:
   - **Consumer Key**: Restricts agents to read queries and bounded action executions under assigned risk tiers.
-  - **Builder Key**: Required for AI Forward Deployed Engineers (AI-FDE) modifying ontology definitions or creating OMS branches.
+  - **Builder Key**: Required to modify ontology definitions or create OMS branches. Builder is not a human approver.
 - **Dynamic Action Tool Projection**:
   - Automatically transforms `@operon/schema` Action cards into MCP tool definitions with JSON Schema parameter validation, risk disclosures, and agent tier requirements.
 - **4-Tier Agent Autonomy Ladder**:
   1. `Tier 1: Observe` — Read-only state inspection.
   2. `Tier 2: Propose` — Actions automatically routed to Action Inbox as pending proposals.
   3. `Tier 3: Execute with Approval` — Requires explicit human confirmation.
-  4. `Tier 4: Bounded Autonomy` — Automated execution within pre-verified safety envelopes.
-- **AI Forward Deployed Engineer (AI-FDE)**:
-  - Agent capable of inspecting schema gaps, proposing schema evolutions, and drafting branch changesets through the Ontology Metadata Service (OMS).
+  4. `Tier 4: Bounded Autonomy` — Automated execution within pre-verified safety envelopes. Opt-in; `operon mcp start` defaults to tier 2.
 
 ---
 
@@ -26,8 +24,8 @@ Model Context Protocol (MCP) server for **Operon**, allowing AI agents (Claude D
 ### Stdio Transport (Claude Desktop / Cursor)
 
 ```bash
-# Start server with default Tier 4 bounded autonomy
-operon mcp start --agent-tier 4
+# Start server with default Consumer / Propose (tier 2)
+operon mcp start
 
 # Start server connected to persistent SQLite bitemporal store
 operon mcp start --agent-tier 2 --db ./operon.db
@@ -45,7 +43,7 @@ operon mcp start --agent-tier 2 --db ./operon.db
         "mcp",
         "start",
         "--agent-tier",
-        "4"
+        "2"
       ]
     }
   }
@@ -68,11 +66,11 @@ const server = createOperonMcpServer({
   inbox,
   securityEngine,
   defaultCallerKey: {
-    agentId: "agent_fde",
-    agentTier: 4,
-    keyId: "builder_key_1",
-    name: "AIFdeAgent",
-    role: "builder",
+    agentId: "agent_consumer",
+    agentTier: 2,
+    keyId: "consumer_key_1",
+    name: "ConsumerAgent",
+    role: "consumer",
   },
 });
 
