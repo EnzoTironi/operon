@@ -31,7 +31,7 @@ const handleObjectGet = Effect.fn("handleObjectGet")(function* (
     printCliError(
       "  Usage: operon object get <typeId> <id> [--json] [--db <path>]"
     );
-    printCliError("  Example: operon object get Patient P001 --json");
+    printCliError("  Example: operon object get Pessoa ana --json");
     return 1;
   }
   // SAFETY: typeId argument from CLI treated as ObjectTypeId
@@ -83,7 +83,7 @@ const handleObjectPut = Effect.fn("handleObjectPut")(function* (
       "  Usage: operon object put --type <typeId> --id <id> --properties '<json>' [--version <n>]"
     );
     printCliError(
-      '  Example: operon object put --type Patient --id P002 --properties \'{"name":"Alice","egfr":70}\''
+      '  Example: operon object put --type Pessoa --id ana --properties \'{"displayName":"Ana Silva","emails":["ana@unimed.com.br"]}\''
     );
     return 1;
   }
@@ -185,7 +185,7 @@ const handleObjectQuery = Effect.fn("handleObjectQuery")(function* (
       "  Usage: operon object query <typeId> [id] [--valid-time <ms>] [--tx-time <ms>] [--json]"
     );
     printCliError(
-      "  Example: operon object query Patient P001 --valid-time 1789000000000 --json"
+      "  Example: operon object query Pessoa ana --valid-time 1789000000000 --json"
     );
     return 1;
   }
@@ -241,7 +241,7 @@ const handleObjectExplain = Effect.fn("handleObjectExplain")(function* (
       "  Usage: operon object explain <typeId> <id> [--valid-time <ms>] [--tx-time <ms>] [--json]"
     );
     printCliError(
-      "  Example: operon object explain Patient P001 --valid-time 1789000000000"
+      "  Example: operon object explain Pessoa ana --valid-time 1789000000000"
     );
     return 1;
   }

@@ -127,7 +127,7 @@ export function runReadiness(
     printCliError(
       "  Usage: operon readiness check <typeId> <id> [--json] [--db <path>]"
     );
-    printCliError("  Example: operon readiness check Patient P001 --json");
+    printCliError("  Example: operon readiness check Pessoa ana --json");
     return Effect.succeed(1);
   }
 

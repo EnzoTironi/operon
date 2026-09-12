@@ -1,6 +1,9 @@
 import { createOperonMcpServer, unboundApprover } from "@operon/mcp";
 import { createOperonClient } from "@operon/osdk";
-import { computeDiagnosticBundleHash } from "@operon/schema";
+import {
+  computeDiagnosticBundleHash,
+  EMAIL_OBJECT_TYPE_IDS,
+} from "@operon/schema";
 import { Effect } from "effect";
 import { beforeEach, describe, expect, it } from "vitest";
 
@@ -24,9 +27,13 @@ describe("Gate G1 / Ticket V1-08: Agent Protocol Parity and Diagnostics (S18)", 
         actionTypes,
       } = ctx;
 
-      // 1. Direct Kernel (OperonService)
+      expect(objectTypes.map((type) => type.id).toSorted()).toEqual([
+        ...EMAIL_OBJECT_TYPE_IDS,
+      ]);
+      expect(actionTypes).toHaveLength(0);
+
       const agentContext = {
-        actor: createSubject("dr_smith", "user", ["clinician", "operator"]),
+        actor: createSubject("operator", "user", ["operator"]),
         correlationId: "parity-run-01",
         environmentId: "default",
         tenantId: "default",
@@ -34,16 +41,16 @@ describe("Gate G1 / Ticket V1-08: Agent Protocol Parity and Diagnostics (S18)", 
 
       const kernelResult = await operonService.invoke(
         agentContext,
-        "action.prepare",
+        "view.generate",
         {
-          actionId: "update_vitals",
-          rawParameters: { heartRate: 72, patientId: "P001" },
+          data: { pessoas: 28 },
+          state: "PROPOSED",
+          title: "Quarantine card",
         }
       );
       expect(kernelResult.status).toBe("SUCCESS");
       expect(kernelResult.result).toBeDefined();
 
-      // 2. SDK (OperonClient)
       const sdkClient = createOperonClient({
         actionTypes,
         auditStore,
@@ -53,21 +60,11 @@ describe("Gate G1 / Ticket V1-08: Agent Protocol Parity and Diagnostics (S18)", 
         operonService,
       });
 
-      const sdkPrepared = await Effect.runPromise(
-        sdkClient.prepareAction(
-          "update_vitals",
-          { heartRate: 72, patientId: "P001" },
-          {
-            environmentId: "default",
-            tenantId: "default",
-          }
-        )
+      const pessoas = await Effect.runPromise(
+        sdkClient.objects["Pessoa"].list()
       );
-      expect(sdkPrepared).toBeDefined();
-      expect(sdkPrepared.actionId).toBe("update_vitals");
-      expect(sdkPrepared.canonicalDigest).toBeDefined();
+      expect(pessoas).toEqual([]);
 
-      // 3. MCP Server
       const mcpServer = createOperonMcpServer({
         approver: unboundApprover,
         actionTypes,
@@ -79,7 +76,6 @@ describe("Gate G1 / Ticket V1-08: Agent Protocol Parity and Diagnostics (S18)", 
       });
       expect(mcpServer).toBeDefined();
 
-      // Diagnostic parity: SDK and Kernel share the same diagnostic view
       const kernelDiag = await Effect.runPromise(
         operonService.diagnose("parity-run-01")
       );
@@ -103,7 +99,6 @@ describe("Gate G1 / Ticket V1-08: Agent Protocol Parity and Diagnostics (S18)", 
         tenantId: "default",
       };
 
-      // Invoke an operation that encounters an error with sensitive payload details
       const result = await operonService.invoke(
         agentContext,
         "action.prepare",
@@ -112,7 +107,6 @@ describe("Gate G1 / Ticket V1-08: Agent Protocol Parity and Diagnostics (S18)", 
           rawParameters: {
             apiKey: "secret_token_live_999888777",
             password: "super_secret_password_123",
-            patientId: "P001",
           },
         }
       );
@@ -120,7 +114,6 @@ describe("Gate G1 / Ticket V1-08: Agent Protocol Parity and Diagnostics (S18)", 
       expect(result.status).toBe("ERROR");
       expect(result.schemaVersion).toBe("operon.v0");
 
-      // Verify diagnostics redacts credentials from entries
       const bundle = await Effect.runPromise(
         operonService.diagnose("secret-scrub-run-01")
       );
@@ -136,17 +129,17 @@ describe("Gate G1 / Ticket V1-08: Agent Protocol Parity and Diagnostics (S18)", 
     it("does distinguish business result, policy result and infrastructure failure in diagnostics (S18, D05)", async () => {
       const { operonService } = ctx;
 
-      // Channel 1: Business Success
       const successContext = {
-        actor: createSubject("operator", "user", ["operator", "clinician"]),
+        actor: createSubject("operator", "user", ["operator"]),
         correlationId: "run-business-success",
         environmentId: "default",
         tenantId: "default",
       };
 
-      await operonService.invoke(successContext, "action.prepare", {
-        actionId: "update_vitals",
-        rawParameters: { heartRate: 75, patientId: "P001" },
+      await operonService.invoke(successContext, "view.generate", {
+        data: { pessoas: 28 },
+        state: "PROPOSED",
+        title: "Quarantine card",
       });
 
       const successDiag = await Effect.runPromise(
@@ -160,7 +153,6 @@ describe("Gate G1 / Ticket V1-08: Agent Protocol Parity and Diagnostics (S18)", 
       );
       expect(successDiag.channelSummary.infrastructureCount).toBe(0);
 
-      // Channel 2: Policy Denial (Self approval denial)
       const policyDeniedContext = {
         actor: createSubject("proposer-01", "agent", ["operator"], 3),
         correlationId: "run-policy-denied",
@@ -168,21 +160,10 @@ describe("Gate G1 / Ticket V1-08: Agent Protocol Parity and Diagnostics (S18)", 
         tenantId: "default",
       };
 
-      // Prepare an action, then attempt self-approval
-      const prepRes = await operonService.invoke(
-        policyDeniedContext,
-        "action.prepare",
-        {
-          actionId: "update_vitals",
-          rawParameters: { heartRate: 75, patientId: "P001" },
-        }
-      );
-      const preparedDigest = (prepRes.result as any).preparedDigest;
-
       await operonService.invoke(policyDeniedContext, "action.approve", {
         decision: "approved",
-        preparedDigest,
-        viewedDigest: preparedDigest,
+        preparedDigest: "missing-digest",
+        viewedDigest: "missing-digest",
       });
 
       const policyDiag = await Effect.runPromise(
@@ -190,10 +171,9 @@ describe("Gate G1 / Ticket V1-08: Agent Protocol Parity and Diagnostics (S18)", 
       );
       expect(policyDiag.policyOutcome?.verdict).toBe("DENY");
       expect(policyDiag.businessOutcome?.status).toBe("violation");
-      expect(policyDiag.infrastructureOutcome?.status).toBe("healthy"); // Infrastructure is completely healthy
+      expect(policyDiag.infrastructureOutcome?.status).toBe("healthy");
       expect(policyDiag.channelSummary.policyCount).toBeGreaterThanOrEqual(1);
 
-      // Channel 3: Infrastructure / Unknown Operation Failure
       const infraContext = {
         actor: createSubject("operator", "user", ["operator"]),
         correlationId: "run-infra-error",
@@ -216,7 +196,6 @@ describe("Gate G1 / Ticket V1-08: Agent Protocol Parity and Diagnostics (S18)", 
         infraDiag.channelSummary.infrastructureCount
       ).toBeGreaterThanOrEqual(1);
 
-      // Verify bundle cryptographic hash
       const computedHash = computeDiagnosticBundleHash({
         businessOutcome: infraDiag.businessOutcome,
         channelSummary: infraDiag.channelSummary,
@@ -231,11 +210,9 @@ describe("Gate G1 / Ticket V1-08: Agent Protocol Parity and Diagnostics (S18)", 
     });
 
     it("does execute operon telemetry diagnose via CLI and reject invalid runs (S18)", async () => {
-      // 1. Missing runId fails with exit code 1
       const missingCode = await Effect.runPromise(runTelemetry(["diagnose"]));
       expect(missingCode).toBe(1);
 
-      // 2. Non-existent runId fails with exit code 1
       const nonExistentCode = await Effect.runPromise(
         runTelemetry(["diagnose", "non_existent_run_id_xyz", "--json"])
       );
