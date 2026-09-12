@@ -1,7 +1,9 @@
 # Vendored executor wedge
 
 Upstream: https://github.com/UsefulSoftwareCo/executor
+
 Pin: `f1d95f2b657316180992d5a67c24b7b76dc2b0f1` (`v1.6.8-3-gf1d95f2`)
+
 License: MIT, Copyright (c) 2026 Rhys Sullivan. Full text in `LICENSE.executor`.
 
 Third-party notices that travelled with the copy:

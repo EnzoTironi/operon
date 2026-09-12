@@ -33,17 +33,17 @@ Upstream is Useful Software's executor, commit `f1d95f2`, MIT, copyright Rhys Su
 
 Internal subpaths keep the wedge packages without Cloud, UI, billing, or WorkOS:
 
-| Subpath | Upstream |
-| --- | --- |
-| `@operon/gateway/sdk` | `packages/core/sdk` |
-| `@operon/gateway/execution` | `packages/core/execution` |
-| `@operon/gateway/sandbox` | `packages/kernel/runtime-quickjs` |
-| `@operon/gateway/sandbox-core` | `packages/kernel/core` |
-| `@operon/gateway/store` | `packages/core/fumadb` |
+| Subpath                          | Upstream                           |
+| -------------------------------- | ---------------------------------- |
+| `@operon/gateway/sdk`            | `packages/core/sdk`                |
+| `@operon/gateway/execution`      | `packages/core/execution`          |
+| `@operon/gateway/sandbox`        | `packages/kernel/runtime-quickjs`  |
+| `@operon/gateway/sandbox-core`   | `packages/kernel/core`             |
+| `@operon/gateway/store`          | `packages/core/fumadb`             |
 | `@operon/gateway/source-openapi` | `packages/plugins/openapi/src/sdk` |
 | `@operon/gateway/source-graphql` | `packages/plugins/graphql/src/sdk` |
-| `@operon/gateway/source-mcp` | `packages/plugins/mcp/src/sdk` |
-| `@operon/gateway/source-secrets` | `packages/plugins/file-secrets` |
-| `@operon/gateway/mcp` | narrow host MCP envelope |
+| `@operon/gateway/source-mcp`     | `packages/plugins/mcp/src/sdk`     |
+| `@operon/gateway/source-secrets` | `packages/plugins/file-secrets`    |
+| `@operon/gateway/mcp`            | narrow host MCP envelope           |
 
 Effect is the workspace catalog version `4.0.0-rc.112`. There is no second Effect copy.
