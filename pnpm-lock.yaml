@@ -368,6 +368,9 @@ importers:
       '@operon/assurance':
         specifier: workspace:*
         version: link:../assurance
+      '@operon/gateway':
+        specifier: workspace:*
+        version: link:../gateway
       '@operon/generated-ui':
         specifier: workspace:*
         version: link:../generated-ui

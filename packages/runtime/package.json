@@ -19,6 +19,7 @@
   "dependencies": {
     "@effect/sql-pg": "4.0.0-rc.112",
     "@operon/assurance": "workspace:*",
+    "@operon/gateway": "workspace:*",
     "@operon/generated-ui": "workspace:*",
     "@operon/schema": "workspace:*",
     "@operon/telemetry": "workspace:*",
