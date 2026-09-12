@@ -1,17 +1,19 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { CellAuth, CellSessionVerifier } from "@operon/cell-auth";
 import {
   AccountableIngestionService,
   InMemoryAuditStore,
   InMemoryObjectStore,
   OntologyMetadataService,
   ReconciliationService,
+  SessionVerifier,
 } from "@operon/runtime";
-import { Effect } from "effect";
+import { Effect, Layer, Redacted } from "effect";
 import { describe, expect, it } from "vitest";
 
-import type { McpKey } from "./index.js";
-import { createOperonMcpServer } from "./index.js";
+import type { ApproverBinding, McpKey } from "./index.js";
+import { createOperonMcpServer, unboundApprover } from "./index.js";
 
 const consumerKey: McpKey = {
   agentId: "companion-consumer",
@@ -49,9 +51,14 @@ interface Harness {
   readonly reconciliationService: ReconciliationService;
 }
 
-async function connect(key: McpKey, harness: Harness): Promise<Client> {
+async function connect(
+  key: McpKey,
+  harness: Harness,
+  approver: ApproverBinding = unboundApprover
+): Promise<Client> {
   const server = createOperonMcpServer({
     actionTypes: [],
+    approver,
     auditStore: new InMemoryAuditStore(),
     defaultCallerKey: key,
     ingestionService: harness.ingestionService,
@@ -69,6 +76,40 @@ async function connect(key: McpKey, harness: Harness): Promise<Client> {
   );
   await client.connect(clientTransport);
   return client;
+}
+
+interface OwnerSession {
+  readonly binding: ApproverBinding;
+  readonly userId: string;
+}
+
+/** The clinic owner with a live session on a memory-backed cell auth store. */
+async function issueOwnerSession(): Promise<OwnerSession> {
+  return await Effect.runPromise(
+    Effect.gen(function* () {
+      const auth = yield* CellAuth;
+      const verifier = yield* SessionVerifier;
+      const issued = yield* auth.issueApproverSession({
+        email: "owner@clinica.example",
+        name: "Dona da clínica",
+      });
+      return {
+        binding: { _tag: "Session", token: issued.token, verifier },
+        userId: issued.userId,
+      } satisfies OwnerSession;
+    }).pipe(
+      Effect.provide(
+        Layer.provideMerge(
+          CellSessionVerifier,
+          CellAuth.layer({
+            secret: Redacted.make("email-admission-secret-32-chars!!!"),
+            store: { kind: "memory" },
+          })
+        )
+      ),
+      Effect.scoped
+    )
+  );
 }
 
 async function call(client: Client, name: string, args: object) {
@@ -208,21 +249,30 @@ describe("email magic factor through MCP (Q -> C -> L)", () => {
     expect(consumerAdmit.isError).toBe(true);
     expect(consumerAdmit.body.error).toBe("McpSecurityError");
 
-    const selfReview = await call(builder, "operon_review_mapping_proposal", {
-      proposalId: proposal.proposalId,
-      reviewerId: builderKey.agentId,
-      verdict: "approve",
-      viewedDigest: proposal.digest,
-    });
-    expect(selfReview.isError).toBe(true);
-    expect(selfReview.body.error).toBe("SelfReviewDeniedError");
+    const unboundReview = await call(
+      builder,
+      "operon_review_mapping_proposal",
+      {
+        proposalId: proposal.proposalId,
+        reviewerId: "owner-clinic",
+        verdict: "approve",
+        viewedDigest: proposal.digest,
+      }
+    );
+    expect(unboundReview.isError).toBe(true);
+    expect(unboundReview.body.error).toBe("ApproverNotBoundError");
 
-    const staleReview = await call(builder, "operon_review_mapping_proposal", {
-      proposalId: proposal.proposalId,
-      reviewerId: "owner-clinic",
-      verdict: "approve",
-      viewedDigest: "0".repeat(64),
-    });
+    const owner = await issueOwnerSession();
+    const boundBuilder = await connect(builderKey, harness, owner.binding);
+    const staleReview = await call(
+      boundBuilder,
+      "operon_review_mapping_proposal",
+      {
+        proposalId: proposal.proposalId,
+        verdict: "approve",
+        viewedDigest: "0".repeat(64),
+      }
+    );
     expect(staleReview.isError).toBe(true);
     expect(staleReview.body.error).toBe("StaleReviewError");
 
@@ -246,14 +296,15 @@ describe("email magic factor through MCP (Q -> C -> L)", () => {
 
   it("admits one approved digest to main at grade batch and clears the candidates", async () => {
     const harness = makeHarness();
-    const builder = await connect(builderKey, harness);
+    const owner = await issueOwnerSession();
+    const builder = await connect(builderKey, harness, owner.binding);
     const consumer = await connect(consumerKey, harness);
     const { proposal } = await ingestAndPropose(builder);
 
     const review = await call(builder, "operon_review_mapping_proposal", {
       comments: "As 3 pessoas com quem falei nos últimos 30 dias",
       proposalId: proposal.proposalId,
-      reviewerId: "owner-clinic",
+      reviewerId: "spoofed-owner",
       reviewerRoles: ["owner"],
       verdict: "approve",
       viewedDigest: proposal.digest,
@@ -265,9 +316,14 @@ describe("email magic factor through MCP (Q -> C -> L)", () => {
         comments: "As 3 pessoas com quem falei nos últimos 30 dias",
         reviewedAt: expect.any(Number),
         reviewer: {
-          id: "owner-clinic",
-          name: "owner-clinic",
-          roles: ["owner"],
+          id: owner.userId,
+          metadata: {
+            email: "owner@clinica.example",
+            issuer: "operon-cell",
+            sessionId: expect.any(String),
+          },
+          name: "Dona da clínica",
+          roles: ["approver"],
           type: "user",
         },
         verdict: "approve",

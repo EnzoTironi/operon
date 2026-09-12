@@ -585,18 +585,15 @@ const handleReviewMappingProposal = Effect.fn("handleReviewMappingProposal")(
         "verdict must be one of approve, reject, request_changes"
       );
     }
-    const reviewerId = String(ctx.args.reviewerId);
-    // SAFETY: reviewerRoles is a string array
-    const roles = Array.isArray(ctx.args.reviewerRoles)
-      ? (ctx.args.reviewerRoles as string[])
-      : ["approver"];
+    // The reviewer is the human bound to this server, never a relayed name.
+    const approver = yield* ctx.approver;
     const now = yield* Clock.currentTimeMillis;
     const reviewed = yield* ctx.ingestionService.reviewProposal({
       proposalId: String(ctx.args.proposalId),
       review: {
         comments: ctx.args.comments ? String(ctx.args.comments) : "",
         reviewedAt: now,
-        reviewer: { id: reviewerId, name: reviewerId, roles, type: "user" },
+        reviewer: principalSubject(approver),
         verdict: verdict.value,
       },
       viewedDigest: String(ctx.args.viewedDigest),

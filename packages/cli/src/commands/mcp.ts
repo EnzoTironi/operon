@@ -6,7 +6,10 @@ import { SessionVerifier } from "@operon/runtime";
 import type { SessionToken } from "@operon/runtime";
 import { Cause, Context, Effect, Exit, Layer, Option, Scope } from "effect";
 
-import { readApproverSessionToken, resolveCellAuthConfig } from "../cell-auth-config.js";
+import {
+  readApproverSessionToken,
+  resolveCellAuthConfig,
+} from "../cell-auth-config.js";
 import { printCliError } from "../io.js";
 import { createRuntimeContext } from "../state.js";
 import type { DatabaseTarget } from "../state.js";

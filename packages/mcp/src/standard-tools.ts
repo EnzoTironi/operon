@@ -396,13 +396,11 @@ export const STANDARD_TOOL_DEFINITIONS: readonly StandardToolDefinition[] = [
   },
   {
     description:
-      "Record a human review of a mapping proposal (batch admission). The reviewer must be a human user other than the author and must cite the digest they viewed. Agents never grant approval.",
+      "Record a human review of a mapping proposal (batch admission) as the human whose authenticated cell session is bound to this server. The reviewer must differ from the author and must cite the digest they viewed. Fails when no approver session is bound; reviewer identity is never taken from arguments.",
     inputSchema: {
       properties: {
         comments: { type: "string" },
         proposalId: { type: "string" },
-        reviewerId: { description: "Human reviewer ID", type: "string" },
-        reviewerRoles: { items: { type: "string" }, type: "array" },
         verdict: {
           enum: ["approve", "reject", "request_changes"],
           type: "string",
@@ -412,7 +410,7 @@ export const STANDARD_TOOL_DEFINITIONS: readonly StandardToolDefinition[] = [
           type: "string",
         },
       },
-      required: ["proposalId", "reviewerId", "verdict", "viewedDigest"],
+      required: ["proposalId", "verdict", "viewedDigest"],
       type: "object",
     },
     name: "operon_review_mapping_proposal",

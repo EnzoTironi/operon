@@ -677,10 +677,14 @@ describe("@operon/mcp", () => {
     const objectStore = new InMemoryObjectStore();
     const auditStore = new InMemoryAuditStore();
     const oms = new OntologyMetadataService();
+    const opsOwner = await issueMemoryApprover({
+      email: "ops-owner@plant.example",
+      name: "Ops Owner",
+    });
 
     const server = createOperonMcpServer({
-      approver: unboundApprover,
       actionTypes: [],
+      approver: opsOwner.binding,
       auditStore,
       defaultCallerKey: {
         agentId: "fde-builder-agent",
@@ -771,18 +775,19 @@ describe("@operon/mcp", () => {
       "ApprovalsPolicyViolationError"
     );
 
-    // 6. A human approves the digest, then admission merges the batch
+    // 6. The bound human approves the digest, then admission merges the batch
     const reviewRes = (await client.callTool({
       arguments: {
         proposalId: proposal.proposalId,
-        reviewerId: "ops-owner",
         verdict: "approve",
         viewedDigest: proposal.digest,
       },
       name: "operon_review_mapping_proposal",
     })) as any;
     expect(reviewRes.isError).toBeFalsy();
-    expect(JSON.parse(reviewRes.content[0].text).status).toBe("approved");
+    const reviewed = JSON.parse(reviewRes.content[0].text);
+    expect(reviewed.status).toBe("approved");
+    expect(reviewed.reviews[0].reviewer.id).toBe(opsOwner.userId);
 
     const admitRes = (await client.callTool({
       arguments: { proposalId: proposal.proposalId },

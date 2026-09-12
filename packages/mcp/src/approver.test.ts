@@ -30,7 +30,10 @@ const updateVitals = defineActionType({
             {
               ...patient,
               lastModifiedAt: ctx.now,
-              properties: { ...patient.properties, heartRate: params.heartRate },
+              properties: {
+                ...patient.properties,
+                heartRate: params.heartRate,
+              },
               version: patient.version + 1,
             },
           ]
@@ -176,7 +179,10 @@ describe("MCP approver binding", () => {
           readonly name: string;
           readonly roles: readonly string[];
           readonly type: string;
-          readonly metadata: { readonly issuer: string; readonly email: string };
+          readonly metadata: {
+            readonly issuer: string;
+            readonly email: string;
+          };
         };
       };
     };
