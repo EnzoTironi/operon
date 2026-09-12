@@ -49,7 +49,7 @@ function bearerCredential(value: string | undefined): string | undefined {
   if (trimmed.length === 0) {
     return undefined;
   }
-  return trimmed.replace(/^Bearer\s+/i, "");
+  return trimmed.replace(/^Bearer\s+/iu, "");
 }
 
 /**

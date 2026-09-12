@@ -7,12 +7,9 @@ import {
   readApproverSessionToken,
 } from "./cell-auth-config.js";
 
-const tracked = [SESSION_TOKEN_ENV, APPROVER_SESSION_TOKEN_ENV] as const;
-
 afterEach(() => {
-  for (const name of tracked) {
-    delete process.env[name];
-  }
+  process.env.OPERON_SESSION = "";
+  process.env.OPERON_APPROVER_SESSION_TOKEN = "";
 });
 
 describe("readApproverSessionToken", () => {

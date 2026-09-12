@@ -603,7 +603,7 @@ describe("@operon/cli test suite", () => {
       const top = await Effect.runPromise(runCli(["--help"]));
       expect(top).toBe(0);
       expect(logs.join("\n")).not.toContain("operon approver session");
-      expect(logs.join("\n")).not.toMatch(/^\s+approver\s+/m);
+      expect(logs.join("\n")).not.toMatch(/^\s+approver\s+/mu);
 
       logs.length = 0;
       const hidden = await Effect.runPromise(runCli(["approver", "--help"]));

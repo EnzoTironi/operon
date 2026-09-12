@@ -19,7 +19,7 @@ export const APPROVER_ROLE = "approver";
  */
 export function bearerAuthorization(token: SessionToken): string {
   const raw = Redacted.value(token).trim();
-  const credential = raw.replace(/^Bearer\s+/i, "");
+  const credential = raw.replace(/^Bearer\s+/iu, "");
   return `Bearer ${credential}`;
 }
 
@@ -142,7 +142,7 @@ const issueApproverSessionWith = (auth: CellBetterAuth) =>
         );
         const user =
           existing?.user ??
-          (          await context.internalAdapter.createUser(
+          (await context.internalAdapter.createUser(
             {
               email: input.email,
               emailVerified: true,

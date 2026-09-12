@@ -79,46 +79,46 @@ describe("CellAuth on the memory store", () => {
       })
     ));
 
-    it("accepts the same token presented as an Authorization Bearer credential", () =>
-      run(
-        Effect.gen(function* () {
-          const auth = yield* CellAuth;
-          const issued = yield* auth.issueApproverSession(ana);
-          const principal = yield* auth.verifySession(
-            Redacted.make(`Bearer ${Redacted.value(issued.token)}`)
-          );
-          expect(principal.userId).toBe(issued.userId);
-          expect(principal.roles).toEqual([APPROVER_ROLE]);
-        })
-      ));
+  it("accepts the same token presented as an Authorization Bearer credential", () =>
+    run(
+      Effect.gen(function* () {
+        const auth = yield* CellAuth;
+        const issued = yield* auth.issueApproverSession(ana);
+        const principal = yield* auth.verifySession(
+          Redacted.make(`Bearer ${Redacted.value(issued.token)}`)
+        );
+        expect(principal.userId).toBe(issued.userId);
+        expect(principal.roles).toEqual([APPROVER_ROLE]);
+      })
+    ));
 
-    it("rejects tokens it never issued", () =>
-      run(
-        Effect.gen(function* () {
-          const auth = yield* CellAuth;
-          yield* auth.issueApproverSession(ana);
-          const exit = yield* Effect.exit(
-            auth.verifySession(Redacted.make("not-a-session"))
-          );
-          expect(failureTag(exit)).toBe("AuthenticationError");
-        })
-      ));
+  it("rejects tokens it never issued", () =>
+    run(
+      Effect.gen(function* () {
+        const auth = yield* CellAuth;
+        yield* auth.issueApproverSession(ana);
+        const exit = yield* Effect.exit(
+          auth.verifySession(Redacted.make("not-a-session"))
+        );
+        expect(failureTag(exit)).toBe("AuthenticationError");
+      })
+    ));
 
-    it("rejects a JWT-shaped token instead of verifying HS256", () =>
-      run(
-        Effect.gen(function* () {
-          const auth = yield* CellAuth;
-          yield* auth.issueApproverSession(ana);
-          const exit = yield* Effect.exit(
-            auth.verifySession(
-              Redacted.make(
-                "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJhbmEifQ.not-a-signature"
-              )
+  it("rejects a JWT-shaped token instead of verifying HS256", () =>
+    run(
+      Effect.gen(function* () {
+        const auth = yield* CellAuth;
+        yield* auth.issueApproverSession(ana);
+        const exit = yield* Effect.exit(
+          auth.verifySession(
+            Redacted.make(
+              "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJhbmEifQ.not-a-signature"
             )
-          );
-          expect(failureTag(exit)).toBe("AuthenticationError");
-        })
-      ));
+          )
+        );
+        expect(failureTag(exit)).toBe("AuthenticationError");
+      })
+    ));
 
   it("rejects a revoked session on the next verification", () =>
     run(
