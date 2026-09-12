@@ -4,7 +4,6 @@ import { Clock, Effect } from "effect";
 import { runAction } from "./commands/action.js";
 import { runAssurance } from "./commands/assurance.js";
 import { runAudit } from "./commands/audit.js";
-import { runDemo } from "./commands/demo.js";
 import { runDoctor } from "./commands/doctor.js";
 import { runInbox } from "./commands/inbox.js";
 import { runMcp } from "./commands/mcp.js";
@@ -43,7 +42,6 @@ Commands:
   assurance           Dual F1/F2 release evaluation, mirror verification, and publication boundary check
   mcp                 Launch Model Context Protocol (MCP) server over stdio for Claude Desktop / Cursor
   telemetry           Inspect Sentry & PostHog telemetry status, privacy scrubber, and diagnostic ping
-  demo                Run end-to-end domain simulations (healthcare, aviation, wastewater, sompo, education)
 
 Global Flags:
   --json              Output structured machine-readable JSON
@@ -60,7 +58,6 @@ Examples:
   operon inbox list --json
   operon audit verify --json
   operon sandbox verify predictive_vibration_model --inputs '{"value":14.2}'
-  operon demo healthcare
 `);
 }
 
@@ -170,18 +167,6 @@ Examples:
   operon mcp start --agent-tier 4
 `;
 
-const DEMO_HELP = `
-Usage:
-  operon demo <healthcare|aviation|wastewater|sompo|education>
-
-Examples:
-  operon demo healthcare
-  operon demo aviation
-  operon demo wastewater
-  operon demo sompo
-  operon demo education
-`;
-
 const TELEMETRY_HELP = `
 Usage:
   operon telemetry status [--ping] [--json]
@@ -279,7 +264,6 @@ const COMMAND_RUNNERS = {
   action: (args) => runAction(args.slice(1)),
   assurance: (args) => runAssurance(args.slice(1)),
   audit: (args) => runAudit(args.slice(1)),
-  demo: (args) => runDemo(args.slice(1)),
   doctor: (args) => executeDoctor(args),
   inbox: (args) => runInbox(args.slice(1)),
   mcp: (args) => runMcp(args.slice(1)),
@@ -299,7 +283,6 @@ const COMMAND_HELP = {
   action: ACTION_HELP,
   assurance: ASSURANCE_HELP,
   audit: AUDIT_HELP,
-  demo: DEMO_HELP,
   doctor: DOCTOR_HELP,
   inbox: INBOX_HELP,
   mcp: MCP_HELP,
@@ -319,7 +302,6 @@ const REQUIRE_SUBCOMMAND_FOR_HELP = new Set([
   "action",
   "assurance",
   "audit",
-  "demo",
   "inbox",
   "object",
   "oms",
@@ -340,7 +322,7 @@ function handleUnknownCommand(
 ): Effect.Effect<number, unknown, never> {
   console.error(`Error: Unknown command '${command}'\n`);
   console.error(
-    "  Available commands: doctor, object, readiness, action, inbox, audit, oms, skill, recipe, source, reconcile, sandbox, view, assurance, mcp, telemetry, demo"
+    "  Available commands: doctor, object, readiness, action, inbox, audit, oms, skill, recipe, source, reconcile, sandbox, view, assurance, mcp, telemetry"
   );
   console.error("  Run 'operon --help' to see usage and examples.");
   return Effect.succeed(1);
@@ -439,7 +421,6 @@ export * from "./commands/audit.js";
 export * from "./commands/oms.js";
 export * from "./commands/sandbox.js";
 export * from "./commands/mcp.js";
-export * from "./commands/demo.js";
 export * from "./commands/telemetry.js";
 export * from "./commands/skill.js";
 export * from "./commands/recipe.js";

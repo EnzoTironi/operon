@@ -146,18 +146,6 @@ operon telemetry status
 operon telemetry status --ping --json
 ```
 
-### 11. `demo`
-
-Runs end-to-end industry simulation reference implementations.
-
-```bash
-operon demo healthcare
-operon demo aviation
-operon demo wastewater
-operon demo sompo
-operon demo education
-```
-
 ---
 
 ## Architecture

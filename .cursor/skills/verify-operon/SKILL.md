@@ -164,7 +164,7 @@ node packages/cli/dist/bin.js doctor --json > .evidence/verify-operon/doctor.jso
 Or run the automated helper:
 
 ```bash
-pnpm --filter @operon/cli run verify:all
+pnpm run verify:all
 ```
 
 ---
