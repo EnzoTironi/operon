@@ -1,24 +1,20 @@
 {
   "name": "@operon/alchemy",
   "version": "0.1.0",
-  "description": "Infrastructure as Effects for Operon using Alchemy",
+  "private": true,
+  "description": "Operon cell infrastructure: PostgreSQL 17 in Docker, provisioned by Alchemy",
   "type": "module",
-  "main": "./dist/index.js",
-  "types": "./dist/index.d.ts",
-  "exports": {
-    ".": {
-      "import": "./dist/index.js",
-      "types": "./dist/index.d.ts"
-    }
-  },
   "scripts": {
-    "build": "tsc -b",
-    "clean": "rm -rf dist *.tsbuildinfo",
-    "test": "vitest run"
+    "build": "tsc -p tsconfig.json",
+    "clean": "rm -rf *.tsbuildinfo",
+    "test": "vitest run",
+    "env": "node --experimental-strip-types src/ensure-env.ts",
+    "plan": "umask 077 && mkdir -p .alchemy && chmod 700 .alchemy && STAGE=\"${STAGE:-local}\" node --experimental-strip-types ./node_modules/alchemy/bin/alchemy.js plan --env-file ../../.env",
+    "up": "pnpm run env && umask 077 && mkdir -p .alchemy && chmod 700 .alchemy && STAGE=\"${STAGE:-local}\" node --experimental-strip-types ./node_modules/alchemy/bin/alchemy.js deploy --env-file ../../.env --yes",
+    "down": "umask 077 && mkdir -p .alchemy && chmod 700 .alchemy && STAGE=\"${STAGE:-local}\" node --experimental-strip-types ./node_modules/alchemy/bin/alchemy.js destroy --env-file ../../.env --yes"
   },
   "dependencies": {
-    "@operon/runtime": "workspace:*",
-    "@operon/schema": "workspace:*",
+    "@effect/platform-node": "4.0.0-rc.112",
     "alchemy": "2.0.0-beta.76",
     "effect": "4.0.0-rc.112"
   },

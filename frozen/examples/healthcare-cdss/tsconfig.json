@@ -10,7 +10,6 @@
   "references": [
     { "path": "../../../packages/schema" },
     { "path": "../../../packages/runtime" },
-    { "path": "../../../packages/mcp" },
-    { "path": "../../../packages/alchemy" }
+    { "path": "../../../packages/mcp" }
   ]
 }

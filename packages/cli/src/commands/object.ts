@@ -313,7 +313,7 @@ export function runObject(
   return Effect.acquireUseRelease(
     Effect.promise(() => createRuntimeContext(dbPath)),
     (ctx) => executeObject(ctx, sub, args, isJson),
-    (ctx) => Effect.sync(() => ctx.close())
+    (ctx) => Effect.promise(() => ctx.close())
   ).pipe(
     Effect.annotateLogs({ command: "object", subcommand: args[0] ?? "none" })
   );

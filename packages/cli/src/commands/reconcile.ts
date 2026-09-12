@@ -253,7 +253,7 @@ export function runReconcile(
   return Effect.acquireUseRelease(
     Effect.promise(() => createRuntimeContext(dbPath)),
     (ctx) => executeReconcile(ctx, sub, args, isJson),
-    (ctx) => Effect.sync(() => ctx.close())
+    (ctx) => Effect.promise(() => ctx.close())
   ).pipe(
     Effect.annotateLogs({ command: "reconcile", subcommand: args[0] ?? "none" })
   );

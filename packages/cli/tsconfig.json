@@ -9,14 +9,32 @@
   "include": ["src/**/*"],
   "exclude": ["node_modules", "dist", "**/*.test.ts"],
   "references": [
-    { "path": "../schema" },
-    { "path": "../assurance" },
-    { "path": "../runtime" },
-    { "path": "../mcp" },
-    { "path": "../osdk" },
-    { "path": "../alchemy" },
-    { "path": "../telemetry" },
-    { "path": "../skills" },
-    { "path": "../recipes" }
+    {
+      "path": "../schema"
+    },
+    {
+      "path": "../assurance"
+    },
+    {
+      "path": "../cell-auth"
+    },
+    {
+      "path": "../runtime"
+    },
+    {
+      "path": "../mcp"
+    },
+    {
+      "path": "../osdk"
+    },
+    {
+      "path": "../telemetry"
+    },
+    {
+      "path": "../skills"
+    },
+    {
+      "path": "../recipes"
+    }
   ]
 }

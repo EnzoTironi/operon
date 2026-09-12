@@ -1,16 +1,15 @@
 {
   "extends": "../../tsconfig.json",
   "compilerOptions": {
-    "outDir": "./dist",
-    "rootDir": "./src",
+    "composite": false,
+    "declaration": false,
+    "declarationMap": false,
+    "sourceMap": false,
+    "noEmit": true,
+    "allowImportingTsExtensions": true,
     "strict": true,
     "strictNullChecks": true
   },
-  "include": ["src/**/*"],
-  "exclude": ["node_modules", "dist", "**/*.test.ts"],
-  "references": [
-    { "path": "../schema" },
-    { "path": "../runtime" },
-    { "path": "../mcp" }
-  ]
+  "include": ["alchemy.run.ts", "src/**/*"],
+  "exclude": ["node_modules", ".alchemy", "**/*.test.ts"]
 }

@@ -419,6 +419,6 @@ export function runSource(args: string[]): Effect.Effect<number> {
   return Effect.acquireUseRelease(
     Effect.promise(() => createRuntimeContext(dbPath)),
     (ctx) => executeSource({ action, args, ctx, isJson, tenantId }),
-    (ctx) => Effect.sync(() => ctx.close())
+    (ctx) => Effect.promise(() => ctx.close())
   );
 }

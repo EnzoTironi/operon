@@ -22,6 +22,7 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",
     "@operon/assurance": "workspace:*",
+    "@operon/cell-auth": "workspace:^",
     "@operon/generated-ui": "workspace:*",
     "@operon/mcp": "workspace:*",
     "@operon/recipes": "workspace:*",

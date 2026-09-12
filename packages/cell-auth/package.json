@@ -1,0 +1,31 @@
+{
+  "name": "@operon/cell-auth",
+  "version": "0.1.0",
+  "description": "Better Auth for the Operon cell: session store on the cell Postgres and the SessionVerifier the kernel trusts",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "clean": "rm -rf dist *.tsbuildinfo",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@operon/runtime": "workspace:*",
+    "better-auth": "1.7.4",
+    "effect": "4.0.0-rc.112",
+    "pg": "^8.23.0"
+  },
+  "devDependencies": {
+    "@testcontainers/postgresql": "12.1.0",
+    "@types/pg": "^8.23.1",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  }
+}

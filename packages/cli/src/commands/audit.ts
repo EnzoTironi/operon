@@ -107,7 +107,7 @@ export function runAudit(
   return Effect.acquireUseRelease(
     Effect.promise(() => createRuntimeContext(dbPath)),
     (ctx) => executeAudit(ctx, sub, args, isJson),
-    (ctx) => Effect.sync(() => ctx.close())
+    (ctx) => Effect.promise(() => ctx.close())
   ).pipe(
     Effect.annotateLogs({ command: "audit", subcommand: args[0] ?? "none" })
   );

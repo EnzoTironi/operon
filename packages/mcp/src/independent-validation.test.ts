@@ -12,6 +12,7 @@ import { defineActionType, parseJson } from "@operon/schema";
 import { Effect, Schema } from "effect";
 import { describe, expect, it } from "vitest";
 
+import { unboundApprover } from "./approver.js";
 import { createOperonMcpServer } from "./server.js";
 
 describe("Independent MCP approval trust-boundary validation", () => {
@@ -38,6 +39,7 @@ describe("Independent MCP approval trust-boundary validation", () => {
         ],
       });
       const server = createOperonMcpServer({
+        approver: unboundApprover,
         actionTypes: [action],
         auditStore: new InMemoryAuditStore(),
         objectStore: new InMemoryObjectStore(),

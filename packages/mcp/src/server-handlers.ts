@@ -13,9 +13,11 @@ import type {
   ActionInbox,
   AtomicCommitService,
   AuditStore,
+  AuthenticationError,
   AuthorityService,
   DynamicSecurityEngine,
   GovernedActionService,
+  HumanPrincipal,
   ObjectStore,
   OntologyMetadataService,
   OperonService,
@@ -26,6 +28,7 @@ import type {
 import {
   evaluateDecisionReadiness,
   executeWritePipeline,
+  principalSubject,
 } from "@operon/runtime";
 import {
   createWorldView,
@@ -49,6 +52,7 @@ import type {
 import type { SkillRegistryService } from "@operon/skills";
 import { Clock, Effect, Exit, Option, Predicate, Schema } from "effect";
 
+import type { ApproverNotBoundError } from "./approver.js";
 import type { McpKey } from "./keys.js";
 import { checkMcpKeyPermission } from "./keys.js";
 
@@ -67,6 +71,11 @@ export interface ToolExecutionContext {
   readonly args: ActionParameters;
   readonly callerKey: McpKey;
   readonly callerSubject: Subject;
+  /** The verified human behind this server, or a refusal. Resolved lazily per call. */
+  readonly approver: Effect.Effect<
+    HumanPrincipal,
+    ApproverNotBoundError | AuthenticationError
+  >;
   readonly objectStore: ObjectStore;
   readonly auditStore: AuditStore;
   readonly oms: OntologyMetadataService;
@@ -576,18 +585,15 @@ const handleReviewMappingProposal = Effect.fn("handleReviewMappingProposal")(
         "verdict must be one of approve, reject, request_changes"
       );
     }
-    const reviewerId = String(ctx.args.reviewerId);
-    // SAFETY: reviewerRoles is a string array
-    const roles = Array.isArray(ctx.args.reviewerRoles)
-      ? (ctx.args.reviewerRoles as string[])
-      : ["approver"];
+    // The reviewer is the human bound to this server, never a relayed name.
+    const approver = yield* ctx.approver;
     const now = yield* Clock.currentTimeMillis;
     const reviewed = yield* ctx.ingestionService.reviewProposal({
       proposalId: String(ctx.args.proposalId),
       review: {
         comments: ctx.args.comments ? String(ctx.args.comments) : "",
         reviewedAt: now,
-        reviewer: { id: reviewerId, name: reviewerId, roles, type: "user" },
+        reviewer: principalSubject(approver),
         verdict: verdict.value,
       },
       viewedDigest: String(ctx.args.viewedDigest),
@@ -905,48 +911,25 @@ const handlePrepareAction = Effect.fn("handlePrepareAction")(function* (
   };
 });
 
-function buildReviewerSubject(
-  args: ActionParameters,
-  callerKey: McpKey
-): Subject {
-  // SAFETY: reviewerRoles is string array
-  const roles = Array.isArray(args.reviewerRoles)
-    ? (args.reviewerRoles as string[])
-    : ["approver"];
-  // SAFETY: reviewerType is subject type
-  const type = (args.reviewerType as "user" | "agent" | "system") || "user";
-
-  return {
-    agentTier: 4,
-    id: args.reviewerId ? String(args.reviewerId) : callerKey.agentId,
-    name: callerKey.name,
-    roles,
-    type,
-  };
-}
-
 const handleApprovePreparedAction = Effect.fn("handleApprovePreparedAction")(
   function* (ctx: ToolExecutionContext) {
     yield* checkMcpKeyPermission(ctx.callerKey, "execute_action");
-    const reviewer = buildReviewerSubject(ctx.args, ctx.callerKey);
+    // The reviewer is the human bound to this server, never a relayed name.
+    const approver = yield* ctx.approver;
     // SAFETY: decision is approved/rejected
     const decision =
       (ctx.args.decision as "approved" | "rejected") || "approved";
-    // SAFETY: assurance is human_verified/delegated_service
-    const assurance =
-      (ctx.args.assurance as "human_verified" | "delegated_service") ||
-      "human_verified";
 
     const approval = yield* ctx.governedActionService.approvePreparedAction({
       decision,
       preparedDigest: String(ctx.args.preparedDigest),
       reason: ctx.args.reason ? String(ctx.args.reason) : undefined,
       reviewerContext: {
-        assurance,
+        assurance: "human_verified",
         environmentId: ctx.args.environmentId
           ? String(ctx.args.environmentId)
           : "default",
-        reviewer,
+        reviewer: principalSubject(approver),
         tenantId: ctx.args.tenantId ? String(ctx.args.tenantId) : "default",
       },
       viewedDigest: String(ctx.args.viewedDigest),

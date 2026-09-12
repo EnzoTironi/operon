@@ -27,6 +27,7 @@
     "effect": "4.0.0-rc.112"
   },
   "devDependencies": {
+    "@operon/cell-auth": "workspace:^",
     "typescript": "^5.7.2",
     "vitest": "^2.1.8"
   }
