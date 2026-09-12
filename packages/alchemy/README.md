@@ -45,6 +45,6 @@ Keep `packages/alchemy/.alchemy/` while the resources exist and use the same sta
 
 ## Notes
 
-- The scripts call `node ./node_modules/alchemy/bin/alchemy.js` directly. The published `alchemy` launcher switches to Bun whenever the package manager path contains the substring `bun`, which is true for any `/home/ubuntu` checkout.
+- The scripts call `node --experimental-strip-types ./node_modules/alchemy/bin/alchemy.js` so Node 22 can load `alchemy.run.ts`. The published `alchemy` launcher switches to Bun whenever the package manager path contains the substring `bun`, which is true for any `/home/ubuntu` checkout.
 - Alchemy's Docker API wants `{}` for the volume props and a shell string for the healthcheck command.
 - `@effect/platform-node-shared` is pinned to `4.0.0-rc.112` in the root `pnpm.overrides` so Alchemy and the workspace share one Effect.

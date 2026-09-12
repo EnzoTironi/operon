@@ -9,9 +9,9 @@
     "clean": "rm -rf *.tsbuildinfo",
     "test": "vitest run",
     "env": "node --experimental-strip-types src/ensure-env.ts",
-    "plan": "umask 077 && mkdir -p .alchemy && chmod 700 .alchemy && STAGE=\"${STAGE:-local}\" node ./node_modules/alchemy/bin/alchemy.js plan --env-file ../../.env",
-    "up": "pnpm run env && umask 077 && mkdir -p .alchemy && chmod 700 .alchemy && STAGE=\"${STAGE:-local}\" node ./node_modules/alchemy/bin/alchemy.js deploy --env-file ../../.env --yes",
-    "down": "umask 077 && mkdir -p .alchemy && chmod 700 .alchemy && STAGE=\"${STAGE:-local}\" node ./node_modules/alchemy/bin/alchemy.js destroy --env-file ../../.env --yes"
+    "plan": "umask 077 && mkdir -p .alchemy && chmod 700 .alchemy && STAGE=\"${STAGE:-local}\" node --experimental-strip-types ./node_modules/alchemy/bin/alchemy.js plan --env-file ../../.env",
+    "up": "pnpm run env && umask 077 && mkdir -p .alchemy && chmod 700 .alchemy && STAGE=\"${STAGE:-local}\" node --experimental-strip-types ./node_modules/alchemy/bin/alchemy.js deploy --env-file ../../.env --yes",
+    "down": "umask 077 && mkdir -p .alchemy && chmod 700 .alchemy && STAGE=\"${STAGE:-local}\" node --experimental-strip-types ./node_modules/alchemy/bin/alchemy.js destroy --env-file ../../.env --yes"
   },
   "dependencies": {
     "@effect/platform-node": "4.0.0-rc.112",
