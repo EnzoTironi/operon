@@ -28,14 +28,11 @@ export interface CellAuthConfig {
   readonly secret: Redacted.Redacted<string>;
 }
 
-export class CellAuthError extends new Schema.TaggedError<CellAuthError>()(
-  "CellAuthError",
-  {
-    operation: Schema.Literals(["migrate", "issue_session", "revoke_session"]),
-    message: Schema.String,
-    cause: Schema.Defect(),
-  }
-) {}
+export class CellAuthError extends Data.TaggedError("CellAuthError")<{
+  readonly operation: "migrate" | "issue_session" | "revoke_session";
+  readonly message: string;
+  readonly cause: unknown;
+}> {}
 
 export interface IssueApproverSessionInput {
   readonly email: string;
