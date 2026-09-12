@@ -257,6 +257,42 @@ describe("@operon/cli test suite", () => {
     expect(listCode).toBe(0);
   });
 
+  it("polls a recorded Gmail mailbox into quarantine via operon source poll", async () => {
+    const dbFile = resolvePath(
+      process.cwd(),
+      `.operon-cli-gmail-poll-${Date.now()}.db`
+    );
+    try {
+      const pollCode = await Effect.runPromise(
+        runCli([
+          "source",
+          "poll",
+          "--tenant",
+          "clinic",
+          "--db",
+          dbFile,
+          "--json",
+        ])
+      );
+      expect(pollCode).toBe(0);
+      const listCode = await Effect.runPromise(
+        runCli([
+          "source",
+          "list",
+          "--tenant",
+          "clinic",
+          "--db",
+          dbFile,
+          "--json",
+        ])
+      );
+      expect(listCode).toBe(0);
+    } finally {
+      unlinkFileSync(dbFile);
+      unlinkFileSync(`${dbFile}.state.json`);
+    }
+  });
+
   it("executes exact bitemporal queries, explain plans, and identity reconciliation via CLI (V0-CH-06)", async () => {
     const dbFile = resolvePath(
       process.cwd(),

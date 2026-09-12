@@ -1,8 +1,15 @@
+import {
+  GmailMailboxFixtureSchema,
+  memoryHostSecretStore,
+  pollGmailMailbox,
+  recordedGmailMailbox,
+} from "@operon/runtime";
 import { parseJson } from "@operon/schema";
 import type { ObjectTypeId, Subject } from "@operon/schema";
 import type { Schema } from "effect";
-import { Effect, Exit } from "effect";
+import { Effect, Exit, Schema as EffectSchema } from "effect";
 
+import { fileExistsSync, readTextFileSync } from "../fs-io.js";
 import { printCli, printCliError, printCliJson } from "../io.js";
 import type { RuntimeContext } from "../state.js";
 import { createRuntimeContext } from "../state.js";
@@ -109,6 +116,105 @@ function parseIngestFlags(args: readonly string[]) {
     rawPayloadStr,
   };
 }
+
+const GMAIL_STUB_SECRETS = memoryHostSecretStore({
+  "gmail.oauth.client_secret": "cli-readonly-stub",
+  "gmail.oauth.refresh_token": "cli-readonly-stub",
+});
+
+const loadMailboxFixture = Effect.fn("loadMailboxFixture")(function* (
+  fixturePath: string
+) {
+  if (!fileExistsSync(fixturePath)) {
+    printCliError(`Error: Gmail fixture not found: ${fixturePath}`);
+    return undefined;
+  }
+  const parsed = yield* Effect.try({
+    catch: () => undefined,
+    try: () => parseJson(readTextFileSync(fixturePath)),
+  }).pipe(Effect.catch(() => Effect.succeed(undefined)));
+  if (parsed === undefined) {
+    printCliError(`Error: Gmail fixture is not valid JSON: ${fixturePath}`);
+    return undefined;
+  }
+  const decoded = yield* EffectSchema.decodeUnknownEffect(
+    GmailMailboxFixtureSchema
+  )(parsed).pipe(Effect.exit);
+  if (Exit.isFailure(decoded)) {
+    printCliError(
+      `Error: Gmail fixture must be a GmailMailboxFixture: ${fixturePath}`
+    );
+    return undefined;
+  }
+  return decoded.value;
+});
+
+const handleSourcePoll = Effect.fn("handleSourcePoll")(function* (
+  ctx: RuntimeContext,
+  args: readonly string[],
+  tenantId: string | undefined,
+  isJson: boolean
+) {
+  const resolvedTenant = tenantId ?? "default";
+  const fixturePath = getFlagValue(args, "--fixture");
+  const mailbox = fixturePath
+    ? yield* loadMailboxFixture(fixturePath)
+    : recordedGmailMailbox;
+  if (mailbox === undefined) {
+    return 1;
+  }
+
+  const result = yield* pollGmailMailbox({
+    idempotencyKey:
+      getFlagValue(args, "--idempotency-key") ?? `gmail-poll:${resolvedTenant}`,
+    ingestion: ctx.ingestion,
+    mailbox,
+    secrets: GMAIL_STUB_SECRETS,
+    tenantId: resolvedTenant,
+  }).pipe(
+    Effect.catchTag("SecretUnresolvedError", (err) => {
+      printCliError(`Error: Host secret '${err.id}' is unresolved.`);
+      return Effect.void as Effect.Effect<undefined>;
+    }),
+    Effect.catchTag("ReadOperationUnsupportedError", (err) => {
+      printCliError(
+        `Error: Unsupported Gmail read '${err.operation}' on '${err.connectorId}'.`
+      );
+      return Effect.void as Effect.Effect<undefined>;
+    }),
+    Effect.catchTag("CorruptInputError", (err) => {
+      printCliError(`Error: Corrupt input: ${err.reason}`);
+      return Effect.void as Effect.Effect<undefined>;
+    }),
+    Effect.catchTag("IdempotencyConflictError", (err) => {
+      printCliError(`Error: Idempotency conflict: ${err.message}`);
+      return Effect.void as Effect.Effect<undefined>;
+    }),
+    Effect.catchTag("MailboxMessageNotFoundError", (err) => {
+      printCliError(
+        `Error: Gmail message '${err.messageId}' is not in the fixture.`
+      );
+      return Effect.void as Effect.Effect<undefined>;
+    })
+  );
+
+  if (!result) {
+    return 1;
+  }
+  if (result._tag === "writeCandidate") {
+    printCliError(
+      `Error: Gmail poll classified as write (${result.candidate.reason}). Send and modify are not invoked.`
+    );
+    return 1;
+  }
+
+  if (isJson) {
+    printCliJson(result.receipt);
+  } else {
+    printSourceReceipt(result.receipt);
+  }
+  return 0;
+});
 
 const handleSourceIngest = Effect.fn("handleSourceIngest")(function* (
   ctx: RuntimeContext,
@@ -388,6 +494,9 @@ const executeSource = Effect.fn("executeSource")(function* (
   options: ExecuteSourceOptions
 ) {
   const { action, args, ctx, isJson, tenantId } = options;
+  if (action === "poll") {
+    return yield* handleSourcePoll(ctx, args, tenantId, isJson);
+  }
   if (action === "ingest") {
     return yield* handleSourceIngest(ctx, args, tenantId, isJson);
   }
@@ -405,7 +514,7 @@ const executeSource = Effect.fn("executeSource")(function* (
   }
 
   printCliError(
-    `Unknown source action: ${action}. Use 'ingest', 'list', 'get', 'propose-mapping', or 'admit-mapping'.`
+    `Unknown source action: ${action}. Use 'poll', 'ingest', 'list', 'get', 'propose-mapping', or 'admit-mapping'.`
   );
   return 1;
 });
