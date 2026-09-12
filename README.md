@@ -36,7 +36,7 @@ The workspace is organized into a modular pnpm monorepo of core packages under `
 | [`@operon/telemetry`](file:///Users/enzotironi/operationalonto/packages/telemetry/README.md) | Production observability (Sentry + PostHog), PII/secret scrubbing, Effect log layers, and distributed tracing. |
 | [`@operon/osdk`](file:///Users/enzotironi/operationalonto/packages/osdk/README.md) | Type-safe client SDK and TypeScript code generator for frontend and service integration. |
 | [`@operon/mcp`](file:///Users/enzotironi/operationalonto/packages/mcp/README.md) | Model Context Protocol server, dual-key isolation (Consumer vs Builder), and AI-FDE autonomous agents. |
-| [`@operon/alchemy`](file:///Users/enzotironi/operationalonto/packages/alchemy/README.md) | Serverless Cloudflare edge infrastructure synthesis via [Alchemy](https://alchemy.run) (Workers, D1, R2, Queues). |
+| [`@operon/alchemy`](packages/alchemy/README.md) | Alchemy program for local cell Postgres 17 in Docker (shared Better Auth store). |
 
 ### Frozen code (`frozen/`)
 

@@ -17,6 +17,8 @@
     "lint": "oxlint --config oxlint.config.ts",
     "format": "oxfmt --check",
     "test:mutate": "stryker run",
+    "cell:up": "pnpm --filter @operon/alchemy run up",
+    "cell:down": "pnpm --filter @operon/alchemy run down",
     "verify:all": "node --experimental-strip-types .cursor/skills/verify-operon/helpers/verify-all.ts",
     "lint:knip": "knip",
     "prepare": "effect-tsgo patch --typescript --oxlint"

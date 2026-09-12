@@ -1,7 +1,7 @@
 {
   "name": "@operon/alchemy",
   "version": "0.1.0",
-  "description": "Infrastructure as Effects for Operon using Alchemy",
+  "description": "Alchemy program that provisions Operon cell Postgres 17 in Docker",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -13,16 +13,20 @@
   },
   "scripts": {
     "build": "tsc -b",
-    "clean": "rm -rf dist *.tsbuildinfo",
-    "test": "vitest run"
+    "clean": "rm -rf dist *.tsbuildinfo .alchemy",
+    "test": "vitest run",
+    "plan": "umask 077 && mkdir -p .alchemy && chmod 700 .alchemy && alchemy plan --stage local",
+    "up": "umask 077 && mkdir -p .alchemy && chmod 700 .alchemy && alchemy deploy --stage local --yes",
+    "down": "umask 077 && mkdir -p .alchemy && chmod 700 .alchemy && alchemy destroy --stage local --yes"
   },
   "dependencies": {
-    "@operon/runtime": "workspace:*",
-    "@operon/schema": "workspace:*",
     "alchemy": "2.0.0-beta.76",
-    "effect": "4.0.0-rc.112"
+    "effect": "4.0.0-rc.112",
+    "pg": "^8.16.3"
   },
   "devDependencies": {
+    "@testcontainers/postgresql": "^11.8.1",
+    "@types/pg": "^8.15.5",
     "typescript": "^5.7.2",
     "vitest": "^2.1.8"
   }

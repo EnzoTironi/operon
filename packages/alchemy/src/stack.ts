@@ -1,97 +1,89 @@
-/**
- * Infrastructure as Effects definition for Operon deployed via Alchemy (alchemy.run)
- */
+import * as Alchemy from "alchemy";
+import * as Docker from "alchemy/Docker";
+import * as RemovalPolicy from "alchemy/RemovalPolicy";
+import { Config, Effect } from "effect";
 
-export interface CloudflareD1Config {
-  readonly bindingName: string;
-  readonly databaseName: string;
-}
-
-export interface CloudflareR2Config {
-  readonly bindingName: string;
-  readonly bucketName: string;
-}
-
-export interface CloudflareQueueConfig {
-  readonly bindingName: string;
-  readonly queueName: string;
-}
-
-export interface OperonInfrastructureConfig {
-  readonly environment: "development" | "staging" | "production";
-  readonly d1: CloudflareD1Config;
-  readonly r2Vault: CloudflareR2Config;
-  readonly eventQueue: CloudflareQueueConfig;
-  readonly workerName: string;
-}
+import { applyCellAuthSchemaWhenReady } from "./apply-schema.js";
+import { cellPostgresConnection, publishedPostgresPort } from "./connection.js";
+import { CellStagePolicy } from "./stage.js";
 
 /**
- * Default Cloudflare edge infrastructure configuration for Operon
+ * Operon cell Alchemy composition: Postgres 17 on the local Docker context.
+ *
+ * One Better Auth store lives in this database. Companion remains the only
+ * interactive auth host. This program never prints the database password.
  */
-export const defaultOperonConfig: OperonInfrastructureConfig = {
-  d1: {
-    bindingName: "DB",
-    databaseName: "operon-ontology-store",
+const cellStack = Alchemy.Stack(
+  "OperonCell",
+  {
+    providers: Docker.providers(),
+    state: Alchemy.localState(),
   },
-  environment: "production",
-  eventQueue: {
-    bindingName: "EVENT_QUEUE",
-    queueName: "operon-cdc-events",
-  },
-  r2Vault: {
-    bindingName: "AUDIT_VAULT",
-    bucketName: "operon-decision-records",
-  },
-  workerName: "operon-decision-runtime",
-};
+  Effect.gen(function* () {
+    const policy = yield* CellStagePolicy;
+    const password = yield* Config.redacted("OPERON_POSTGRES_PASSWORD");
+    const volumeName = `operon-cell-pgdata-${policy.stage}`;
+    const containerName = `operon-cell-postgres-${policy.stage}`;
+    yield* Docker.RemoteImage("PostgresImage", {
+      alwaysPull: false,
+      name: "postgres",
+      tag: "17-alpine",
+    });
+    yield* Docker.Volume("PostgresData", { name: volumeName }).pipe(
+      RemovalPolicy.retain(policy.retainPostgresData)
+    );
+    yield* Docker.Container("Postgres", {
+      environment: {
+        POSTGRES_DB: policy.database,
+        POSTGRES_PASSWORD: password,
+        POSTGRES_USER: "postgres",
+      },
+      healthcheck: {
+        cmd: `pg_isready -U postgres -d ${policy.database}`,
+        interval: "2 seconds",
+        retries: 10,
+        timeout: "5 seconds",
+      },
+      image: "postgres:17-alpine",
+      name: containerName,
+      ports: [{ external: "127.0.0.1:", internal: 5432 }],
+      start: true,
+      volumes: [
+        {
+          containerPath: "/var/lib/postgresql/data",
+          hostPath: volumeName,
+        },
+      ],
+    });
+    const runtime = yield* Docker.inspectContainer(containerName).pipe(
+      Effect.orDie
+    );
+    const port = publishedPostgresPort(runtime.ports);
+    if (port === undefined) {
+      return yield* Effect.die(
+        "Cell Postgres published 5432/tcp is missing after deploy"
+      );
+    }
+    const connection = cellPostgresConnection({
+      container: runtime.name,
+      database: policy.database,
+      port,
+      stage: policy.stage,
+      volume: volumeName,
+    });
+    yield* applyCellAuthSchemaWhenReady(connection, password).pipe(
+      Effect.orDie
+    );
+    return {
+      connection,
+      database: policy.database,
+      documented: policy.documented,
+      envFileHint: policy.envFileHint,
+      retainPostgresData: policy.retainPostgresData,
+      stage: policy.stage,
+      tier: policy.tier,
+    };
+  }).pipe(Effect.provide(CellStagePolicy.layer))
+);
 
-/**
- * Alchemy Stack definition synthesizer for Operon Cloudflare Deployment
- */
-export function synthesizeAlchemyManifest(
-  config: OperonInfrastructureConfig = defaultOperonConfig
-) {
-  return {
-    name: "operon-stack",
-    provider: "cloudflare",
-    resources: {
-      d1: {
-        binding: config.d1.bindingName,
-        name: config.d1.databaseName,
-        type: "cloudflare:d1_database",
-      },
-      queue: {
-        binding: config.eventQueue.bindingName,
-        name: config.eventQueue.queueName,
-        type: "cloudflare:queue",
-      },
-      r2: {
-        binding: config.r2Vault.bindingName,
-        name: config.r2Vault.bucketName,
-        type: "cloudflare:r2_bucket",
-      },
-      worker: {
-        bindings: [
-          {
-            type: "d1",
-            binding: config.d1.bindingName,
-            database: config.d1.databaseName,
-          },
-          {
-            type: "r2",
-            binding: config.r2Vault.bindingName,
-            bucket: config.r2Vault.bucketName,
-          },
-          {
-            type: "queue",
-            binding: config.eventQueue.bindingName,
-            queue: config.eventQueue.queueName,
-          },
-        ],
-        entrypoint: "./src/worker.ts",
-        name: config.workerName,
-        type: "cloudflare:worker",
-      },
-    },
-  };
-}
+export default cellStack;
