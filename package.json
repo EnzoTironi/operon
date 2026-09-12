@@ -10,8 +10,7 @@
   "scripts": {
     "operon": "node packages/cli/dist/bin.js",
     "build": "pnpm -r run build",
-    "test": "pnpm -r run test && vitest run validation/",
-    "test:validation": "vitest run validation/",
+    "test": "pnpm -r run test",
     "clean": "pnpm -r run clean",
     "check": "ultracite check",
     "fix": "ultracite fix",
