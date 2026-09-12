@@ -396,7 +396,7 @@ export const STANDARD_TOOL_DEFINITIONS: readonly StandardToolDefinition[] = [
   },
   {
     description:
-      "Record a human review of a mapping proposal (batch admission) as the human whose authenticated cell session is bound to this server. The reviewer must differ from the author and must cite the digest they viewed. Fails when no approver session is bound; reviewer identity is never taken from arguments.",
+      "Record a human review of a mapping proposal (batch admission) as the human whose authenticated cell session is bound to this server. The reviewer must differ from the author and must cite the digest they viewed. Fails when no human session is bound; reviewer identity is never taken from arguments.",
     inputSchema: {
       properties: {
         comments: { type: "string" },
@@ -597,7 +597,7 @@ export const STANDARD_TOOL_DEFINITIONS: readonly StandardToolDefinition[] = [
   },
   {
     description:
-      "Approve or reject a prepared action proposal as the human whose authenticated cell session is bound to this server. Enforces exact digest binding (viewedDigest === preparedDigest), no self-approval, and non-staleness (S07). Fails when no approver session is bound; reviewer identity is never taken from arguments.",
+      "Approve or reject a prepared action proposal as the human whose authenticated cell session is bound to this server. Enforces exact digest binding (viewedDigest === preparedDigest), no self-approval, and non-staleness (S07). Fails when no human session is bound; reviewer identity is never taken from arguments.",
     inputSchema: {
       properties: {
         decision: { enum: ["approved", "rejected"], type: "string" },

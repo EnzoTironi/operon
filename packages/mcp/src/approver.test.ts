@@ -199,6 +199,33 @@ describe("MCP approver binding", () => {
     expect(approval.reviewerContext.assurance).toBe("human_verified");
   });
 
+  it("refuses to approve when the bound Better Auth token is unknown", async () => {
+    const issued = await Effect.runPromise(
+      Effect.gen(function* () {
+        const auth = yield* CellAuth;
+        const verifier = yield* SessionVerifier;
+        yield* auth.issueApproverSession({
+          email: "ana@clinica.example",
+          name: "Ana",
+        });
+        return verifier;
+      }).pipe(Effect.provide(cellAuthLayer), Effect.scoped)
+    );
+    const harness = await connect({
+      _tag: "Session",
+      token: Redacted.make("not-a-session"),
+      verifier: issued,
+    });
+    const digest = await harness.prepare();
+    const result = await harness.call("operon_approve_prepared_action", {
+      decision: "approved",
+      preparedDigest: digest,
+      viewedDigest: digest,
+    });
+    expect(result.isError).toBe(true);
+    expect(errorTag(result)).toBe("AuthenticationError");
+  });
+
   it("stops approving as soon as the bound session is revoked", async () => {
     const outcome = await Effect.runPromise(
       Effect.gen(function* () {
