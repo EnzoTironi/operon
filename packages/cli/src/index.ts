@@ -41,7 +41,6 @@ Commands:
   sandbox             Execute sandboxed models with fiber timeouts and verify determinism proofs
   view                Generate disposable application views with lifecycle state badges (S13)
   assurance           Dual F1/F2 release evaluation, mirror verification, and publication boundary check
-  approver            Issue a cell approver session (Better Auth on the cell Postgres) for the MCP host
   mcp                 Launch Model Context Protocol (MCP) server over stdio for Claude Desktop / Cursor
   telemetry           Inspect Sentry & PostHog telemetry status, privacy scrubber, and diagnostic ping
 
@@ -167,8 +166,10 @@ The server role is chosen by its trusted host. Consumer is the default and canno
 Builder can prepare changes; human approval still requires an authenticated session.
 Default --agent-tier is 2 (Propose). Tier 4 bounded autonomy must be set explicitly.
 
-The approver is bound from OPERON_APPROVER_SESSION_TOKEN (see operon approver session).
-Without it the server runs unbound and human decisions are refused.
+Companion is the session host. Bind its Better Auth session.token as Bearer:
+  OPERON_SESSION=<session.token> operon mcp start
+OPERON_APPROVER_SESSION_TOKEN is an alias for the same token.
+Without a token the server runs unbound and human decisions are refused.
 A trusted application host can instead select --workspace <id> --role builder --host-approver.
 The host must implement the private operon/verify-approval callback and revalidate the exact operation.
 Workspace mode persists all runtime state atomically in the database, serializes writers, and starts without demo data.
@@ -176,15 +177,16 @@ Workspace mode persists all runtime state atomically in the database, serializes
 Examples:
   operon mcp start
   operon mcp start --role builder --agent-tier 2 --db ./operon.db
-  OPERON_APPROVER_SESSION_TOKEN=<token> operon mcp start
+  OPERON_SESSION=<session.token> operon mcp start
 `;
 
 const APPROVER_HELP = `
 Usage:
   operon approver session --email <email> --name <name> [--db <postgres-url>] [--json]
 
+Hidden operator issuer for local experiments. Companion is the session host.
 Needs OPERON_DATABASE_URL (postgresql://) and OPERON_AUTH_SECRET, both written by pnpm cell:up.
-Prints the session token once; hand it to the host that starts operon mcp start.
+Prints the session token once; bind it as OPERON_SESSION on operon mcp start.
 
 Examples:
   operon approver session --email ana@clinica.example --name "Ana"

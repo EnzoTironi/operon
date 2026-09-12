@@ -1,4 +1,6 @@
 import { HumanPrincipal, SessionVerifier } from "@operon/runtime";
+import { betterAuth } from "better-auth";
+import { bearer } from "better-auth/plugins";
 import { Effect, Exit, Layer, Redacted } from "effect";
 import * as Pg from "pg";
 import { afterAll, describe, expect, it } from "vitest";
@@ -77,6 +79,19 @@ describe("CellAuth on the memory store", () => {
       })
     ));
 
+  it("accepts the same token presented as an Authorization Bearer credential", () =>
+    run(
+      Effect.gen(function* () {
+        const auth = yield* CellAuth;
+        const issued = yield* auth.issueApproverSession(ana);
+        const principal = yield* auth.verifySession(
+          Redacted.make(`Bearer ${Redacted.value(issued.token)}`)
+        );
+        expect(principal.userId).toBe(issued.userId);
+        expect(principal.roles).toEqual([APPROVER_ROLE]);
+      })
+    ));
+
   it("rejects tokens it never issued", () =>
     run(
       Effect.gen(function* () {
@@ -84,6 +99,22 @@ describe("CellAuth on the memory store", () => {
         yield* auth.issueApproverSession(ana);
         const exit = yield* Effect.exit(
           auth.verifySession(Redacted.make("not-a-session"))
+        );
+        expect(failureTag(exit)).toBe("AuthenticationError");
+      })
+    ));
+
+  it("rejects a JWT-shaped token instead of verifying HS256", () =>
+    run(
+      Effect.gen(function* () {
+        const auth = yield* CellAuth;
+        yield* auth.issueApproverSession(ana);
+        const exit = yield* Effect.exit(
+          auth.verifySession(
+            Redacted.make(
+              "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJhbmEifQ.not-a-signature"
+            )
+          )
         );
         expect(failureTag(exit)).toBe("AuthenticationError");
       })
@@ -183,5 +214,54 @@ describe.skipIf(database === undefined)("CellAuth on the cell Postgres", () => {
       })
     );
     expect(failureTag(exit)).toBe("AuthenticationError");
+  });
+
+  it("parses a Companion Better Auth session.token that has no Operon roles", async () => {
+    await run(
+      Effect.gen(function* () {
+        const auth = yield* CellAuth;
+        yield* auth.migrate();
+      })
+    );
+
+    const pool = new Pg.Pool({
+      connectionString: Redacted.value(target.url),
+    });
+    try {
+      const hostAuth = betterAuth({
+        advanced: {
+          database: { validateSchema: false },
+          disableCSRFCheck: true,
+        },
+        appName: "Companion",
+        baseURL: "http://companion.example",
+        database: pool,
+        emailAndPassword: { enabled: false },
+        plugins: [bearer()],
+        secret: Redacted.value(secret),
+        telemetry: { enabled: false },
+      });
+      const context = await hostAuth.$context;
+      const user = await context.internalAdapter.createUser({
+        email: "ana@companion.example",
+        emailVerified: true,
+        name: "Ana",
+      });
+      const session = await context.internalAdapter.createSession(user.id);
+
+      const principal = await run(
+        Effect.gen(function* () {
+          const auth = yield* CellAuth;
+          return yield* auth.verifySession(Redacted.make(session.token));
+        })
+      );
+      expect(principal.userId).toBe(user.id);
+      expect(principal.email).toBe("ana@companion.example");
+      expect(principal.name).toBe("Ana");
+      expect(principal.roles).toEqual([APPROVER_ROLE]);
+      expect(principal.issuer).toBe(CELL_AUTH_ISSUER);
+    } finally {
+      await pool.end();
+    }
   });
 });

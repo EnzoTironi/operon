@@ -81,6 +81,7 @@ async function connect(
 interface OwnerSession {
   readonly binding: ApproverBinding;
   readonly userId: string;
+  readonly verifier: SessionVerifier["Service"];
 }
 
 /** The clinic owner with a live session on a memory-backed cell auth store. */
@@ -96,6 +97,7 @@ async function issueOwnerSession(): Promise<OwnerSession> {
       return {
         binding: { _tag: "Session", token: issued.token, verifier },
         userId: issued.userId,
+        verifier,
       } satisfies OwnerSession;
     }).pipe(
       Effect.provide(
@@ -262,6 +264,12 @@ describe("email magic factor through MCP (Q -> C -> L)", () => {
     expect(unboundReview.isError).toBe(true);
     expect(unboundReview.body.error).toBe("ApproverNotBoundError");
 
+    const unboundAdmit = await call(builder, "operon_admit_mapping_proposal", {
+      proposalId: proposal.proposalId,
+    });
+    expect(unboundAdmit.isError).toBe(true);
+    expect(unboundAdmit.body.error).toBe("ApproverNotBoundError");
+
     const owner = await issueOwnerSession();
     const boundBuilder = await connect(builderKey, harness, owner.binding);
     const staleReview = await call(
@@ -277,7 +285,7 @@ describe("email magic factor through MCP (Q -> C -> L)", () => {
     expect(staleReview.body.error).toBe("StaleReviewError");
 
     const admitUnreviewed = await call(
-      builder,
+      boundBuilder,
       "operon_admit_mapping_proposal",
       { proposalId: proposal.proposalId }
     );
@@ -292,6 +300,32 @@ describe("email magic factor through MCP (Q -> C -> L)", () => {
       harness.objectStore.findObjects("Pessoa" as any)
     );
     expect(people).toEqual([]);
+  });
+
+  it("refuses review and admit when the bound Better Auth token is unknown", async () => {
+    const harness = makeHarness();
+    const owner = await issueOwnerSession();
+    const builder = await connect(builderKey, harness, {
+      _tag: "Session",
+      token: Redacted.make("not-a-session"),
+      verifier: owner.verifier,
+    });
+    const { proposal } = await ingestAndPropose(builder);
+
+    const review = await call(builder, "operon_review_mapping_proposal", {
+      proposalId: proposal.proposalId,
+      reviewerId: "spoofed-owner",
+      verdict: "approve",
+      viewedDigest: proposal.digest,
+    });
+    expect(review.isError).toBe(true);
+    expect(review.body.error).toBe("AuthenticationError");
+
+    const admit = await call(builder, "operon_admit_mapping_proposal", {
+      proposalId: proposal.proposalId,
+    });
+    expect(admit.isError).toBe(true);
+    expect(admit.body.error).toBe("AuthenticationError");
   });
 
   it("admits one approved digest to main at grade batch and clears the candidates", async () => {

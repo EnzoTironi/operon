@@ -2,7 +2,7 @@ import { CellAuth } from "@operon/cell-auth";
 import { Cause, Effect, Exit, Redacted } from "effect";
 
 import {
-  APPROVER_SESSION_TOKEN_ENV,
+  SESSION_TOKEN_ENV,
   resolveCellAuthConfig,
 } from "../cell-auth-config.js";
 import { printCli, printCliError, printCliJson } from "../io.js";
@@ -39,16 +39,15 @@ const issueSession = Effect.fn("issueSession")(function* (
   printCli(`Approver session issued for ${email} (user ${issued.userId}).`);
   printCli(`Expires at ${expiresAt}.`);
   printCli(
-    `Hand the token to the host that starts the MCP server as ${APPROVER_SESSION_TOKEN_ENV}. It is shown once:`
+    `Hidden operator issuer. Companion is the session host. For local experiments, hand the token to operon mcp start as ${SESSION_TOKEN_ENV}. It is shown once:`
   );
   printCli(Redacted.value(issued.token));
 });
 
 /**
- * `operon approver session`: binds a verified human to the cell by issuing a
- * Better Auth session on the cell Postgres. The host (Companion or the
- * operator) keeps the token and starts `operon mcp start` with it; the MCP
- * server then approves as that human and never as a relayed name.
+ * Hidden operator issuer: binds a verified human to the cell by issuing a
+ * Better Auth session on the cell Postgres. Companion is the session host
+ * on the documented path. This command remains for local experiments.
  */
 export function runApprover(args: string[]): Effect.Effect<number> {
   return Effect.gen(function* () {

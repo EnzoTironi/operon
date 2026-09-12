@@ -10,8 +10,18 @@ import * as Pg from "pg";
 /** Value of `HumanPrincipal.issuer` for sessions this cell vouched for. */
 export const CELL_AUTH_ISSUER = "operon-cell";
 
-/** Role every approver session carries; the kernel's approval gate requires it. */
+/** Role every verified human session carries; the kernel's approval gate requires it. */
 export const APPROVER_ROLE = "approver";
+
+/**
+ * Companion (or a hidden operator issuer) presents Better Auth `session.token`
+ * as a Bearer credential. The kernel never sees a JWT.
+ */
+export function bearerAuthorization(token: SessionToken): string {
+  const raw = Redacted.value(token).trim();
+  const credential = raw.replace(/^Bearer\s+/iu, "");
+  return `Bearer ${credential}`;
+}
 
 /**
  * Where Better Auth keeps users and sessions. The cell uses its own Postgres
@@ -74,7 +84,11 @@ const authFailure = (reason: string) => new AuthenticationError({ reason });
 
 const decodePrincipal = Schema.decodeUnknownEffect(HumanPrincipal);
 
-/** Boundary parse: Better Auth rows become a `HumanPrincipal` or nothing. */
+/**
+ * Boundary parse: Better Auth `getSession` becomes a `HumanPrincipal` or
+ * nothing. Companion users have no Operon `roles` column; a verified human
+ * session is the approver. The kernel never reads names from tool arguments.
+ */
 function toPrincipal(
   result: NonNullable<Awaited<ReturnType<CellBetterAuth["api"]["getSession"]>>>
 ): Effect.Effect<HumanPrincipal, AuthenticationError> {
@@ -82,7 +96,7 @@ function toPrincipal(
     email: result.user.email,
     issuer: CELL_AUTH_ISSUER,
     name: result.user.name,
-    roles: result.user.roles,
+    roles: [APPROVER_ROLE],
     sessionExpiresAt: result.session.expiresAt.getTime(),
     sessionId: result.session.id,
     userId: result.user.id,
@@ -100,7 +114,7 @@ const verifySessionWith = (auth: CellBetterAuth) =>
       try: () =>
         auth.api.getSession({
           headers: new Headers({
-            authorization: `Bearer ${Redacted.value(token)}`,
+            authorization: bearerAuthorization(token),
           }),
         }),
     });
@@ -133,7 +147,6 @@ const issueApproverSessionWith = (auth: CellBetterAuth) =>
               email: input.email,
               emailVerified: true,
               name: input.name,
-              roles: [APPROVER_ROLE],
             },
             { method: "operon-cell-operator" }
           ));
@@ -184,11 +197,11 @@ const migrateWith = (auth: CellBetterAuth) =>
 /**
  * Better Auth bound to the cell database. `migrate` creates or extends the
  * `user`, `session`, `account` and `verification` tables idempotently.
- * `issueApproverSession` is the operator seam: the host that verified a
- * human (Companion, or the operator at the CLI) asks the cell for a session
- * and binds its token to the process that will approve. `verifySession`
- * turns that token back into a `HumanPrincipal` on every call, so expiry
- * and revocation take effect immediately.
+ * Companion is the session host: it issues `session.token` against this
+ * same secret and store. `verifySession` turns a Bearer credential into a
+ * `HumanPrincipal` on every call, so expiry and revocation take effect
+ * immediately. `issueApproverSession` is a hidden operator seam, not the
+ * documented path.
  */
 export class CellAuth extends Context.Service<
   CellAuth,

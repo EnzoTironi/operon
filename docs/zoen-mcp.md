@@ -13,7 +13,7 @@ The snapshot implementation rewrites the workspace state at a checkpoint. It is 
 
 ## Human approval
 
-Plain Consumer and Builder processes are not human approvers. Cell sessions continue to use `OPERON_APPROVER_SESSION_TOKEN` and `SessionVerifier`.
+Plain Consumer and Builder processes are not human approvers. Companion is the session host: bind its Better Auth `session.token` as Bearer (`OPERON_SESSION`, or the `OPERON_APPROVER_SESSION_TOKEN` alias) and `SessionVerifier` parses the `HumanPrincipal`. `--host-approver` stays for the private host-approval callback. Model-supplied `reviewerId`, `reviewerRoles`, or a name in tool input cannot grant.
 
 A trusted stdio host can instead opt into `--host-approver`, with a Builder role and workspace. It must advertise `experimental["operon/approval"]` and handle:
 

@@ -37,7 +37,7 @@ The workspace is organized into a modular pnpm monorepo of core packages under `
 | [`@operon/telemetry`](file:///Users/enzotironi/operationalonto/packages/telemetry/README.md) | Production observability (Sentry + PostHog), PII/secret scrubbing, Effect log layers, and distributed tracing. |
 | [`@operon/osdk`](file:///Users/enzotironi/operationalonto/packages/osdk/README.md) | Type-safe client SDK and TypeScript code generator for frontend and service integration. |
 | [`@operon/mcp`](./packages/mcp/README.md) | Model Context Protocol server and dual-key isolation (Consumer vs Builder). |
-| [`@operon/cell-auth`](./packages/cell-auth) | Better Auth on the cell Postgres: approver sessions and the `SessionVerifier` the kernel trusts. |
+| [`@operon/cell-auth`](./packages/cell-auth) | Better Auth on the cell Postgres. Companion is the session host; Operon parses `session.token` into a `HumanPrincipal`. |
 | [`@operon/alchemy`](./packages/alchemy/README.md) | The cell's PostgreSQL 17 in Docker, provisioned by [Alchemy](https://alchemy.run) (`pnpm cell:up`). |
 
 ### Frozen code (`frozen/`)
@@ -93,9 +93,8 @@ pnpm install --frozen-lockfile
 pnpm cell:up                 # writes the cell keys to .env and starts Postgres via Alchemy
 pnpm operon doctor           # opens the cell database through OPERON_DATABASE_URL
 
-# bind a human approver to the cell and start the MCP server as that human
-pnpm operon approver session --email ana@example.com --name "Ana"
-OPERON_APPROVER_SESSION_TOKEN=<token> pnpm operon mcp start
+# Companion is the session host. Bind its Better Auth session.token and start MCP.
+OPERON_SESSION=<session.token> pnpm operon mcp start
 
 pnpm cell:down               # removes the container and, except for prod, the volume
 ```
@@ -143,10 +142,7 @@ operon oms proposal merge <id> --author <id>
 operon sandbox verify <modelId> [--inputs '<json>'] [--iterations <n>]
 
 # Launch MCP Stdio Server
-operon mcp start [--agent-tier <1|2|3|4>]   # default 2 (Propose); approver from OPERON_APPROVER_SESSION_TOKEN
-
-# Cell approver sessions (Better Auth on the cell Postgres)
-operon approver session --email <email> --name <name> [--json]
+operon mcp start [--agent-tier <1|2|3|4>]   # default 2 (Propose); Companion session.token via OPERON_SESSION
 
 # Production Telemetry & Diagnostics
 operon telemetry status [--ping] [--json]

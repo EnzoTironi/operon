@@ -12,8 +12,8 @@ import { Data } from "effect";
  *
  * `Unbound` is the plain agent session (Claude Desktop over stdio): every
  * tool that needs a human refuses. `Session` binds the process to one
- * authenticated cell session; the host that spawned the server (Companion,
- * or the operator) holds the token and the kernel never sees a relayed name.
+ * authenticated cell session. Companion is the session host: it holds
+ * Better Auth `session.token` and the kernel never sees a relayed name.
  * The token is verified on every call, so expiry and revocation apply at
  * once.
  */
@@ -45,7 +45,7 @@ export function resolveApprover(
     case "Unbound": {
       return new ApproverNotBoundError({
         message:
-          "No authenticated approver session is bound to this MCP server. Start it with an approver session token; agents cannot supply reviewer identities.",
+          "No authenticated human session is bound to this MCP server. Companion presents Better Auth session.token as Bearer (OPERON_SESSION). Agents cannot supply reviewer identities.",
       });
     }
     case "Session": {

@@ -607,6 +607,7 @@ const handleReviewMappingProposal = Effect.fn("handleReviewMappingProposal")(
 const handleAdmitMappingProposal = Effect.fn("handleAdmitMappingProposal")(
   function* (ctx: ToolExecutionContext) {
     yield* checkMcpKeyPermission(ctx.callerKey, "modify_schema");
+    yield* ctx.approver;
     const admitted = yield* ctx.ingestionService.admitProposal(
       String(ctx.args.proposalId),
       ctx.callerSubject
