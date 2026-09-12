@@ -6,7 +6,7 @@ Read-only connection layer for Operon. Nothing in this package is user-visible y
 
 `classifyGatewayRequest` and `dispatchGatewayRequest` turn a connector call into one of two things:
 
-1. A `QuarantineEnvelope` for GET, poll, download, GraphQL query, and IMAP/Gmail fetch. The envelope is the input shape of `AccountableIngestionService.ingestRawSource` in `packages/runtime/src/funnel.ts`. The gateway does not call that service.
+1. A `QuarantineEnvelope` for GET, poll, download, GraphQL query, and IMAP/Gmail fetch. The envelope is the input shape of `AccountableIngestionService.ingestRawSource` in `packages/runtime/src/funnel.ts`. The gateway does not call that service. `@operon/runtime` closes the pipe.
 2. A `WriteCandidate` for POST, PUT, PATCH, DELETE, GraphQL mutation, MCP `destructiveHint`, and email send or modify. The candidate is for the Operon write pipeline. The gateway does not invoke the tool.
 
 ## Write-path invariant
@@ -23,7 +23,9 @@ Secrets stay in the host as `SecretRef`. Agents do not read them.
 
 ## Email demo connector
 
-`gmailReadonlyConnector` is enough for the phase-1 mailbox demo. Scopes are `gmail.readonly` and `calendar.readonly`. OAuth client secret and refresh token are `SecretRef` stubs. Send, modify, insert, and draft tools are listed as forbidden, not as callable operations.
+`gmailReadonlyConnector` is enough for the phase-1 mailbox demo. Scopes are `gmail.readonly` and `calendar.readonly`. OAuth client secret and refresh token are `SecretRef` stubs held by a `HostSecretStore`. Send, modify, insert, and draft tools are listed as forbidden, not as callable operations.
+
+`createGmailReadonlyExecutor` polls a recorded mailbox fixture after `HostSecretStore.require` succeeds. The token never enters the envelope. There is no OAuth UI in this package. The Host owns the client.
 
 `imapReadonlyConnector(host)` is the same idea over IMAP: EXAMINE, FETCH, IDLE. No APPEND, STORE, or EXPUNGE.
 

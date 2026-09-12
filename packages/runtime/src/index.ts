@@ -8,6 +8,7 @@ export * from "./bitemporal-store.js";
 export * from "./oms.js";
 export * from "./oss.js";
 export * from "./funnel.js";
+export * from "./gateway-ingestion.js";
 export * from "./security-views.js";
 export * from "./approvals.js";
 export * from "./migration.js";

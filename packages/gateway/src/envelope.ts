@@ -3,8 +3,9 @@ import { Schema } from "effect";
 /**
  * Envelope handed to `AccountableIngestionService.ingestRawSource`.
  *
- * The gateway never calls that service. Callers in runtime/MCP/CLI do.
- * Shape matches `IngestRawSourceOptions` on current main:
+ * The gateway never calls that service. Runtime closes the pipe by passing
+ * `toIngestRawSourceOptions(envelope)` to `ingestRawSource`.
+ * Shape matches `IngestRawSourceOptions`:
  * locator, mediaType, rawPayload, plus optional tenant and sensitivity.
  */
 export const QuarantineEnvelope = Schema.Struct({

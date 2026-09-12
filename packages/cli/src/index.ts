@@ -226,6 +226,7 @@ Examples:
 
 const SOURCE_HELP = `
 Usage:
+  operon source poll [--fixture <path>] [--idempotency-key <k>] [--tenant <t>] [--json]
   operon source ingest --locator <loc> --media-type <mime> --payload '<json>' [--idempotency-key <k>] [--tenant <t>] [--json]
   operon source list [--tenant <t>] [--json]
   operon source get <sourceId> [--tenant <t>] [--json]
@@ -233,6 +234,8 @@ Usage:
   operon source admit-mapping <proposalId> [--json]
 
 Examples:
+  operon source poll --json
+  operon source poll --fixture ./mailbox.json --tenant clinic --json
   operon source ingest --locator s3://lake/data.json --media-type application/json --payload '[{"id":"1"}]' --json
   operon source list --json
 `;
