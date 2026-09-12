@@ -61,7 +61,7 @@ function extractSubjectFromArgs(
   const subjectId = getFlagValue(args, "--subject-id") ?? "cli_agent";
   const subjectType = parseSubjectType(getFlagValue(args, "--subject-type"));
   const role = getFlagValue(args, "--role");
-  const roles = role ? [role] : ["operator", "clinician"];
+  const roles = role ? [role] : ["operator"];
   const agentTier = parseAgentTier(
     getFlagValue(args, "--agent-tier"),
     defaultTier

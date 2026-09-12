@@ -38,14 +38,14 @@ operon doctor --db ./operon.db
 Reads, commits, or inspects bitemporal point-in-time snapshots of ontology objects.
 
 ```bash
-# Get object
-operon object get Patient P001 --json
+# Put a person the operator wrote
+operon object put --type Pessoa --id ana --properties '{"displayName":"Ana Silva","emails":["ana@unimed.com.br"]}'
 
-# Put / mutate object
-operon object put --type Patient --id P002 --properties '{"name":"Alice","egfr":70}'
+# Get object
+operon object get Pessoa ana --json
 
 # Bitemporal query plan inspection
-operon object query Patient P001 --valid-time 1789000000000 --tx-time 1789000000000 --json
+operon object query Pessoa ana --valid-time 1789000000000 --tx-time 1789000000000 --json
 ```
 
 ### 3. `readiness`
@@ -53,8 +53,8 @@ operon object query Patient P001 --valid-time 1789000000000 --tx-time 1789000000
 Evaluates Two-Level 4C Decision Readiness ($$\text{Ready} = \text{Correct} \land \text{Complete} \land \text{Current} \land \text{Consistent}$$).
 
 ```bash
-operon readiness check Patient P001
-operon readiness check Patient P001 --json
+operon readiness check Pessoa ana
+operon readiness check Pessoa ana --json
 ```
 
 ### 4. `action`
@@ -62,17 +62,10 @@ operon readiness check Patient P001 --json
 Submits governed actions into the 7-step write pipeline with support for dry-run validation, parameter payloads, and agent autonomy tiers (1–4).
 
 ```bash
-# List registered action types
+# List registered action types (empty until an Action Type is admitted)
 operon action list --json
 
-# Dry-run action without mutating state
-operon action submit update_vitals --params '{"patientId":"P001","heartRate":72}' --agent-tier 4 --dry-run
-
-# Execute under Tier 4 bounded autonomy
-operon action submit update_vitals --params '{"patientId":"P001","heartRate":75}' --agent-tier 4
-
-# Submit action under Tier 2 (automatically routes to Action Inbox as a proposal)
-operon action submit set_valve_position --params '{"tankId":"tank-alpha","openingPercent":45}' --agent-tier 2
+# Prepare, submit, and inbox commands need an Action Type. First boot has none.
 ```
 
 ### 5. `inbox`
@@ -125,7 +118,7 @@ operon oms proposal merge <proposalId> --author lead_arch
 Executes determinism and replay proofs for analytical and predictive models.
 
 ```bash
-operon sandbox verify predictive_vibration_model --inputs '{"value":14.2}' --iterations 3 --json
+operon sandbox verify <modelId> --inputs '{"value":14.2}' --iterations 3 --json
 ```
 
 ### 9. `mcp`

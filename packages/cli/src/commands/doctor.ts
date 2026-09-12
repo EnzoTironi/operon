@@ -50,7 +50,7 @@ const executeStorageChecks = Effect.fn("executeStorageChecks")(function* (
   checks: DoctorCheckResult[]
 ) {
   checks.push({
-    details: `Initialized ${describeDatabase(ctx.database)} with pre-seeded ontologies`,
+    details: `Initialized ${describeDatabase(ctx.database)} with Pessoa, Organização, Conversa, Compromisso`,
     name: "Storage Engine",
     status: "PASS",
   });

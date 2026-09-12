@@ -10,61 +10,122 @@ import {
 } from "./fs-io.js";
 import { runCli } from "./index.js";
 
+const pessoaProperties =
+  '{"displayName":"Ana Silva","emails":["ana.silva@unimed.com.br"]}';
+
 describe("@operon/cli test suite", () => {
   it("runs operon doctor and reports healthy status", async () => {
     const code = await Effect.runPromise(runCli(["doctor", "--json"]));
     expect(code).toBe(0);
   });
 
-  it("retrieves an object instance via operon object get", async () => {
-    const code = await Effect.runPromise(
-      runCli(["object", "get", "Patient", "P001", "--json"])
+  it("writes and reads a Pessoa via operon object put and get", async () => {
+    const dbFile = resolvePath(
+      process.cwd(),
+      `.operon-cli-pessoa-${Date.now()}.db`
     );
-    expect(code).toBe(0);
+    try {
+      const putCode = await Effect.runPromise(
+        runCli([
+          "object",
+          "put",
+          "--type",
+          "Pessoa",
+          "--id",
+          "ana",
+          "--properties",
+          pessoaProperties,
+          "--db",
+          dbFile,
+          "--json",
+        ])
+      );
+      expect(putCode).toBe(0);
+      const getCode = await Effect.runPromise(
+        runCli(["object", "get", "Pessoa", "ana", "--db", dbFile, "--json"])
+      );
+      expect(getCode).toBe(0);
+      const missingCode = await Effect.runPromise(
+        runCli(["object", "get", "Patient", "P001", "--db", dbFile, "--json"])
+      );
+      expect(missingCode).toBe(1);
+    } finally {
+      unlinkFileSync(dbFile);
+      unlinkFileSync(`${dbFile}.state.json`);
+    }
   });
 
-  it("evaluates 4C decision readiness via operon readiness check", async () => {
-    const code = await Effect.runPromise(
-      runCli(["readiness", "check", "Patient", "P001", "--json"])
+  it("evaluates 4C decision readiness for a Pessoa the operator wrote", async () => {
+    const dbFile = resolvePath(
+      process.cwd(),
+      `.operon-cli-readiness-${Date.now()}.db`
     );
-    // Patient P001 passes completeness & consistency in default seed
-    expect([0, 2]).toContain(code);
+    try {
+      await Effect.runPromise(
+        runCli([
+          "object",
+          "put",
+          "--type",
+          "Pessoa",
+          "--id",
+          "ana",
+          "--properties",
+          pessoaProperties,
+          "--db",
+          dbFile,
+        ])
+      );
+      const code = await Effect.runPromise(
+        runCli([
+          "readiness",
+          "check",
+          "Pessoa",
+          "ana",
+          "--db",
+          dbFile,
+          "--json",
+        ])
+      );
+      expect([0, 2]).toContain(code);
+    } finally {
+      unlinkFileSync(dbFile);
+      unlinkFileSync(`${dbFile}.state.json`);
+    }
   });
 
-  it("previews action execution with --dry-run without mutating state", async () => {
+  it("lists no Action Types on first boot", async () => {
+    const logs: string[] = [];
+    const origLog = console.log;
+    console.log = (msg: string) => {
+      logs.push(msg);
+      origLog(msg);
+    };
+    try {
+      const code = await Effect.runPromise(
+        runCli(["action", "list", "--json"])
+      );
+      expect(code).toBe(0);
+      expect(parseJson(logs.at(-1)!)).toEqual([]);
+    } finally {
+      console.log = origLog;
+    }
+  });
+
+  it("refuses to prepare an Action Type that is not installed", async () => {
     const code = await Effect.runPromise(
       runCli([
         "action",
-        "submit",
+        "prepare",
         "update_vitals",
         "--params",
         '{"patientId":"P001","heartRate":72}',
-        "--agent-tier",
-        "4",
-        "--dry-run",
         "--json",
       ])
     );
-    expect(code).toBe(0);
+    expect(code).toBe(1);
   });
 
-  it("executes automated action under Tier 4 bounded autonomy", async () => {
-    const code = await Effect.runPromise(
-      runCli([
-        "action",
-        "submit",
-        "update_vitals",
-        "--params",
-        '{"patientId":"P001","heartRate":80}',
-        "--agent-tier",
-        "4",
-        "--json",
-      ])
-    );
-    expect(code).toBe(0);
-  });
-
-  it("routes proposal mode action under Tier 2 to Action Inbox", async () => {
+  it("refuses to submit an Action Type that is not installed", async () => {
     const code = await Effect.runPromise(
       runCli([
         "action",
@@ -77,7 +138,7 @@ describe("@operon/cli test suite", () => {
         "--json",
       ])
     );
-    expect(code).toBe(0);
+    expect(code).toBe(1);
   });
 
   it("cryptographically verifies audit ledger hash chain", async () => {
@@ -85,7 +146,7 @@ describe("@operon/cli test suite", () => {
     expect(code).toBe(0);
   });
 
-  it("verifies model sandbox determinism proof", async () => {
+  it("fails sandbox verify when no model is registered", async () => {
     const code = await Effect.runPromise(
       runCli([
         "sandbox",
@@ -98,7 +159,7 @@ describe("@operon/cli test suite", () => {
         "--json",
       ])
     );
-    expect(code).toBe(0);
+    expect(code).toBe(1);
   });
 
   it("creates ontology branch via OMS", async () => {
@@ -197,69 +258,94 @@ describe("@operon/cli test suite", () => {
   });
 
   it("executes exact bitemporal queries, explain plans, and identity reconciliation via CLI (V0-CH-06)", async () => {
-    // 1. Exact bitemporal query
-    const now = Date.now();
-    const queryCode = await Effect.runPromise(
-      runCli([
-        "object",
-        "query",
-        "Patient",
-        "P001",
-        "--valid-time",
-        String(now),
-        "--json",
-      ])
+    const dbFile = resolvePath(
+      process.cwd(),
+      `.operon-cli-query-${Date.now()}.db`
     );
-    expect(queryCode).toBe(0);
+    try {
+      await Effect.runPromise(
+        runCli([
+          "object",
+          "put",
+          "--type",
+          "Pessoa",
+          "--id",
+          "ana",
+          "--properties",
+          pessoaProperties,
+          "--db",
+          dbFile,
+        ])
+      );
+      const now = Date.now();
+      const queryCode = await Effect.runPromise(
+        runCli([
+          "object",
+          "query",
+          "Pessoa",
+          "ana",
+          "--valid-time",
+          String(now),
+          "--db",
+          dbFile,
+          "--json",
+        ])
+      );
+      expect(queryCode).toBe(0);
 
-    // 2. Query explain plan
-    const explainCode = await Effect.runPromise(
-      runCli([
-        "object",
-        "explain",
-        "Patient",
-        "P001",
-        "--valid-time",
-        String(now),
-        "--tx-time",
-        String(now),
-        "--json",
-      ])
-    );
-    expect(explainCode).toBe(0);
+      const explainCode = await Effect.runPromise(
+        runCli([
+          "object",
+          "explain",
+          "Pessoa",
+          "ana",
+          "--valid-time",
+          String(now),
+          "--tx-time",
+          String(now),
+          "--db",
+          dbFile,
+          "--json",
+        ])
+      );
+      expect(explainCode).toBe(0);
 
-    // 3. Propose identity resolution (confidence 0.70 -> ambiguous)
-    const proposeCode = await Effect.runPromise(
-      runCli([
-        "reconcile",
-        "propose",
-        "--source-system",
-        "crm",
-        "--source-key",
-        "c-999",
-        "--target-canonical",
-        "P001",
-        "--action",
-        "merge",
-        "--confidence",
-        "0.70",
-        "--json",
-      ])
-    );
-    expect(proposeCode).toBe(0);
+      const proposeCode = await Effect.runPromise(
+        runCli([
+          "reconcile",
+          "propose",
+          "--source-system",
+          "crm",
+          "--source-key",
+          "c-999",
+          "--target-canonical",
+          "ana",
+          "--action",
+          "merge",
+          "--confidence",
+          "0.70",
+          "--db",
+          dbFile,
+          "--json",
+        ])
+      );
+      expect(proposeCode).toBe(0);
 
-    // 4. List identity proposals
-    const listPropCode = await Effect.runPromise(
-      runCli(["reconcile", "list", "--json"])
-    );
-    expect(listPropCode).toBe(0);
+      const listPropCode = await Effect.runPromise(
+        runCli(["reconcile", "list", "--db", dbFile, "--json"])
+      );
+      expect(listPropCode).toBe(0);
+    } finally {
+      unlinkFileSync(dbFile);
+      unlinkFileSync(`${dbFile}.state.json`);
+    }
   });
 
-  it("prepares, approves, commits, checks status, and generates disposable views (Gate V0-E: V0-CH-07, V0-CH-08, V0-CH-09)", () =>
+  it("writes a Pessoa, refuses an uninstalled Action, and generates a disposable view", () =>
     Effect.gen(function* () {
       const logs: string[] = [];
       const origLog = console.log;
-      console.log = (...args: any[]) => {
+      console.log = (...args: unknown[]) => {
         logs.push(args.map(String).join(" "));
         origLog(...args);
       };
@@ -269,8 +355,46 @@ describe("@operon/cli test suite", () => {
         })
       );
 
-      // 1. Prepare action (zero business side effects)
+      const dbFile = resolvePath(
+        process.cwd(),
+        `.operon-cli-view-${Date.now()}.db`
+      );
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => {
+          unlinkFileSync(dbFile);
+          unlinkFileSync(`${dbFile}.state.json`);
+        })
+      );
+
       logs.length = 0;
+      const putCode = yield* runCli([
+        "object",
+        "put",
+        "--type",
+        "Pessoa",
+        "--id",
+        "ana",
+        "--properties",
+        pessoaProperties,
+        "--db",
+        dbFile,
+        "--json",
+      ]);
+      expect(putCode).toBe(0);
+
+      logs.length = 0;
+      yield* runCli([
+        "object",
+        "get",
+        "Pessoa",
+        "ana",
+        "--db",
+        dbFile,
+        "--json",
+      ]);
+      const person = parseJson(logs.at(-1)!);
+      expect(person.properties.displayName).toBe("Ana Silva");
+
       const prepCode = yield* runCli([
         "action",
         "prepare",
@@ -281,119 +405,22 @@ describe("@operon/cli test suite", () => {
         "agent-007",
         "--role",
         "operator",
+        "--db",
+        dbFile,
         "--json",
       ]);
-      expect(prepCode).toBe(0);
-      const prepOutput = parseJson(logs.at(-1)!);
-      expect(prepOutput.status).toBe("PREPARED");
-      expect(prepOutput.actionId).toBe("update_vitals");
-      expect(prepOutput.canonicalDigest).toBeDefined();
-      const digest = prepOutput.canonicalDigest;
+      expect(prepCode).toBe(1);
 
-      // Verify zero business mutation before commit:
-      logs.length = 0;
-      yield* runCli(["object", "get", "Patient", "P001", "--json"]);
-      const patientBefore = parseJson(logs.at(-1)!);
-      expect(patientBefore.properties.heartRate).not.toBe(78);
-
-      // 2. Reject mismatched proposal approval
-      const mismatchCode = yield* runCli([
-        "action",
-        "approve",
-        digest,
-        "--viewed-digest",
-        "tampered_digest_12345",
-        "--reviewer-id",
-        "dr_smith",
-        "--role",
-        "clinician",
-      ]);
-      expect(mismatchCode).toBe(1);
-
-      // 3. Reject self-approval (reviewer === proposer)
-      const selfApproveCode = yield* runCli([
-        "action",
-        "approve",
-        digest,
-        "--viewed-digest",
-        digest,
-        "--reviewer-id",
-        "agent-007",
-        "--role",
-        "clinician",
-      ]);
-      expect(selfApproveCode).toBe(1);
-
-      // 4. Legitimate exact approval by human reviewer
-      logs.length = 0;
-      const approveCode = yield* runCli([
-        "action",
-        "approve",
-        digest,
-        "--viewed-digest",
-        digest,
-        "--reviewer-id",
-        "dr_smith",
-        "--role",
-        "physician",
-        "--json",
-      ]);
-      expect(approveCode).toBe(0);
-      const approveOutput = parseJson(logs.at(-1)!);
-      expect(approveOutput.status).toBe("APPROVED");
-      expect(approveOutput.approvalId).toBeDefined();
-      const approvalId = approveOutput.approvalId;
-
-      // 5. Local Atomic Commit
-      logs.length = 0;
-      const idempotencyKey = `cli-v0e-commit-${Date.now()}`;
-      const commitCode = yield* runCli([
-        "action",
-        "commit",
-        digest,
-        "--approval-id",
-        approvalId,
-        "--idempotency-key",
-        idempotencyKey,
-        "--json",
-      ]);
-      expect(commitCode).toBe(0);
-      const commitOutput = parseJson(logs.at(-1)!);
-      expect(commitOutput.status).toBe("COMMITTED");
-      expect(commitOutput.operationId).toBeDefined();
-      expect(commitOutput.receiptDigest).toBeDefined();
-      const operationId = commitOutput.operationId;
-
-      // Verify business mutation applied atomically after commit
-      logs.length = 0;
-      yield* runCli(["object", "get", "Patient", "P001", "--json"]);
-      const patientAfter = parseJson(logs.at(-1)!);
-      expect(patientAfter.properties.heartRate).toBe(78);
-
-      // 6. Action status inspection
-      logs.length = 0;
-      const statusCode = yield* runCli([
-        "action",
-        "status",
-        operationId,
-        "--json",
-      ]);
-      expect(statusCode).toBe(0);
-      const statusOutput = parseJson(logs.at(-1)!);
-      expect(statusOutput.operationId).toBe(operationId);
-      expect(statusOutput.status).toBe("COMMITTED");
-
-      // 7. Generate disposable view
       logs.length = 0;
       const viewCode = yield* runCli([
         "view",
         "generate",
         "--title",
-        "Patient Vitals Clinical Overview",
+        "Quarantine card",
         "--state",
         "PROPOSED",
         "--data",
-        '{"patientId":"P001","heartRate":78,"egfr":52}',
+        '{"pessoas":28,"conversas":1204}',
         "--json",
       ]);
       expect(viewCode).toBe(0);

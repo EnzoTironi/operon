@@ -91,7 +91,7 @@ export function runSandbox(args: string[]): Effect.Effect<number> {
       "  Usage: operon sandbox verify <modelId> [--inputs '<json>'] [--iterations <n>] [--json]"
     );
     console.error(
-      "  Example: operon sandbox verify predictive_vibration_model --inputs '{\"value\":10}' --iterations 3"
+      "  Example: operon sandbox verify <modelId> --inputs '{\"value\":10}' --iterations 3"
     );
     return Effect.succeed(1);
   }

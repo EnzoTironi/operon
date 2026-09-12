@@ -1,6 +1,7 @@
 export * from "./types.js";
 export * from "./value-types.js";
 export * from "./object-type.js";
+export * from "./email-types.js";
 export * from "./link-type.js";
 export * from "./interface-type.js";
 export * from "./security.js";

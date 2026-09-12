@@ -53,13 +53,12 @@ Global Flags:
 
 Examples:
   operon doctor --json
-  operon object get Patient P001 --json
-  operon readiness check Patient P001
-  operon action submit update_vitals --params '{"patientId":"P001","heartRate":72}' --agent-tier 4
-  operon action submit adjust_dose --params '{"patientId":"P001","recommendedDose":10}' --agent-tier 2
+  operon object put --type Pessoa --id ana --properties '{"displayName":"Ana Silva","emails":["ana@unimed.com.br"]}'
+  operon object get Pessoa ana --json
+  operon readiness check Pessoa ana
+  operon action list --json
   operon inbox list --json
   operon audit verify --json
-  operon sandbox verify predictive_vibration_model --inputs '{"value":14.2}'
 `);
 }
 
@@ -80,10 +79,10 @@ Usage:
   operon object explain <typeId> <id> [--valid-time <ms>] [--tx-time <ms>] [--json]
 
 Examples:
-  operon object get Patient P001 --json
-  operon object put --type Patient --id P002 --properties '{"name":"Alice","egfr":70}'
-  operon object query Patient P001 --valid-time 1789000000000 --json
-  operon object explain Patient P001 --valid-time 1789000000000
+  operon object put --type Pessoa --id ana --properties '{"displayName":"Ana Silva","emails":["ana@unimed.com.br"]}'
+  operon object get Pessoa ana --json
+  operon object query Pessoa ana --valid-time 1789000000000 --json
+  operon object explain Pessoa ana --valid-time 1789000000000
 `;
 
 const READINESS_HELP = `
@@ -91,8 +90,8 @@ Usage:
   operon readiness check <typeId> <id> [--json] [--db <path>]
 
 Examples:
-  operon readiness check Patient P001
-  operon readiness check Patient P001 --json
+  operon readiness check Pessoa ana
+  operon readiness check Pessoa ana --json
 `;
 
 const ACTION_HELP = `
@@ -106,11 +105,11 @@ Usage:
 
 Examples:
   operon action list --json
-  operon action prepare update_vitals --params '{"patientId":"P001","heartRate":72}' --agent-tier 2 --json
-  operon action approve <preparedDigest> --viewed-digest <viewedDigest> --reason "Vitals verified" --json
+  operon action prepare <actionId> --params '<json>' --agent-tier 2 --json
+  operon action approve <preparedDigest> --viewed-digest <viewedDigest> --reason "Verified" --json
   operon action commit <preparedDigest> --approval-id <approvalId> --idempotency-key key-123 --json
   operon action status <operationId> --json
-  operon action submit update_vitals --params '{"patientId":"P001","heartRate":72}' --agent-tier 4
+  operon action submit <actionId> --params '<json>' --agent-tier 4
 `;
 
 const INBOX_HELP = `
@@ -156,8 +155,8 @@ Usage:
   operon sandbox verify <modelId> [--inputs '<json>'] [--iterations <n>] [--json]
 
 Examples:
-  operon sandbox verify predictive_vibration_model
-  operon sandbox verify predictive_vibration_model --inputs '{"value":14.2}' --iterations 5 --json
+  operon sandbox verify <modelId>
+  operon sandbox verify <modelId> --inputs '{"value":14.2}' --iterations 5 --json
 `;
 
 const MCP_HELP = `
@@ -254,8 +253,8 @@ Usage:
   operon view generate --title <title> --state <state> [--data '<json>' | --stdin] [--grant-id <id>] [--audience <aud>] [--format <format>] [--json]
 
 Examples:
-  operon view generate --title "Patient Vitals" --state PROPOSED --data '{"patientId":"P001","heartRate":72}'
-  operon view generate --title "Patient Overview" --state CONFIRMED --data '{"patientId":"P001"}' --json
+  operon view generate --title "Inbox summary" --state PROPOSED --data '{"pessoas":28}'
+  operon view generate --title "Quarantine card" --state CONFIRMED --data '{"conversas":1204}' --json
 `;
 
 const ASSURANCE_HELP = `
