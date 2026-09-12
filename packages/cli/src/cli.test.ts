@@ -585,6 +585,32 @@ describe("@operon/cli test suite", () => {
       const help = logs.join("\n");
       expect(help).toContain("Default --agent-tier is 2");
       expect(help).not.toContain("default --agent-tier is 4");
+      expect(help).toContain("Companion is the session host");
+      expect(help).toContain("OPERON_SESSION=");
+      expect(help).not.toContain("operon approver session");
+    } finally {
+      console.log = origLog;
+    }
+  });
+
+  it("keeps approver session as a hidden operator issuer", async () => {
+    const logs: string[] = [];
+    const origLog = console.log;
+    console.log = (...args: unknown[]) => {
+      logs.push(args.map(String).join(" "));
+    };
+    try {
+      const top = await Effect.runPromise(runCli(["--help"]));
+      expect(top).toBe(0);
+      expect(logs.join("\n")).not.toContain("operon approver session");
+      expect(logs.join("\n")).not.toMatch(/^\s+approver\s+/m);
+
+      logs.length = 0;
+      const hidden = await Effect.runPromise(runCli(["approver", "--help"]));
+      expect(hidden).toBe(0);
+      const help = logs.join("\n");
+      expect(help).toContain("Hidden operator issuer");
+      expect(help).toContain("Companion is the session host");
     } finally {
       console.log = origLog;
     }

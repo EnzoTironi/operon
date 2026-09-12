@@ -30,9 +30,10 @@ import { createRuntimeContext } from "../state.js";
 import type { DatabaseTarget } from "../state.js";
 
 /**
- * Binds the approver for this server from `OPERON_APPROVER_SESSION_TOKEN`.
- * The verifier lives for the whole process (the given scope), so each tool
- * call re-checks the token against the cell database.
+ * Binds the approver for this server from Companion's Better Auth
+ * `session.token` (`OPERON_SESSION`). The verifier lives for the whole
+ * process (the given scope), so each tool call re-checks the token
+ * against the cell database.
  */
 const bindApprover = Effect.fn("bindApprover")(function* (
   token: SessionToken,
@@ -124,7 +125,12 @@ export function runMcp(args: string[]): Effect.Effect<number> {
       return 1;
     }
     const { agentTier, role, dbPath, workspaceId, hostApprover } = parsed.value;
-    if (hostApprover && Option.isSome(readApproverSessionToken())) {
+    const sessionToken = yield* Effect.exit(readApproverSessionToken());
+    if (Exit.isFailure(sessionToken)) {
+      printCliError(`Error: ${Cause.pretty(sessionToken.cause)}`);
+      return 1;
+    }
+    if (hostApprover && Option.isSome(sessionToken.value)) {
       printCliError(
         "Error: use either --host-approver or a cell session token."
       );
@@ -137,7 +143,7 @@ export function runMcp(args: string[]): Effect.Effect<number> {
     const authScope = yield* Effect.scope;
 
     const approverExit = yield* Effect.exit(
-      Option.match(readApproverSessionToken(), {
+      Option.match(sessionToken.value, {
         onNone: () => Effect.succeed(unboundApprover),
         onSome: (token) => bindApprover(token, ctx.database, authScope),
       })
