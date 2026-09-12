@@ -17,7 +17,7 @@ const config: KnipConfig = {
       ignoreBinaries: ["umask"],
     },
     "packages/gateway": {
-      entry: ["src/index.ts!"],
+      entry: ["src/index.ts!", "src/cell.ts!"],
       ignore: ["vendor/**"],
       ignoreDependencies: [
         "@babel/parser",

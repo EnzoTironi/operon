@@ -8,6 +8,10 @@
   "types": "./src/index.ts",
   "exports": {
     ".": "./src/index.ts",
+    "./cell": {
+      "types": "./dist/cell.d.ts",
+      "import": "./dist/cell.js"
+    },
     "./sdk": "./vendor/sdk/index.ts",
     "./sdk/testing": "./vendor/sdk/testing.ts",
     "./sdk/host-internal": "./vendor/sdk/host-internal.ts",
@@ -35,7 +39,7 @@
     "./mcp": "./vendor/host-mcp/index.ts"
   },
   "scripts": {
-    "build": "tsc --noEmit -p tsconfig.json",
+    "build": "tsc --noEmit -p tsconfig.json && tsc -p tsconfig.cell.json",
     "clean": "rm -rf dist *.tsbuildinfo",
     "test": "vitest run"
   },

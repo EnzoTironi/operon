@@ -2,6 +2,11 @@ import type { Schema } from "effect";
 import { Effect } from "effect";
 
 import type { QuarantineEnvelope } from "./envelope.js";
+import type {
+  MailboxMessageNotFoundError,
+  ReadOperationUnsupportedError,
+  SecretUnresolvedError,
+} from "./errors.js";
 import { WriteInvokeForbiddenError } from "./errors.js";
 import type { WriteCandidate } from "./write-candidate.js";
 
@@ -86,9 +91,14 @@ export type GatewayDispatchResult =
   | { readonly _tag: "quarantine"; readonly envelope: QuarantineEnvelope }
   | { readonly _tag: "writeCandidate"; readonly candidate: WriteCandidate };
 
+export type GatewayReadError =
+  | MailboxMessageNotFoundError
+  | ReadOperationUnsupportedError
+  | SecretUnresolvedError;
+
 export type ReadExecutor = (
   request: GatewayRequest
-) => Effect.Effect<QuarantineEnvelope, never>;
+) => Effect.Effect<QuarantineEnvelope, GatewayReadError>;
 
 /**
  * The only dispatch entry the Operon cell should call.
@@ -100,7 +110,7 @@ export const dispatchGatewayRequest = Effect.fn("dispatchGatewayRequest")(
   function* (
     request: GatewayRequest,
     readExecutor: ReadExecutor
-  ): Effect.fn.Return<GatewayDispatchResult> {
+  ): Effect.fn.Return<GatewayDispatchResult, GatewayReadError> {
     const classified = classifyGatewayRequest(request);
     switch (classified._tag) {
       case "WriteCandidate": {

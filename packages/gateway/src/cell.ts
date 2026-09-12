@@ -23,7 +23,6 @@ export type {
   GatewayRequest,
   ReadExecutor,
 } from "./membrane.js";
-export { makeReadOnlySandboxInvoker, classifySandboxPath } from "./sandbox.js";
 export { memoryHostSecretStore } from "./host-secrets.js";
 export type { HostSecretStore } from "./host-secrets.js";
 export { SecretRef, secretRef } from "./secret-ref.js";
@@ -46,14 +45,3 @@ export {
   recordedGmailMailbox,
 } from "./connectors/gmail-mailbox.js";
 export type { GmailReadonlyExecutorOptions } from "./connectors/gmail-mailbox.js";
-
-export { fileSecretsPlugin } from "@operon/gateway/source-secrets";
-export {
-  annotationsForOperation,
-  openApiPlugin,
-} from "@operon/gateway/source-openapi";
-export { graphqlPlugin } from "@operon/gateway/source-graphql";
-export { mcpPlugin } from "@operon/gateway/source-mcp";
-export { createExecutor } from "@operon/gateway/sdk";
-export { createExecutionEngine } from "@operon/gateway/execution";
-export { makeQuickJsExecutor, setQuickJSModule } from "@operon/gateway/sandbox";

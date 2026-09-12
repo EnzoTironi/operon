@@ -15,3 +15,16 @@ export class ReadOperationUnsupportedError extends Data.TaggedError(
   readonly connectorId: string;
   readonly operation: string;
 }> {}
+
+export class SecretUnresolvedError extends Data.TaggedError(
+  "SecretUnresolvedError"
+)<{
+  readonly id: string;
+}> {}
+
+export class MailboxMessageNotFoundError extends Data.TaggedError(
+  "MailboxMessageNotFoundError"
+)<{
+  readonly connectorId: string;
+  readonly messageId: string;
+}> {}

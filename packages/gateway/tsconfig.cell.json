@@ -1,0 +1,20 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "declaration": true,
+    "outDir": "./dist",
+    "rootDir": "./src"
+  },
+  "include": [
+    "src/cell.ts",
+    "src/envelope.ts",
+    "src/errors.ts",
+    "src/invariants.ts",
+    "src/membrane.ts",
+    "src/write-candidate.ts",
+    "src/secret-ref.ts",
+    "src/host-secrets.ts",
+    "src/connectors/email.ts",
+    "src/connectors/gmail-mailbox.ts"
+  ]
+}
