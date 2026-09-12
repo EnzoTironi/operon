@@ -181,7 +181,7 @@ describe("email magic factor through MCP (Q -> C -> L)", () => {
     });
   });
 
-  it("refuses Consumer keys on review and admission and refuses agent reviewers", async () => {
+  it("refuses Consumer keys on review and admission, self review, stale digests and unreviewed merges", async () => {
     const harness = makeHarness();
     const builder = await connect(builderKey, harness);
     const consumer = await connect(consumerKey, harness);
