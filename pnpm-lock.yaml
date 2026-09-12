@@ -54,101 +54,6 @@ importers:
         specifier: ^2.1.8
         version: 2.1.9(@types/node@22.20.2)
 
-  examples/aviation-skywise:
-    dependencies:
-      '@operon/runtime':
-        specifier: workspace:*
-        version: link:../../packages/runtime
-      '@operon/schema':
-        specifier: workspace:*
-        version: link:../../packages/schema
-      effect:
-        specifier: 4.0.0-rc.112
-        version: 4.0.0-rc.112
-    devDependencies:
-      typescript:
-        specifier: ^5.7.2
-        version: 5.9.3
-      vitest:
-        specifier: ^2.1.8
-        version: 2.1.9(@types/node@22.20.2)
-
-  examples/healthcare-cdss:
-    dependencies:
-      '@operon/runtime':
-        specifier: workspace:*
-        version: link:../../packages/runtime
-      '@operon/schema':
-        specifier: workspace:*
-        version: link:../../packages/schema
-      effect:
-        specifier: 4.0.0-rc.112
-        version: 4.0.0-rc.112
-    devDependencies:
-      typescript:
-        specifier: ^5.7.2
-        version: 5.9.3
-      vitest:
-        specifier: ^2.1.8
-        version: 2.1.9(@types/node@22.20.2)
-
-  examples/higher-education:
-    dependencies:
-      '@operon/runtime':
-        specifier: workspace:*
-        version: link:../../packages/runtime
-      '@operon/schema':
-        specifier: workspace:*
-        version: link:../../packages/schema
-      effect:
-        specifier: 4.0.0-rc.112
-        version: 4.0.0-rc.112
-    devDependencies:
-      typescript:
-        specifier: ^5.7.2
-        version: 5.9.3
-      vitest:
-        specifier: ^2.1.8
-        version: 2.1.9(@types/node@22.20.2)
-
-  examples/sompo-rdp:
-    dependencies:
-      '@operon/runtime':
-        specifier: workspace:*
-        version: link:../../packages/runtime
-      '@operon/schema':
-        specifier: workspace:*
-        version: link:../../packages/schema
-      effect:
-        specifier: 4.0.0-rc.112
-        version: 4.0.0-rc.112
-    devDependencies:
-      typescript:
-        specifier: ^5.7.2
-        version: 5.9.3
-      vitest:
-        specifier: ^2.1.8
-        version: 2.1.9(@types/node@22.20.2)
-
-  examples/wastewater-compliance:
-    dependencies:
-      '@operon/runtime':
-        specifier: workspace:*
-        version: link:../../packages/runtime
-      '@operon/schema':
-        specifier: workspace:*
-        version: link:../../packages/schema
-      effect:
-        specifier: 4.0.0-rc.112
-        version: 4.0.0-rc.112
-    devDependencies:
-      typescript:
-        specifier: ^5.7.2
-        version: 5.9.3
-      vitest:
-        specifier: ^2.1.8
-        version: 2.1.9(@types/node@22.20.2)
-
   packages/alchemy:
     dependencies:
       '@operon/runtime':
@@ -3606,7 +3511,6 @@ packages:
 
   libsql@0.5.29:
     resolution: {integrity: sha512-8lMP8iMgiBzzoNbAPQ59qdVcj6UaE/Vnm+fiwX4doX4Narook0a4GPKWBEv+CR8a1OwbfkgL18uBfBjWdF0Fzg==}
-    cpu: [x64, arm64, wasm32, arm]
     os: [darwin, linux, win32]
 
   lie@3.3.0:

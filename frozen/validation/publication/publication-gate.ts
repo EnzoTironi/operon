@@ -4,7 +4,7 @@ import { Effect, Exit } from "effect";
 import { joinPath, resolvePath } from "./paths.js";
 
 const __dirname = import.meta.dirname;
-const rootDir = resolvePath(__dirname, "../..");
+const rootDir = resolvePath(__dirname, "../../..");
 
 export function runPublicationGate(
   targetDirectory: string = joinPath(rootDir, "packages")

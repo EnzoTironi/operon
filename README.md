@@ -24,7 +24,7 @@ When autonomous LLM agents or AI decision systems attempt actions without an ope
 
 ## Monorepo Architecture
 
-The workspace is organized into a modular pnpm monorepo consisting of 7 core packages and 5 industry reference implementations:
+The workspace is organized into a modular pnpm monorepo of core packages under `packages/`:
 
 ### Core Packages (`packages/`)
 
@@ -38,15 +38,9 @@ The workspace is organized into a modular pnpm monorepo consisting of 7 core pac
 | [`@operon/mcp`](file:///Users/enzotironi/operationalonto/packages/mcp/README.md) | Model Context Protocol server, dual-key isolation (Consumer vs Builder), and AI-FDE autonomous agents. |
 | [`@operon/alchemy`](file:///Users/enzotironi/operationalonto/packages/alchemy/README.md) | Serverless Cloudflare edge infrastructure synthesis via [Alchemy](https://alchemy.run) (Workers, D1, R2, Queues). |
 
-### Industry Reference Implementations (`examples/`)
+### Frozen code (`frozen/`)
 
-| Example | Book Chapter | Real-World Scenario |
-| :-- | :-- | :-- |
-| [`@operon/example-healthcare-cdss`](file:///Users/enzotironi/operationalonto/examples/healthcare-cdss/src/simulation.ts) | Chapter 1 | Hospital inpatient CDSS preventing trust collapse, clinical discretion overrides, and renal dose adjustment. |
-| [`@operon/example-aviation-skywise`](file:///Users/enzotironi/operationalonto/examples/aviation-skywise/src/simulation.ts) | Chapter 11 | Aviation fleet predictive maintenance, flight-hour tracking, and automated work order generation. |
-| [`@operon/example-wastewater-compliance`](file:///Users/enzotironi/operationalonto/examples/wastewater-compliance/src/simulation.ts) | Chapter 12 | Municipal wastewater treatment aeration control, EPA compliance enforcement, and chemical dosing. |
-| [`@operon/example-sompo-rdp`](file:///Users/enzotironi/operationalonto/examples/sompo-rdp/src/simulation.ts) | Chapter 14 | SOMPO Real Data Platform elder care sensor telemetry, claims triage, and incident detection. |
-| [`@operon/example-higher-education`](file:///Users/enzotironi/operationalonto/examples/higher-education/src/simulation.ts) | Chapter 13 | Higher education prerequisite waiver governance and curriculum committee approval workflow. |
+The five industry example simulations and the S17/publication validation scripts are frozen out of the build, test, lint, and knip graphs. See [`frozen/README.md`](./frozen/README.md) for the index and rationale.
 
 ---
 
@@ -131,9 +125,6 @@ operon mcp start [--agent-tier <1|2|3|4>]
 
 # Production Telemetry & Diagnostics
 operon telemetry status [--ping] [--json]
-
-# Run Domain Demonstrations
-operon demo <healthcare|aviation|wastewater|sompo|education>
 ```
 
 ---
@@ -156,7 +147,7 @@ Operon uses an **aggressive declarative testing** philosophy:
 
 - Test descriptions define the formal behavior of the system as an unambiguous specification (`"does X"`, `"does X if Y"`).
 - Tests act as the executable blueprint rather than passive regression catchers.
-- 100% of test suites across all packages and examples enforce this standard.
+- 100% of test suites across all packages enforce this standard.
 
 ---
 
