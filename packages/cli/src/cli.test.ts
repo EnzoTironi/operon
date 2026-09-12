@@ -545,4 +545,21 @@ describe("@operon/cli test suite", () => {
       expect(scanOutput.isClean).toBe(true);
       expect(scanOutput.violations.length).toBe(0);
     }).pipe(Effect.scoped, Effect.runPromise));
+
+  it("documents mcp start default as consumer tier 2", async () => {
+    const logs: string[] = [];
+    const origLog = console.log;
+    console.log = (...args: unknown[]) => {
+      logs.push(args.map(String).join(" "));
+    };
+    try {
+      const code = await Effect.runPromise(runCli(["mcp", "--help"]));
+      expect(code).toBe(0);
+      const help = logs.join("\n");
+      expect(help).toContain("Default --agent-tier is 2");
+      expect(help).not.toContain("default --agent-tier is 4");
+    } finally {
+      console.log = origLog;
+    }
+  });
 });

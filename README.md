@@ -142,7 +142,7 @@ operon oms proposal merge <id> --author <id>
 operon sandbox verify <modelId> [--inputs '<json>'] [--iterations <n>]
 
 # Launch MCP Stdio Server
-operon mcp start [--agent-tier <1|2|3|4>]   # approver bound from OPERON_APPROVER_SESSION_TOKEN
+operon mcp start [--agent-tier <1|2|3|4>]   # default 2 (Propose); approver from OPERON_APPROVER_SESSION_TOKEN
 
 # Cell approver sessions (Better Auth on the cell Postgres)
 operon approver session --email <email> --name <name> [--json]

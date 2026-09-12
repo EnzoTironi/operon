@@ -26,8 +26,8 @@ Model Context Protocol (MCP) server for **Operon**, allowing AI agents (Claude D
 ### Stdio Transport (Claude Desktop / Cursor)
 
 ```bash
-# Start server with default Tier 4 bounded autonomy
-operon mcp start --agent-tier 4
+# Start server with default Consumer / Propose (tier 2)
+operon mcp start
 
 # Start server connected to persistent SQLite bitemporal store
 operon mcp start --agent-tier 2 --db ./operon.db
@@ -45,7 +45,7 @@ operon mcp start --agent-tier 2 --db ./operon.db
         "mcp",
         "start",
         "--agent-tier",
-        "4"
+        "2"
       ]
     }
   }

@@ -166,6 +166,7 @@ Usage:
 
 The server role is chosen by its trusted host. Consumer is the default and cannot modify schemas or pipelines.
 Builder can prepare changes; human approval still requires an authenticated session.
+Default --agent-tier is 2 (Propose). Tier 4 bounded autonomy must be set explicitly.
 
 The approver is bound from OPERON_APPROVER_SESSION_TOKEN (see operon approver session).
 Without it the server runs unbound and human decisions are refused.

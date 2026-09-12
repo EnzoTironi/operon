@@ -6,8 +6,13 @@ import { fileURLToPath } from "node:url";
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { Schema } from "effect";
+import { Effect, Schema } from "effect";
 import { afterEach, describe, expect, it } from "vitest";
+
+import {
+  DEFAULT_MCP_AGENT_TIER,
+  parseMcpOptions,
+} from "./commands/mcp.js";
 
 const cli = fileURLToPath(new URL("../dist/bin.js", import.meta.url));
 const folders: string[] = [];
@@ -73,6 +78,22 @@ afterEach(async () => {
       .splice(0)
       .map((folder) => rm(folder, { recursive: true, force: true }))
   );
+});
+
+describe("MCP start defaults", () => {
+  it("defaults to consumer agent tier 2", async () => {
+    const options = await Effect.runPromise(parseMcpOptions(["start"]));
+    expect(DEFAULT_MCP_AGENT_TIER).toBe(2);
+    expect(options.agentTier).toBe(2);
+    expect(options.role).toBe("consumer");
+  });
+
+  it("keeps explicit --agent-tier 4 when the host opts in", async () => {
+    const options = await Effect.runPromise(
+      parseMcpOptions(["start", "--agent-tier", "4"])
+    );
+    expect(options.agentTier).toBe(4);
+  });
 });
 
 describe("MCP process boundary", () => {

@@ -133,9 +133,11 @@ operon sandbox verify predictive_vibration_model --inputs '{"value":14.2}' --ite
 Launches the Model Context Protocol (MCP) server over standard input/output (`stdio`) for integration with Claude Desktop, Cursor, and AI agents.
 
 ```bash
-operon mcp start --agent-tier 4
+operon mcp start
 operon mcp start --agent-tier 2 --db ./operon.db
 ```
+
+Default `--agent-tier` is 2 (Consumer, Propose). Tier 4 bounded autonomy must be set explicitly.
 
 ### 10. `telemetry`
 
