@@ -479,7 +479,7 @@ export function runOms(args: string[]): Effect.Effect<number, unknown, never> {
   return Effect.acquireUseRelease(
     Effect.promise(() => createRuntimeContext(dbPath)),
     (ctx) => dispatchOms({ action, args, ctx, group, isJson }),
-    (ctx) => Effect.sync(() => ctx.close())
+    (ctx) => Effect.promise(() => ctx.close())
   ).pipe(
     Effect.annotateLogs({
       action: args[1] ?? "none",

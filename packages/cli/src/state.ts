@@ -10,9 +10,11 @@ import {
   NativeSqliteDriver,
   OntologyMetadataService,
   OperonServiceImpl,
+  PostgresDriver,
   ReconciliationService,
   SandboxedModelRunner,
   SqlBitemporalStore,
+  isPostgresUrl,
 } from "@operon/runtime";
 import type {
   DecisionRecord,
@@ -30,7 +32,7 @@ import {
   serializeJson,
 } from "@operon/schema";
 import type { ActionType, LinkType, ObjectType, Subject } from "@operon/schema";
-import { Config, Effect, Option, Redacted, Schema } from "effect";
+import { Config, Effect, Exit, Option, Redacted, Schema, Scope } from "effect";
 
 import {
   fileExistsSync,
@@ -214,7 +216,8 @@ export interface OperonRuntimeContext {
   readonly governedActions: GovernedActionService;
   readonly atomicCommit: AtomicCommitService;
   readonly operonService: OperonService;
-  readonly close: () => void;
+  readonly database: DatabaseTarget;
+  readonly close: () => Promise<void>;
 }
 
 function registerDefaultModels(sandbox: SandboxedModelRunner): void {
@@ -234,20 +237,32 @@ function registerDefaultModels(sandbox: SandboxedModelRunner): void {
   });
 }
 
-function resolveTargetDbPath(dbPath?: string): string | undefined {
-  if (dbPath) {
-    return dbPath;
-  }
-  if (process.env.OPERON_DATABASE_URL) {
-    return process.env.OPERON_DATABASE_URL;
-  }
-  const envDbUrl = Effect.runSync(
-    Effect.option(Config.redacted("OPERON_DATABASE_URL"))
-  );
-  return envDbUrl.pipe(Option.map(Redacted.value), Option.getOrUndefined);
+/**
+ * Where the object store lives. Parsed once from `--db` or
+ * `OPERON_DATABASE_URL`: a Postgres URL selects the cell database, any other
+ * value is a SQLite file path, nothing means in-memory.
+ */
+export type DatabaseTarget =
+  | { readonly kind: "memory" }
+  | { readonly kind: "sqlite"; readonly path: string }
+  | { readonly kind: "postgres"; readonly url: Redacted.Redacted<string> };
+
+function parseDatabaseTarget(value: string): DatabaseTarget {
+  return isPostgresUrl(value)
+    ? { kind: "postgres", url: Redacted.make(value) }
+    : { kind: "sqlite", path: value };
 }
 
-function resolveStateFilePath(targetDbPath?: string): string {
+function resolveDatabaseTarget(dbPath?: string): DatabaseTarget {
+  if (dbPath) {
+    return parseDatabaseTarget(dbPath);
+  }
+  // Read live so a caller that sets the variable after startup is honoured.
+  const envDbUrl = process.env.OPERON_DATABASE_URL;
+  return envDbUrl ? parseDatabaseTarget(envDbUrl) : { kind: "memory" };
+}
+
+function resolveStateFilePath(target: DatabaseTarget): string {
   const envStatePath = Effect.runSync(
     Effect.option(Config.string("OPERON_STATE_PATH"))
   );
@@ -255,8 +270,8 @@ function resolveStateFilePath(targetDbPath?: string): string {
   if (statePath) {
     return statePath;
   }
-  if (targetDbPath) {
-    return `${targetDbPath}.state.json`;
+  if (target.kind === "sqlite") {
+    return `${target.path}.state.json`;
   }
   return joinPath(process.cwd(), ".operon-cli-state.json");
 }
@@ -270,23 +285,48 @@ function isPersistenceEnabled(): boolean {
 
 interface DbStoreResult {
   readonly objectStore: InMemoryObjectStore | SqlBitemporalStore;
-  readonly close: () => void;
+  readonly close: () => Promise<void>;
 }
 
-function createDbStore(targetDbPath?: string): DbStoreResult {
-  if (targetDbPath) {
-    const driver = new NativeSqliteDriver(targetDbPath);
-    return {
-      close: () => driver.close(),
-      objectStore: new SqlBitemporalStore(driver, "sqlite"),
-    };
-  }
+const openPostgresStore = Effect.fn("openPostgresStore")(function* (
+  url: Redacted.Redacted<string>
+) {
+  const scope = yield* Scope.make();
+  const driver = yield* PostgresDriver.connect({ url }).pipe(
+    Scope.provide(scope)
+  );
   return {
-    close: () => {
-      // In-memory runtime context requires no persistence teardown
-    },
-    objectStore: new InMemoryObjectStore(),
-  };
+    close: () => Effect.runPromise(Scope.close(scope, Exit.void)),
+    objectStore: new SqlBitemporalStore(driver, "postgres"),
+  } satisfies DbStoreResult;
+});
+
+function createDbStore(target: DatabaseTarget): Promise<DbStoreResult> {
+  switch (target.kind) {
+    case "postgres": {
+      return Effect.runPromise(openPostgresStore(target.url));
+    }
+    case "sqlite": {
+      const driver = new NativeSqliteDriver(target.path);
+      return Promise.resolve({
+        close: () => {
+          driver.close();
+          return Promise.resolve();
+        },
+        objectStore: new SqlBitemporalStore(driver, "sqlite"),
+      });
+    }
+    case "memory": {
+      return Promise.resolve({
+        close: () => Promise.resolve(),
+        objectStore: new InMemoryObjectStore(),
+      });
+    }
+    default: {
+      const exhaustive: never = target;
+      return exhaustive;
+    }
+  }
 }
 
 async function seedDefaultObjects(
@@ -499,8 +539,8 @@ export async function createRuntimeContext(
     : [];
   const linkTypes = [PatientObservationLink];
 
-  const targetDbPath = resolveTargetDbPath(dbPath);
-  const dbConfig = createDbStore(targetDbPath);
+  const target = resolveDatabaseTarget(dbPath);
+  const dbConfig = await createDbStore(target);
   const objectStore = dbConfig.objectStore;
 
   const inbox = new ActionInbox(auditStore, objectStore);
@@ -532,7 +572,7 @@ export async function createRuntimeContext(
     reconciliationService: reconciliation,
   });
 
-  const stateFile = resolveStateFilePath(targetDbPath);
+  const stateFile = resolveStateFilePath(target);
   const isPersisted = isPersistenceEnabled();
   const stores: RuntimeStores = {
     actionTypes,
@@ -557,12 +597,13 @@ export async function createRuntimeContext(
     if (isPersisted) {
       persistRuntimeState(stateFile, stores);
     }
-    dbConfig.close();
+    return dbConfig.close();
   };
 
   return {
     ...stores,
     close: enhancedClose,
+    database: target,
     linkTypes,
     objectTypes,
     operonService,

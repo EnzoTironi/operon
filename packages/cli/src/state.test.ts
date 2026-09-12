@@ -59,7 +59,7 @@ describe("V0-CH-01: State persistence & two-process SQLite round-trip", () => {
       });
 
       // Process A closes cleanly
-      processA.close();
+      yield* Effect.promise(() => processA.close());
 
       // Process B: Independent invocation pointing to the same SQLite storage
       const processB = yield* Effect.promise(() =>
@@ -82,7 +82,7 @@ describe("V0-CH-01: State persistence & two-process SQLite round-trip", () => {
       const isValid = yield* processB.auditStore.verifyAuditChain();
       expect(isValid).toBe(true);
 
-      processB.close();
+      yield* Effect.promise(() => processB.close());
     }).pipe(Effect.scoped, Effect.runPromise));
 
   it("respects OPERON_DATABASE_URL environment variable fallback", () =>
@@ -110,6 +110,6 @@ describe("V0-CH-01: State persistence & two-process SQLite round-trip", () => {
       const patient = yield* ctx.objectStore.getObject(PatientType.id, "P001");
       expect(patient).toBeDefined();
 
-      ctx.close();
+      yield* Effect.promise(() => ctx.close());
     }).pipe(Effect.scoped, Effect.runPromise));
 });

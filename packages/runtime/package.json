@@ -17,13 +17,17 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@effect/sql-pg": "4.0.0-rc.112",
     "@operon/assurance": "workspace:*",
     "@operon/generated-ui": "workspace:*",
     "@operon/schema": "workspace:*",
     "@operon/telemetry": "workspace:*",
-    "effect": "4.0.0-rc.112"
+    "effect": "4.0.0-rc.112",
+    "pg": "^8.23.0"
   },
   "devDependencies": {
+    "@testcontainers/postgresql": "12.1.0",
+    "@types/pg": "^8.23.1",
     "fast-check": "^4.9.0",
     "typescript": "^5.7.2",
     "vitest": "^2.1.8"

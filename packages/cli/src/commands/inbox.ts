@@ -201,7 +201,7 @@ export function runInbox(
   return Effect.acquireUseRelease(
     Effect.promise(() => createRuntimeContext(dbPath)),
     (ctx) => executeInbox(ctx, sub, args, isJson),
-    (ctx) => Effect.sync(() => ctx.close())
+    (ctx) => Effect.promise(() => ctx.close())
   ).pipe(
     Effect.annotateLogs({ command: "inbox", subcommand: args[0] ?? "none" })
   );

@@ -151,7 +151,7 @@ export function runView(args: string[]): Effect.Effect<number, unknown, never> {
       printCliError("  Run 'operon view --help' for details.");
       return Effect.succeed(1);
     },
-    (ctx) => Effect.sync(() => ctx.close())
+    (ctx) => Effect.promise(() => ctx.close())
   ).pipe(
     Effect.annotateLogs({ command: "view", subcommand: args[0] ?? "none" })
   );

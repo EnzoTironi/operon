@@ -1,6 +1,6 @@
-import { Effect, Exit } from "effect";
+import { Effect, Exit, Redacted } from "effect";
 
-import type { RuntimeContext } from "../state.js";
+import type { DatabaseTarget, RuntimeContext } from "../state.js";
 import { createRuntimeContext } from "../state.js";
 
 export interface DoctorCheckResult {
@@ -26,13 +26,31 @@ function checkEnvironment(): readonly DoctorCheckResult[] {
   ];
 }
 
+function describeDatabase(target: DatabaseTarget): string {
+  switch (target.kind) {
+    case "memory": {
+      return "in-memory object store";
+    }
+    case "sqlite": {
+      return `SQLite bitemporal store at ${target.path}`;
+    }
+    case "postgres": {
+      const url = new URL(Redacted.value(target.url));
+      return `PostgreSQL bitemporal store at ${url.host}${url.pathname}`;
+    }
+    default: {
+      const exhaustive: never = target;
+      return exhaustive;
+    }
+  }
+}
+
 const executeStorageChecks = Effect.fn("executeStorageChecks")(function* (
   ctx: RuntimeContext,
-  checks: DoctorCheckResult[],
-  dbPath?: string
+  checks: DoctorCheckResult[]
 ) {
   checks.push({
-    details: `Initialized ${dbPath ? "SQLite bitemporal store" : "in-memory object store"} with pre-seeded ontologies`,
+    details: `Initialized ${describeDatabase(ctx.database)} with pre-seeded ontologies`,
     name: "Storage Engine",
     status: "PASS",
   });
@@ -61,8 +79,8 @@ const runStorageChecks = Effect.fn("runStorageChecks")(function* (
   const checks: DoctorCheckResult[] = [];
   const storageEffect = Effect.acquireUseRelease(
     Effect.promise(() => createRuntimeContext(dbPath)),
-    (ctx) => executeStorageChecks(ctx, checks, dbPath),
-    (ctx) => Effect.sync(() => ctx.close())
+    (ctx) => executeStorageChecks(ctx, checks),
+    (ctx) => Effect.promise(() => ctx.close())
   );
 
   const storageResult = yield* storageEffect.pipe(Effect.exit);

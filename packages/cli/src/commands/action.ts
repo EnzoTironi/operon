@@ -899,7 +899,7 @@ export function runAction(
       printCliError("  Run 'operon action --help' for details.");
       return Effect.succeed(1);
     },
-    (ctx) => Effect.sync(() => ctx.close())
+    (ctx) => Effect.promise(() => ctx.close())
   ).pipe(
     Effect.annotateLogs({ command: "action", subcommand: args[0] ?? "none" })
   );

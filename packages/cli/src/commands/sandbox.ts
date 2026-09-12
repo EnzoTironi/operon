@@ -99,7 +99,7 @@ export function runSandbox(args: string[]): Effect.Effect<number> {
   return Effect.acquireUseRelease(
     Effect.promise(() => createRuntimeContext()),
     (ctx) => handleSandboxVerify(ctx, modelId, args, isJson),
-    (ctx) => Effect.sync(() => ctx.close())
+    (ctx) => Effect.promise(() => ctx.close())
   ).pipe(
     Effect.annotateLogs({ command: "sandbox", subcommand: args[0] ?? "none" })
   );
