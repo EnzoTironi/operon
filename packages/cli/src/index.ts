@@ -162,14 +162,20 @@ Examples:
 
 const MCP_HELP = `
 Usage:
-  operon mcp start [--agent-tier <1-4>] [--db <path|postgres-url>]
+  operon mcp start [--role <consumer|builder>] [--agent-tier <1-4>] [--db <path|postgres-url>] [--workspace <id>] [--host-approver]
+
+The server role is chosen by its trusted host. Consumer is the default and cannot modify schemas or pipelines.
+Builder can prepare changes; human approval still requires an authenticated session.
 
 The approver is bound from OPERON_APPROVER_SESSION_TOKEN (see operon approver session).
-Without it the server runs unbound and operon_approve_prepared_action refuses.
+Without it the server runs unbound and human decisions are refused.
+A trusted application host can instead select --workspace <id> --role builder --host-approver.
+The host must implement the private operon/verify-approval callback and revalidate the exact operation.
+Workspace mode persists all runtime state atomically in the database, serializes writers, and starts without demo data.
 
 Examples:
   operon mcp start
-  operon mcp start --agent-tier 4
+  operon mcp start --role builder --agent-tier 2 --db ./operon.db
   OPERON_APPROVER_SESSION_TOKEN=<token> operon mcp start
 `;
 

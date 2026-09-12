@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import * as fs from "node:fs";
 import path from "node:path";
 
@@ -12,6 +13,31 @@ export function readTextFileSync(filePath: string | number): string {
 
 export function writeTextFileSync(filePath: string, content: string): void {
   fs.writeFileSync(filePath, content, "utf-8");
+}
+
+export function writeTextFileAtomicSync(
+  filePath: string,
+  content: string
+): void {
+  const directory = path.dirname(filePath);
+  fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+  const temporary = `${filePath}.${randomUUID()}.tmp`;
+  try {
+    fs.writeFileSync(temporary, content, {
+      encoding: "utf-8",
+      mode: 0o600,
+      flush: true,
+    });
+    fs.renameSync(temporary, filePath);
+    const descriptor = fs.openSync(directory, "r");
+    try {
+      fs.fsyncSync(descriptor);
+    } finally {
+      fs.closeSync(descriptor);
+    }
+  } finally {
+    fs.rmSync(temporary, { force: true });
+  }
 }
 
 export function fileExistsSync(filePath: string): boolean {

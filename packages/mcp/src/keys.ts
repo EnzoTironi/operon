@@ -1,8 +1,9 @@
 import { createHash } from "node:crypto";
 
-import { Clock, Data, Effect, Predicate } from "effect";
+import { Clock, Data, Effect, Predicate, Schema } from "effect";
 
-export type McpKeyRole = "consumer" | "builder";
+export const McpKeyRole = Schema.Literals(["consumer", "builder"]);
+export type McpKeyRole = typeof McpKeyRole.Type;
 
 export interface McpKey {
   readonly keyId: string;

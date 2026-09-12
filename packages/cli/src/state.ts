@@ -14,6 +14,7 @@ import {
   ReconciliationService,
   SandboxedModelRunner,
   SqlBitemporalStore,
+  StorageError,
   isPostgresUrl,
 } from "@operon/runtime";
 import type {
@@ -38,8 +39,9 @@ import {
   fileExistsSync,
   joinPath,
   readTextFileSync,
-  writeTextFileSync,
+  writeTextFileAtomicSync,
 } from "./fs-io.js";
+import { openWorkspaceState } from "./workspace-state.js";
 
 export const PatientType = defineObjectType({
   description: "Hospital patient undergoing medical treatment",
@@ -217,6 +219,7 @@ export interface OperonRuntimeContext {
   readonly atomicCommit: AtomicCommitService;
   readonly operonService: OperonService;
   readonly database: DatabaseTarget;
+  readonly checkpoint: Effect.Effect<void, StorageError>;
   readonly close: () => Promise<void>;
 }
 
@@ -464,51 +467,40 @@ function restoreDomainServices(
   }
 }
 
-function restoreRuntimeState(stateFile: string, stores: RuntimeStores): void {
-  if (!fileExistsSync(stateFile)) {
-    return;
+function restoreRuntimePayload(payload: string, stores: RuntimeStores): void {
+  // SAFETY: serialized runtime snapshots contain the CliStatePayload service records.
+  const data = parseJson(payload) as CliStatePayload;
+  restoreAuditAndInbox(
+    data,
+    stores.auditStore,
+    stores.inbox,
+    stores.actionTypes
+  );
+  if (data.objects && stores.objectStore instanceof InMemoryObjectStore) {
+    stores.objectStore.importSnapshot(data.objects);
   }
-  try {
-    // SAFETY: stateFile is parsed as structured CliStatePayload for initialization
-    const data = parseJson(readTextFileSync(stateFile)) as CliStatePayload;
-    restoreAuditAndInbox(
-      data,
-      stores.auditStore,
-      stores.inbox,
-      stores.actionTypes
-    );
-    if (data.objects && stores.objectStore instanceof InMemoryObjectStore) {
-      stores.objectStore.importSnapshot(data.objects);
-    }
-    restoreOntologyServices(data, stores);
-    restoreDomainServices(data, stores);
-  } catch (error) {
-    console.error("DEBUG RESTORE ERROR:", error);
-  }
+  restoreOntologyServices(data, stores);
+  restoreDomainServices(data, stores);
 }
 
-function persistRuntimeState(stateFile: string, stores: RuntimeStores): void {
-  try {
-    const payload: CliStatePayload = {
-      atomicCommit: stores.atomicCommit.exportSnapshot(),
-      audit: stores.auditStore.exportSnapshot(),
-      authority: stores.authority.exportSnapshot(),
-      decisions: stores.auditStore.exportSnapshot().decisions,
-      governedActions: stores.governedActions.exportSnapshot(),
-      ingestion: stores.ingestion.exportSnapshot(),
-      objects:
-        stores.objectStore instanceof InMemoryObjectStore
-          ? stores.objectStore.exportSnapshot()
-          : undefined,
-      oms: stores.oms.exportSnapshot(),
-      overrides: stores.auditStore.exportSnapshot().overrides,
-      proposals: stores.inbox.listProposalSnapshots(),
-      reconciliation: stores.reconciliation.exportSnapshot(),
-    };
-    writeTextFileSync(stateFile, serializeJson(payload));
-  } catch (error) {
-    console.error("DEBUG PERSIST ERROR:", error);
-  }
+function serializeRuntimeState(stores: RuntimeStores): string {
+  const payload: CliStatePayload = {
+    atomicCommit: stores.atomicCommit.exportSnapshot(),
+    audit: stores.auditStore.exportSnapshot(),
+    authority: stores.authority.exportSnapshot(),
+    decisions: stores.auditStore.exportSnapshot().decisions,
+    governedActions: stores.governedActions.exportSnapshot(),
+    ingestion: stores.ingestion.exportSnapshot(),
+    objects:
+      stores.objectStore instanceof InMemoryObjectStore
+        ? stores.objectStore.exportSnapshot()
+        : undefined,
+    oms: stores.oms.exportSnapshot(),
+    overrides: stores.auditStore.exportSnapshot().overrides,
+    proposals: stores.inbox.listProposalSnapshots(),
+    reconciliation: stores.reconciliation.exportSnapshot(),
+  };
+  return serializeJson(payload);
 }
 
 function isActionTypeArray(
@@ -519,29 +511,92 @@ function isActionTypeArray(
   );
 }
 
+const runtimeStorageError = (cause: unknown) =>
+  new StorageError({
+    message: "Could not restore or checkpoint the Operon runtime",
+    cause,
+  });
+
+const openRuntimeStorage = Effect.fn("openRuntimeStorage")(function* (
+  target: DatabaseTarget,
+  workspaceId?: string
+) {
+  if (workspaceId) {
+    const state = yield* openWorkspaceState(target, workspaceId);
+    return {
+      objectStore: new InMemoryObjectStore(),
+      restore: (stores: RuntimeStores) =>
+        state.load.pipe(
+          Effect.flatMap((payload) =>
+            Effect.try({
+              try: () => {
+                if (payload) restoreRuntimePayload(payload, stores);
+              },
+              catch: runtimeStorageError,
+            })
+          )
+        ),
+      checkpoint: (stores: RuntimeStores) =>
+        Effect.suspend(() => state.save(serializeRuntimeState(stores))),
+    };
+  }
+  const database = yield* Effect.acquireRelease(
+    Effect.promise(() => createDbStore(target)),
+    (db) => Effect.promise(() => db.close())
+  );
+  const stateFile = resolveStateFilePath(target);
+  const persisted = isPersistenceEnabled();
+  return {
+    objectStore: database.objectStore,
+    restore: (stores: RuntimeStores) =>
+      Effect.try({
+        try: () => {
+          if (persisted && fileExistsSync(stateFile))
+            restoreRuntimePayload(readTextFileSync(stateFile), stores);
+        },
+        catch: runtimeStorageError,
+      }),
+    checkpoint: (stores: RuntimeStores) =>
+      Effect.try({
+        try: () => {
+          if (persisted)
+            writeTextFileAtomicSync(stateFile, serializeRuntimeState(stores));
+        },
+        catch: runtimeStorageError,
+      }),
+  };
+});
+
 export async function createRuntimeContext(
-  dbPath?: string
+  dbPath?: string,
+  workspaceId?: string
 ): Promise<OperonRuntimeContext> {
   const auditStore = new InMemoryAuditStore();
   const oms = new OntologyMetadataService();
   const securityEngine = new DynamicSecurityEngine();
   const sandbox = new SandboxedModelRunner();
-  registerDefaultModels(sandbox);
+  if (!workspaceId) registerDefaultModels(sandbox);
 
-  const objectTypes = [PatientType, ClarifierTankType, AircraftTwinType];
-  const rawActions = [
-    UpdateVitalsAction,
-    SetValvePositionAction,
-    AdjustDoseAction,
-  ];
+  const objectTypes = workspaceId
+    ? []
+    : [PatientType, ClarifierTankType, AircraftTwinType];
+  const rawActions = workspaceId
+    ? []
+    : [UpdateVitalsAction, SetValvePositionAction, AdjustDoseAction];
   const actionTypes: readonly ActionType[] = isActionTypeArray(rawActions)
     ? rawActions
     : [];
-  const linkTypes = [PatientObservationLink];
+  const linkTypes = workspaceId ? [] : [PatientObservationLink];
 
   const target = resolveDatabaseTarget(dbPath);
-  const dbConfig = await createDbStore(target);
-  const objectStore = dbConfig.objectStore;
+  const resourceScope = Effect.runSync(Scope.make());
+  const storage = await Effect.runPromise(
+    openRuntimeStorage(target, workspaceId).pipe(
+      Effect.provideService(Scope.Scope, resourceScope),
+      Effect.onError(() => Scope.close(resourceScope, Exit.void))
+    )
+  );
+  const objectStore = storage.objectStore;
 
   const inbox = new ActionInbox(auditStore, objectStore);
   const ingestion = new AccountableIngestionService(objectStore);
@@ -572,8 +627,6 @@ export async function createRuntimeContext(
     reconciliationService: reconciliation,
   });
 
-  const stateFile = resolveStateFilePath(target);
-  const isPersisted = isPersistenceEnabled();
   const stores: RuntimeStores = {
     actionTypes,
     atomicCommit,
@@ -587,22 +640,23 @@ export async function createRuntimeContext(
     reconciliation,
   };
 
-  if (isPersisted) {
-    restoreRuntimeState(stateFile, stores);
+  try {
+    await Effect.runPromise(storage.restore(stores));
+    if (!workspaceId) await seedDefaultObjects(objectStore);
+  } catch (error) {
+    await Effect.runPromise(Scope.close(resourceScope, Exit.void));
+    throw error;
   }
-
-  await seedDefaultObjects(objectStore);
-
-  const enhancedClose = () => {
-    if (isPersisted) {
-      persistRuntimeState(stateFile, stores);
-    }
-    return dbConfig.close();
-  };
+  const checkpoint = storage.checkpoint(stores);
+  const enhancedClose = () =>
+    Effect.runPromise(
+      checkpoint.pipe(Effect.ensuring(Scope.close(resourceScope, Exit.void)))
+    );
 
   return {
     ...stores,
     close: enhancedClose,
+    checkpoint,
     database: target,
     linkTypes,
     objectTypes,

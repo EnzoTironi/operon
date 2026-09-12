@@ -24,7 +24,8 @@
     "@operon/runtime": "workspace:*",
     "@operon/schema": "workspace:*",
     "@operon/skills": "workspace:*",
-    "effect": "4.0.0-rc.112"
+    "effect": "4.0.0-rc.112",
+    "zod": "4.6.0"
   },
   "devDependencies": {
     "@operon/cell-auth": "workspace:^",
