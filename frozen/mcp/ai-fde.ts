@@ -1,3 +1,7 @@
+/**
+ * FROZEN. Regex AI-FDE extractor. Out of the live @operon/mcp import graph.
+ * Not a product feature. Do not re-export. Do not replace with a new extractor here.
+ */
 import type { OntologyMetadataService } from "@operon/runtime";
 import type {
   ActionParameters,
@@ -17,7 +21,7 @@ import {
 } from "@operon/schema";
 import { Data, Effect, Schema } from "effect";
 
-import { assertBuilderKey } from "./keys.js";
+import { assertBuilderKey } from "../../packages/mcp/src/keys.js";
 
 export class FdePermissionError extends Data.TaggedError("FdePermissionError")<{
   readonly reason: string;

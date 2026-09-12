@@ -62,6 +62,11 @@ async function issueMemoryApprover(input: {
 }
 
 describe("@operon/mcp", () => {
+  it("does not export the frozen regex AI-FDE extractor", async () => {
+    const mcp = await import("./index.js");
+    expect("AIFdeAgent" in mcp).toBe(false);
+  });
+
   it("enforces key boundaries between Consumer Key and Builder Key", () => {
     const consumerKey: McpKey = {
       agentId: "agent-1",

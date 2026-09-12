@@ -35,13 +35,13 @@ The workspace is organized into a modular pnpm monorepo of core packages under `
 | [`@operon/cli`](file:///Users/enzotironi/operationalonto/packages/cli/README.md) | Official command-line interface built on pure Effect fibers (`doctor`, `object`, `readiness`, `action`, etc.). |
 | [`@operon/telemetry`](file:///Users/enzotironi/operationalonto/packages/telemetry/README.md) | Production observability (Sentry + PostHog), PII/secret scrubbing, Effect log layers, and distributed tracing. |
 | [`@operon/osdk`](file:///Users/enzotironi/operationalonto/packages/osdk/README.md) | Type-safe client SDK and TypeScript code generator for frontend and service integration. |
-| [`@operon/mcp`](file:///Users/enzotironi/operationalonto/packages/mcp/README.md) | Model Context Protocol server, dual-key isolation (Consumer vs Builder), and AI-FDE autonomous agents. |
+| [`@operon/mcp`](./packages/mcp/README.md) | Model Context Protocol server and dual-key isolation (Consumer vs Builder). |
 | [`@operon/cell-auth`](./packages/cell-auth) | Better Auth on the cell Postgres: approver sessions and the `SessionVerifier` the kernel trusts. |
 | [`@operon/alchemy`](./packages/alchemy/README.md) | The cell's PostgreSQL 17 in Docker, provisioned by [Alchemy](https://alchemy.run) (`pnpm cell:up`). |
 
 ### Frozen code (`frozen/`)
 
-The five industry example simulations and the S17/publication validation scripts are frozen out of the build, test, lint, and knip graphs. See [`frozen/README.md`](./frozen/README.md) for the index and rationale.
+The five industry example simulations, the S17/publication validation scripts, and the regex AI-FDE extractor are frozen out of the build, test, lint, and knip graphs. See [`frozen/README.md`](./frozen/README.md) for the index and rationale.
 
 ---
 

@@ -19,6 +19,7 @@ Nothing here is maintained. It may stop compiling against the current packages. 
 | `examples/wastewater-compliance` | `examples/wastewater-compliance` | Industry demo outside the phase 1 e-mail demo. |
 | `validation/evidence-gate.ts` | `validation/evidence-gate.ts` | S17 evidence gate signer. Part of the F1/F2 assurance program, which phase 1 freezes. Never wired into CI. |
 | `validation/publication` | `validation/publication` | Publication boundary gate over `@operon/assurance`. Same program. Never wired into CI. |
+| `mcp/ai-fde.ts` | `packages/mcp/src/ai-fde.ts` | Regex AI-FDE extractor. Phase 1 freezes it; the live `@operon/mcp` graph does not export it. |
 
 ## Thawing an entry
 

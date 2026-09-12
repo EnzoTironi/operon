@@ -1,3 +1,4 @@
+/** Frozen with `ai-fde.ts`. Not in the live `@operon/mcp` test graph. */
 import { OntologyMetadataService } from "@operon/runtime";
 import { describe, expect, it } from "vitest";
 
