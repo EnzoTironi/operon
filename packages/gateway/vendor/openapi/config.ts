@@ -1,0 +1,126 @@
+import { Option, Schema } from "effect";
+import {
+  ApiKeyAuthMethod,
+  TOKEN_VARIABLE,
+  renderAuthPlacements,
+  requiredPlacementVariables,
+} from "@operon/gateway/sdk/http-auth";
+
+import type { Authentication } from "./types";
+import { SpecOverridesSchema, type SpecOverrides } from "./spec-overrides";
+
+// ---------------------------------------------------------------------------
+// OpenAPI integration config — the opaque blob stored on the catalog
+// `integration.config` column (D1). Core never parses it; the plugin writes it
+// at register time and reads it back in `resolveTools` / `invokeTool`.
+//
+// In v2 there are NO credential bindings, NO per-source secret slots, and NO
+// StoredSource credential config. The config carries only:
+//   - the content hash of the spec blob and/or the source URL to (re)fetch
+//     from,
+//   - optional RFC 6902 overrides and the raw source hash they apply to,
+//   - the optional base URL override,
+//   - the auth templates a connection's value is rendered through.
+// The resolved spec text itself lives in the plugin blob store, keyed
+// `spec/<specHash>` — it's a build input for resolveTools/refresh, not data
+// any list/invoke path should pay to load. Rows that predate the blob store
+// (inline `spec` text) are rewritten before this schema sees them: cloud by
+// the out-of-band migrate-specs-to-blobs script, the libSQL hosts by the
+// boot-time ledger migration.
+// ---------------------------------------------------------------------------
+
+const OAuthAuthenticationSchema = Schema.Struct({
+  slug: Schema.String,
+  kind: Schema.Literal("oauth2"),
+  label: Schema.optional(Schema.String),
+  authorizationUrl: Schema.String,
+  tokenUrl: Schema.String,
+  resource: Schema.optional(Schema.NullOr(Schema.String)),
+  scopes: Schema.Array(Schema.String),
+  supportsClientIdMetadataDocument: Schema.optional(Schema.Boolean),
+});
+
+export const AuthenticationSchema = Schema.Union([OAuthAuthenticationSchema, ApiKeyAuthMethod]);
+
+export const OpenApiIntegrationConfigSchema = Schema.Struct({
+  /** Hex SHA-256 of the resolved spec text — the content address of the spec
+   *  blob (`spec/<hash>` in the plugin blob store). */
+  specHash: Schema.optional(Schema.String),
+  /** Hex SHA-256 of the unmodified source text when spec overrides are active. */
+  sourceSpecHash: Schema.optional(Schema.String),
+  /** Origin URL the spec was fetched from, when known. Enables refresh. */
+  specUrl: Schema.optional(Schema.String),
+  /** Optional base URL override. */
+  baseUrl: Schema.optional(Schema.String),
+  /** The PRODUCT's domain, recorded at add time when the caller knew it (a
+   *  registry row names notion.com). The spec's own host is often a code
+   *  host (raw.githubusercontent.com) that says nothing about the product,
+   *  which sent credential guidance and favicons to the wrong domain. */
+  displayDomain: Schema.optional(Schema.String),
+  /** Static headers applied to every request (no secret material). */
+  headers: Schema.optional(Schema.Record(Schema.String, Schema.String)),
+  /** Static query params applied to every request (no secret material). */
+  queryParams: Schema.optional(Schema.Record(Schema.String, Schema.String)),
+  /** Adapter id used to fetch/convert the source format, when not plain OpenAPI. */
+  specFormat: Schema.optional(Schema.String),
+  /** Catalog family for grouped integration display. */
+  family: Schema.optional(Schema.String),
+  /** Ordered RFC 6902 operations reapplied whenever the source spec is refreshed. */
+  specOverrides: Schema.optional(SpecOverridesSchema),
+  /** The auth methods a connection's value can be applied through. */
+  authenticationTemplate: Schema.optional(Schema.Array(AuthenticationSchema)),
+});
+
+export type OpenApiIntegrationConfig = Omit<
+  typeof OpenApiIntegrationConfigSchema.Type,
+  "authenticationTemplate" | "specOverrides"
+> & {
+  /** Branded over the schema's structural form so the template renderer can
+   *  treat `slug` as an `AuthTemplateSlug`. */
+  readonly authenticationTemplate?: readonly Authentication[];
+  readonly specOverrides?: SpecOverrides;
+};
+
+const decodeConfig = Schema.decodeUnknownOption(OpenApiIntegrationConfigSchema);
+
+/** Decode the opaque integration config blob into the openapi shape.
+ *  Returns null when the blob is missing/incompatible. */
+export const decodeOpenApiIntegrationConfig = (value: unknown): OpenApiIntegrationConfig | null =>
+  Option.getOrNull(decodeConfig(value)) as OpenApiIntegrationConfig | null;
+
+// ---------------------------------------------------------------------------
+// Template rendering — "auth state derived into the auth-template format"
+// (D11). An apiKey method renders through the shared placements renderer; an
+// oauth template (no explicit placement) renders a bearer `authorization`
+// header from the `token` input (the access token).
+// ---------------------------------------------------------------------------
+
+export interface RenderedAuth {
+  readonly headers: Record<string, string>;
+  readonly queryParams: Record<string, string>;
+}
+
+/** Render an auth template against a connection's resolved input `values`
+ *  (`variable → value`). Each placement substitutes from its own entry, so a
+ *  method with two distinct inputs (e.g. Datadog) fills each header from a
+ *  different value. */
+export const renderAuthTemplate = (
+  template: Authentication,
+  values: Record<string, string | null>,
+): RenderedAuth => {
+  if (template.kind === "oauth2") {
+    return {
+      headers: { authorization: `Bearer ${values[TOKEN_VARIABLE] ?? ""}` },
+      queryParams: {},
+    };
+  }
+  return renderAuthPlacements(template.placements, values);
+};
+
+/** The distinct input variables a template references — the inputs a connection
+ *  must supply. An oauth template needs `token`; an apiKey method needs every
+ *  variable across its placements. */
+export const requiredTemplateVariables = (template: Authentication): readonly string[] => {
+  if (template.kind === "oauth2") return [TOKEN_VARIABLE];
+  return requiredPlacementVariables(template.placements);
+};

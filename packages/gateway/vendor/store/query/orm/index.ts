@@ -1,0 +1,639 @@
+import type {
+  AnyColumn,
+  AnyRelation,
+  AnySchema,
+  AnyTable,
+} from "../../schema";
+import { Column } from "../../schema";
+import type {
+  AbstractQuery,
+  AnySelectClause,
+  FindFirstOptions,
+  FindManyOptions,
+  JoinBuilder,
+  OrderBy,
+} from "..";
+import {
+  buildCondition,
+  createBuilder,
+  type Condition,
+  ConditionType,
+} from "../condition-builder";
+
+export interface CompiledJoin {
+  relation: AnyRelation;
+  options: SimplifyFindOptions<FindManyOptions> | false;
+}
+
+export interface SimplifiedCountOptions {
+  where?: Condition | undefined;
+}
+
+function isOrderByArray(v: OrderBy | OrderBy[]): v is OrderBy[] {
+  return Array.isArray(v) && Array.isArray(v[0]);
+}
+
+function simplifyOrderBy(
+  columns: Record<string, AnyColumn>,
+  orderBy: OrderBy | OrderBy[] | undefined,
+): OrderBy<AnyColumn>[] | undefined {
+  if (!orderBy || orderBy.length === 0) return;
+
+  if (!isOrderByArray(orderBy)) orderBy = [orderBy];
+  return orderBy.map(([name, value]) => {
+    const col = columns[name];
+    if (!col) throw new Error(`[FumaDB] unknown column name ${name}.`);
+
+    return [col, value];
+  });
+}
+
+function buildFindOptions(
+  table: AnyTable,
+  { select = true, where, orderBy, join, ...options }: FindManyOptions,
+): SimplifyFindOptions<FindManyOptions> | false {
+  let conditions = where ? buildCondition(table.columns, where) : undefined;
+  if (conditions === true) conditions = undefined;
+  if (conditions === false) return false;
+
+  return {
+    select,
+    where: conditions,
+    orderBy: simplifyOrderBy(table.columns, orderBy),
+    join: join ? buildJoin(table, join) : undefined,
+    ...options,
+  };
+}
+
+function buildJoin<T extends AnyTable>(
+  table: AnyTable,
+  fn: (builder: JoinBuilder<T, {}>) => JoinBuilder<T, unknown>,
+): CompiledJoin[] {
+  const compiled: CompiledJoin[] = [];
+  const builder: Record<string, unknown> = {};
+
+  for (const name in table.relations) {
+    const relation = table.relations[name]!;
+
+    builder[name] = (options: FindFirstOptions | FindManyOptions = {}) => {
+      compiled.push({
+        relation,
+        options: buildFindOptions(relation.table, options),
+      });
+
+      delete builder[name];
+      return builder;
+    };
+  }
+
+  fn(builder as JoinBuilder<T, {}>);
+  return compiled;
+}
+
+export type SimplifyFindOptions<O> = Omit<
+  O,
+  "where" | "orderBy" | "select" | "join"
+> & {
+  select: AnySelectClause;
+  where?: Condition | undefined;
+  orderBy?: OrderBy<AnyColumn>[];
+  join?: CompiledJoin[];
+};
+
+type WriteOperation = "create" | "update" | "upsert";
+
+const mergePolicyCondition = (
+  table: AnyTable,
+  where: Condition | undefined,
+  condition: Condition | boolean | void,
+): Condition | undefined | false => {
+  if (condition === undefined || condition === true) return where;
+  if (condition === false) return false;
+
+  const next = createBuilder(table.columns).and(where ?? true, condition);
+  if (next === true) return undefined;
+  if (next === false) return false;
+  return next;
+};
+
+const applyReadPolicies = async (
+  table: AnyTable,
+  where: Condition | undefined,
+  context: unknown,
+): Promise<Condition | undefined | false> => {
+  let nextWhere = where;
+
+  for (const policy of table.policies) {
+    const condition = await policy.onRead?.({
+      where: nextWhere,
+      context,
+      builder: createBuilder(table.columns),
+    });
+    const merged = mergePolicyCondition(table, nextWhere, condition);
+    if (merged === false) return false;
+    nextWhere = merged;
+  }
+
+  return nextWhere;
+};
+
+const applyReadPoliciesToOptions = async (
+  table: AnyTable,
+  options: SimplifyFindOptions<FindManyOptions>,
+  context: unknown,
+): Promise<SimplifyFindOptions<FindManyOptions> | false> => {
+  const where = await applyReadPolicies(table, options.where, context);
+  if (where === false) return false;
+
+  let changed = where !== options.where;
+  const join: CompiledJoin[] | undefined = options.join ? [] : undefined;
+
+  for (const entry of options.join ?? []) {
+    if (entry.options === false) {
+      join!.push(entry);
+      continue;
+    }
+
+    const nextOptions = await applyReadPoliciesToOptions(
+      entry.relation.table,
+      entry.options,
+      context,
+    );
+    if (nextOptions === false) {
+      join!.push({ ...entry, options: false });
+      changed = true;
+      continue;
+    }
+    if (nextOptions !== entry.options) changed = true;
+    join!.push(nextOptions === entry.options ? entry : { ...entry, options: nextOptions });
+  }
+
+  return changed ? { ...options, where, join } : options;
+};
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+
+const applyDeniedJoinDefaults = (
+  records: Record<string, unknown>[],
+  options: SimplifyFindOptions<FindManyOptions>,
+) => {
+  if (!options.join) return;
+
+  for (const entry of options.join) {
+    if (entry.options === false) {
+      for (const record of records) {
+        record[entry.relation.name] = entry.relation.type === "many" ? [] : null;
+      }
+      continue;
+    }
+
+    for (const record of records) {
+      const value = record[entry.relation.name];
+      if (entry.relation.type === "many") {
+        if (Array.isArray(value)) applyDeniedJoinDefaults(value.filter(isRecord), entry.options);
+        continue;
+      }
+
+      if (isRecord(value)) applyDeniedJoinDefaults([value], entry.options);
+    }
+  }
+};
+
+const runCreatePolicies = async (
+  table: AnyTable,
+  values: Record<string, unknown>,
+  context: unknown,
+): Promise<void> => {
+  for (const policy of table.policies) {
+    await policy.onCreate?.({ values, context });
+  }
+};
+
+const applyUpdatePolicies = async (
+  table: AnyTable,
+  where: Condition | undefined,
+  set: Record<string, unknown>,
+  context: unknown,
+  operation: Extract<WriteOperation, "update" | "upsert">,
+  create?: Record<string, unknown>,
+): Promise<Condition | undefined | false> => {
+  let nextWhere = where;
+
+  for (const policy of table.policies) {
+    const condition = await policy.onUpdate?.({
+      where: nextWhere,
+      set,
+      create,
+      context,
+      builder: createBuilder(table.columns),
+      operation,
+    });
+    const merged = mergePolicyCondition(table, nextWhere, condition);
+    if (merged === false) return false;
+    nextWhere = merged;
+  }
+
+  return nextWhere;
+};
+
+// Structural equality over predicate values. Policy predicates may carry any
+// column value shape — string, number, bigint, boolean, null, Date, binary,
+// JSON objects, and arrays of those — so serializing them to string keys
+// (e.g. JSON.stringify) either throws (bigint) or collides (values with the
+// same serialized form). Comparing structurally is unambiguous; a false
+// negative only splits a group and never merges rows under the wrong
+// predicate.
+export const predicateValuesEqual = (a: unknown, b: unknown): boolean => {
+  if (Object.is(a, b)) return true;
+  if (a instanceof Date || b instanceof Date) {
+    return a instanceof Date && b instanceof Date && a.getTime() === b.getTime();
+  }
+  if (a instanceof Uint8Array || b instanceof Uint8Array) {
+    return (
+      a instanceof Uint8Array &&
+      b instanceof Uint8Array &&
+      a.length === b.length &&
+      a.every((byte, index) => byte === b[index])
+    );
+  }
+  if (Array.isArray(a) || Array.isArray(b)) {
+    if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
+    // Compare by index instead of `.every`, which skips holes in sparse
+    // arrays — `Array(1)` would otherwise equal `[123]` and merge rows under
+    // the wrong predicate group. A hole and a present element are unequal.
+    for (let index = 0; index < a.length; index += 1) {
+      const aHas = index in a;
+      if (aHas !== index in b) return false;
+      if (aHas && !predicateValuesEqual(a[index], b[index])) return false;
+    }
+    return true;
+  }
+  if (isRecord(a) && isRecord(b)) {
+    const aKeys = Object.keys(a);
+    const bKeys = Object.keys(b);
+    return (
+      aKeys.length === bKeys.length &&
+      aKeys.every((key) => Object.hasOwn(b, key) && predicateValuesEqual(a[key], b[key]))
+    );
+  }
+  return false;
+};
+
+const conditionsEqual = (a: Condition | undefined, b: Condition | undefined): boolean => {
+  if (a === undefined || b === undefined) return a === b;
+  if (a.type === ConditionType.Compare || b.type === ConditionType.Compare) {
+    if (a.type !== ConditionType.Compare || b.type !== ConditionType.Compare) return false;
+    if (a.a !== b.a || a.operator !== b.operator) return false;
+    if (a.b instanceof Column || b.b instanceof Column) return a.b === b.b;
+    return predicateValuesEqual(a.b, b.b);
+  }
+  if (a.type === ConditionType.Not || b.type === ConditionType.Not) {
+    if (a.type !== ConditionType.Not || b.type !== ConditionType.Not) return false;
+    return conditionsEqual(a.item, b.item);
+  }
+  return (
+    a.type === b.type &&
+    a.items.length === b.items.length &&
+    a.items.every((item, index) => conditionsEqual(item, b.items[index]))
+  );
+};
+
+const applyDeletePolicies = async (
+  table: AnyTable,
+  where: Condition | undefined,
+  context: unknown,
+): Promise<Condition | undefined | false> => {
+  let nextWhere = where;
+
+  for (const policy of table.policies) {
+    const condition = await policy.onDelete?.({
+      where: nextWhere,
+      context,
+      builder: createBuilder(table.columns),
+    });
+    const merged = mergePolicyCondition(table, nextWhere, condition);
+    if (merged === false) return false;
+    nextWhere = merged;
+  }
+
+  return nextWhere;
+};
+
+export interface ORMAdapter<S extends AnySchema = AnySchema> {
+  tables: S["tables"];
+  context?: unknown;
+  count: (table: AnyTable, v: SimplifiedCountOptions) => Promise<number>;
+
+  findFirst: (
+    table: AnyTable,
+    v: SimplifyFindOptions<FindFirstOptions>,
+  ) => Promise<Record<string, unknown> | null>;
+
+  findMany: (
+    table: AnyTable,
+    v: SimplifyFindOptions<FindManyOptions>,
+  ) => Promise<Record<string, unknown>[]>;
+
+  updateMany: (
+    table: AnyTable,
+    v: {
+      where?: Condition;
+      set: Record<string, unknown>;
+    },
+  ) => Promise<void>;
+
+  upsert: (
+    table: AnyTable,
+    v: {
+      where: Condition | undefined;
+      update: Record<string, unknown>;
+      create: Record<string, unknown>;
+    },
+  ) => Promise<void>;
+
+  upsertMany?: (
+    table: AnyTable,
+    v: {
+      target: AnyColumn[];
+      update: AnyColumn[];
+      values: Record<string, unknown>[];
+      where?: Condition;
+    },
+  ) => Promise<void>;
+
+  create: (
+    table: AnyTable,
+    values: Record<string, unknown>,
+  ) => Promise<Record<string, unknown>>;
+
+  createMany: (
+    table: AnyTable,
+    values: Record<string, unknown>[],
+  ) => Promise<
+    {
+      _id: unknown;
+    }[]
+  >;
+
+  deleteMany: (
+    table: AnyTable,
+    v: {
+      where?: Condition;
+    },
+  ) => Promise<void>;
+
+  /**
+   * Override this to support native transaction, otherwise use soft transaction.
+   */
+  transaction: <T>(
+    run: (transactionInstance: AbstractQuery<S>) => Promise<T>,
+  ) => Promise<T>;
+}
+
+export interface ToORMOptions {
+  readonly context?: unknown;
+}
+
+export function toORM<S extends AnySchema>(
+  adapter: ORMAdapter<S>,
+  options: ToORMOptions = {},
+): AbstractQuery<S> {
+  const context = options.context ?? adapter.context;
+  const internal: ORMAdapter<S> =
+    context === adapter.context ? adapter : { ...adapter, context };
+
+  function toTable<TableName extends keyof S["tables"]>(
+    name: TableName,
+  ): S["tables"][TableName] {
+    const table = internal.tables[name];
+    if (!table) throw new Error(`[FumaDB] Invalid table name ${String(name)}.`);
+
+    return table;
+  }
+
+  const query = {
+    internal,
+    async count(name, { where } = {}) {
+      const table = toTable(name);
+      let conditions = where ? buildCondition(table.columns, where) : undefined;
+      if (conditions === true) conditions = undefined;
+      if (conditions === false) return 0;
+
+      const constrainedWhere = await applyReadPolicies(table, conditions, context);
+      if (constrainedWhere === false) return 0;
+      return await internal.count(table, { where: constrainedWhere });
+    },
+    async upsert(name, { where, ...options }) {
+      const table = toTable(name);
+      const conditions = where ? buildCondition(table.columns, where) : undefined;
+      if (conditions === false) return;
+      let compiledWhere: Condition | undefined | false = conditions === true ? undefined : conditions;
+
+      compiledWhere = await applyUpdatePolicies(
+        table,
+        compiledWhere,
+        options.update,
+        context,
+        "upsert",
+        options.create,
+      );
+      if (compiledWhere === false) return;
+      await runCreatePolicies(table, options.create, context);
+      await internal.upsert(table, {
+        where: compiledWhere,
+        ...options,
+      });
+    },
+    async upsertMany(name, { target, update, values }) {
+      const table = toTable(name);
+      if (values.length === 0) return;
+      if (target.length === 0) {
+        // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- boundary: public query rejects invalid upsert shape
+        throw new Error("[FumaDB] upsertMany requires at least one target column.");
+      }
+      if (update.length === 0) {
+        // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- boundary: public query rejects invalid upsert shape
+        throw new Error("[FumaDB] upsertMany requires at least one update column.");
+      }
+
+      const targetColumns = target.map((columnName) => {
+        const column = table.columns[columnName as string];
+        if (!column) throw new Error(`[FumaDB] unknown column name ${String(columnName)}.`);
+        return column;
+      });
+      const updateColumns = update.map((columnName) => {
+        const column = table.columns[columnName as string];
+        if (!column) throw new Error(`[FumaDB] unknown column name ${String(columnName)}.`);
+        return column;
+      });
+
+      const builder = createBuilder(table.columns);
+      const permittedRows: {
+        readonly value: Record<string, unknown>;
+        readonly where: Condition | undefined;
+      }[] = [];
+      for (const value of values) {
+        const updateValues = Object.fromEntries(
+          updateColumns.map((column) => [column.ormName, value[column.ormName]]),
+        );
+        const constrainedWhere = await applyUpdatePolicies(
+          table,
+          undefined,
+          updateValues,
+          context,
+          "upsert",
+          value,
+        );
+        if (constrainedWhere === false) continue;
+        await runCreatePolicies(table, value, context);
+        permittedRows.push({ value, where: constrainedWhere });
+      }
+      if (permittedRows.length === 0) return;
+
+      if (internal.upsertMany) {
+        const groups: {
+          readonly where: Condition | undefined;
+          readonly values: Record<string, unknown>[];
+        }[] = [];
+        for (const row of permittedRows) {
+          const group = groups.find((candidate) => conditionsEqual(candidate.where, row.where));
+          if (group) {
+            group.values.push(row.value);
+          } else {
+            groups.push({ where: row.where, values: [row.value] });
+          }
+        }
+        const runGroups = async (adapter: ORMAdapter<S>): Promise<void> => {
+          if (!adapter.upsertMany) {
+            // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- boundary: a transaction adapter must mirror the base adapter's upsertMany support
+            throw new Error("[FumaDB] Transaction adapter does not support upsertMany.");
+          }
+          for (const group of groups) {
+            await adapter.upsertMany(table, {
+              target: targetColumns,
+              update: updateColumns,
+              values: group.values,
+              where: group.where,
+            });
+          }
+        };
+
+        // A single group is one adapter call, which is as atomic as the
+        // engine allows. Multiple predicate groups are separate adapter
+        // calls, so run them inside one transaction: a later group's failure
+        // must not leave earlier groups committed.
+        if (groups.length === 1) {
+          await runGroups(internal);
+          return;
+        }
+        await internal.transaction(async (transactionInstance) => {
+          await runGroups(transactionInstance.internal);
+        });
+        return;
+      }
+
+      for (const row of permittedRows) {
+        const value = row.value;
+        const targetWhere = builder.and(
+          ...targetColumns.map((column) => builder(column.ormName, "=", value[column.ormName])),
+        );
+        const where = builder.and(targetWhere, row.where ?? true);
+        if (where === false) continue;
+        await internal.upsert(table, {
+          where: where === true ? undefined : where,
+          update: Object.fromEntries(
+            updateColumns.map((column) => [column.ormName, value[column.ormName]]),
+          ),
+          create: value,
+        });
+      }
+    },
+    async create(name, values) {
+      const table = toTable(name);
+      await runCreatePolicies(table, values, context);
+      return await internal.create(table, values);
+    },
+    async createMany(name, values) {
+      const table = toTable(name);
+      for (const value of values) {
+        await runCreatePolicies(table, value, context);
+      }
+
+      return await internal.createMany(table, values);
+    },
+    async deleteMany(name, { where }) {
+      const table = toTable(name);
+      let conditions = where ? buildCondition(table.columns, where) : undefined;
+      if (conditions === true) conditions = undefined;
+      if (conditions === false) return;
+
+      const constrainedWhere = await applyDeletePolicies(table, conditions, context);
+      if (constrainedWhere === false) return;
+      await internal.deleteMany(table, { where: constrainedWhere });
+    },
+    async findMany(name, options = {}) {
+      const table = toTable(name);
+      let compiledOptions = buildFindOptions(table, options as FindManyOptions);
+      if (compiledOptions === false) return [];
+
+      compiledOptions = await applyReadPoliciesToOptions(table, compiledOptions, context);
+      if (compiledOptions === false) return [];
+      const records = await internal.findMany(table, compiledOptions);
+      applyDeniedJoinDefaults(records, compiledOptions);
+      return records;
+    },
+    async findFirst(name, options) {
+      const table = toTable(name);
+      let compiledOptions = buildFindOptions(table, options as FindFirstOptions);
+      if (compiledOptions === false) return null;
+
+      compiledOptions = await applyReadPoliciesToOptions(table, compiledOptions, context);
+      if (compiledOptions === false) return null;
+      const record = await internal.findFirst(table, compiledOptions);
+      if (record) applyDeniedJoinDefaults([record], compiledOptions);
+      return record;
+    },
+    async updateMany(name, { set, where }) {
+      const table = toTable(name);
+      let conditions = where ? buildCondition(table.columns, where) : undefined;
+      if (conditions === true) conditions = undefined;
+      if (conditions === false) return;
+
+      const constrainedWhere = await applyUpdatePolicies(
+        table,
+        conditions,
+        set,
+        context,
+        "update",
+      );
+      if (constrainedWhere === false) return;
+      return internal.updateMany(table, { set, where: constrainedWhere });
+    },
+    async transaction(run) {
+      return internal.transaction((transactionInstance) =>
+        run(withQueryContext(transactionInstance, context)),
+      );
+    },
+  } as AbstractQuery<S>;
+
+  Object.defineProperty(query, "withContext", {
+    enumerable: false,
+    value(nextContext: unknown) {
+      return toORM(internal, { context: nextContext });
+    },
+  });
+
+  return query;
+}
+
+export function withQueryContext<S extends AnySchema, TContext>(
+  db: AbstractQuery<S>,
+  context: TContext,
+): AbstractQuery<S> {
+  if (typeof db.withContext === "function") return db.withContext(context);
+
+  throw new Error(
+    "[FumaDB] Cannot apply query context to this query object. If you wrap an AbstractQuery, forward withContext so table policies keep using the wrapper.",
+  );
+}

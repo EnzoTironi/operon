@@ -1,0 +1,27 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "noEmit": true,
+    "composite": false,
+    "declaration": false,
+    "declarationMap": false,
+    "sourceMap": false,
+    "rootDir": ".",
+    "skipLibCheck": true,
+    "types": ["node"]
+  },
+  "include": ["src/**/*.ts", "vendor/**/*.ts"],
+  "exclude": [
+    "node_modules",
+    "dist",
+    "**/*.test.ts",
+    "vendor/**/*.test.ts",
+    "vendor/**/__snapshots__",
+    "vendor/**/*testing*",
+    "vendor/**/*test-server*",
+    "vendor/sdk/testing.ts",
+    "vendor/sdk/testing/**"
+  ]
+}
